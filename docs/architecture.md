@@ -93,7 +93,7 @@ The system replaces the standard LoRaWAN packet forwarder stack with a custom in
 │       ┌──────▼──────┐ ┌───▼────────┐ ┌───▼────────┐                     │
 │       │ TX Queue    │ │ TX Queue   │ │ TX Queue   │  (per channel)      │
 │       │ LBT check   │ │ CAD check  │ │ TTL check  │                     │
-│       │ Overflow mgmt│ │ FIFO order │ │ Hold check │                    │
+│       │ Overflow mgt│ │ FIFO order │ │ Hold check │                     │
 │       └──────┬──────┘ └───┬────────┘ └───┬────────┘                     │
 │              └────────────┴──────────────┘                              │
 │                           │ PULL_RESP (UDP)                             │
@@ -105,9 +105,9 @@ The system replaces the standard LoRaWAN packet forwarder stack with a custom in
 │                           WEB / API LAYER                               │
 │                                                                         │
 │  ┌──────────────────┐  ┌──────────────────┐  ┌─────────────────────┐    │
-│  │  HTTP Server      │  │  REST API         │  │  WebSocket          │  │
-│  │  (port 8000)      │  │  /api/wm1303/*    │  │  Real-time updates  │  │
-│  │  Static files     │  │  JWT auth         │  │  Stats push         │  │
+│  │  HTTP Server     │  │  REST API        │  │  WebSocket          │    │
+│  │  (port 8000)     │  │  /api/wm1303/*   │  │  Real-time updates  │    │
+│  │  Static files    │  │  JWT auth        │  │  Stats push         │    │
 │  └──────────────────┘  └──────────────────┘  └─────────────────────┘    │
 │                                                                         │
 │  ┌─────────────────────────────────────────────────────────────────┐    │

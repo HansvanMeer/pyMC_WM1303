@@ -31,7 +31,7 @@ During installation, template files from the `config/` directory in the reposito
 │   global_conf.json   │     │     config.yaml      │
 │  (HAL, RF chains,    │     │  (service settings,  │
 │   IF chains, SX1261) │     │   JWT, mesh, radio)  │
-└──────────┬───────────┘     └──────────┬────────────┘
+└──────────┬───────────┘     └──────────┬───────────┘
            │                            │
            ▼                            ▼
 ┌──────────────────────┐     ┌──────────────────────┐

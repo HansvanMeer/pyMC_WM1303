@@ -10,40 +10,40 @@ Every packet transmitted by the WM1303 system passes through a multi-stage pipel
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         RADIO (SX1302 + SX1261)                    │
-│  spidev0.0 (SX1302: RX/TX)    spidev0.1 (SX1261: Spectral/LBT)   │
+│                         RADIO (SX1302 + SX1261)                     │
+│  spidev0.0 (SX1302: RX/TX)    spidev0.1 (SX1261: Spectral/LBT)      │
 └────────────┬───────────────────────────────┬────────────────────────┘
              │ UDP                           │ Spectral scan results
 ┌────────────▼───────────────────────────────▼────────────────────────┐
 │              Packet Forwarder (lora_pkt_fwd)                        │
-│  PUSH_DATA (RX packets)  ◄──►  PULL_RESP (TX packets)              │
+│  PUSH_DATA (RX packets)  ◄──►  PULL_RESP (TX packets)               │
 └────────────┬───────────────────────────────┬────────────────────────┘
              │ UDP :1730                     ▲ UDP :1730
 ┌────────────▼───────────────────────────────┼────────────────────────┐
 │                   WM1303 Backend                                    │
-│  ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────┐   │
-│  │ _handle_udp()│  │NoiseFloorMonitor│  │   RX Watchdog        │   │
-│  │  RX dispatch │  │  (30s interval) │  │  (3 detection modes) │   │
-│  └──────┬───────┘  └────────┬────────┘  └──────────────────────┘   │
+│  ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────┐    │
+│  │ _handle_udp()│  │NoiseFloorMonitor│  │   RX Watchdog        │    │
+│  │  RX dispatch │  │  (30s interval) │  │  (3 detection modes) │    │
+│  └──────┬───────┘  └────────┬────────┘  └──────────────────────┘    │
 │         │                   │                                       │
-│         │         ┌─────────▼──────────┐                           │
-│         │         │ TX Hold + Spectral │                           │
-│         │         │ Scan Harvest       │                           │
-│         │         │ → feed noise floor │                           │
-│         │         │   to TX queues     │                           │
-│         │         └────────────────────┘                           │
-└─────────┼──────────────────────────────────────────────────────────┘
+│         │         ┌─────────▼──────────┐                            │
+│         │         │ TX Hold + Spectral │                            │
+│         │         │ Scan Harvest       │                            │
+│         │         │ → feed noise floor │                            │
+│         │         │   to TX queues     │                            │
+│         │         └────────────────────┘                            │
+└─────────┼───────────────────────────────────────────────────────────┘
           │
 ┌─────────▼──────────────────────────────────────────────────────────┐
-│                      Bridge Engine                                  │
-│                                                                     │
+│                      Bridge Engine                                 │
+│                                                                    │
 │  1. RX packet received on channel_x                                │
 │  2. Dedup check (has this packet been seen before?)                │
 │  3. Bridge rules evaluation (which channels should receive this?)  │
 │  4. Repeater handler (increment hop count, update path bytes)      │
 │  5. Queue TX to all target channels                                │
-│                                                                     │
-└─────────┬─────────────┬──────────────┬────────────────────────────┘
+│                                                                    │
+└─────────┬─────────────┬──────────────┬─────────────────────────────┘
            │             │              │
     ┌──────▼──────┐ ┌───▼────────┐ ┌───▼────────┐
     │ TX Queue    │ │ TX Queue   │ │ TX Queue   │
@@ -118,7 +118,7 @@ Each channel has its own `ChannelTXQueue` instance. This is where most of the pr
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  ChannelTXQueue                          │
+│                  ChannelTXQueue                         │
 │                                                         │
 │  3.1  PACKET ARRIVAL                                    │
 │       ↓                                                 │
@@ -159,7 +159,7 @@ Each channel has its own `ChannelTXQueue` instance. This is where most of the pr
 │       → Failure: total_failed +1                        │
 │       ↓                                                 │
 │  3.9  UPDATE STATISTICS                                 │
-│       send_ms, airtime_ms, wait_ms, lbt_last_rssi      │
+│       send_ms, airtime_ms, wait_ms, lbt_last_rssi       │
 │       noise_floor rolling buffer update                 │
 └─────────────────────────────────────────────────────────┘
 ```
