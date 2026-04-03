@@ -82,7 +82,19 @@ ls -la /dev/i2c-1
 
 ## Quick Start
 
-For a standard installation on a fresh Raspberry Pi OS Lite system:
+### One-Line Install
+
+The fastest way to install on a fresh Raspberry Pi OS Lite system:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/bootstrap.sh | sudo bash
+```
+
+This bootstrap script automatically installs git, clones the repository to `/home/pi/pyMC_WM1303`, and runs the full installation.
+
+### Manual Install
+
+Alternatively, clone and install manually:
 
 ```bash
 git clone https://github.com/HansvanMeer/pyMC_WM1303.git

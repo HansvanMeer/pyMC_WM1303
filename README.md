@@ -116,8 +116,6 @@ Navigate to the **Channels** tab to configure your RF chains and channel assignm
 
 In the upper section you configure the **RF Chain** settings:
 - **RF Center Frequency** — Set the center frequency for your RF chain (e.g., `869.5245 MHz` for EU868). Both SX1250 radios share this center frequency.
-- **RF0 (SX1250_0)** — Primary radio: RX + TX + Clock source. IF chains 0–4 are mapped to this radio.
-- **RF1 (SX1250_1)** — Secondary radio: Clock Only (RX). No IF chains assigned by default.
 - The **Analog Bandwidth Coverage** visualization shows you exactly which frequencies your IF chains cover.
 
 Scroll down to configure the **IF Chains** and **Channel Definitions**:
