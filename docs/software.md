@@ -26,6 +26,7 @@ The central backend component (~112 KB, largest file in the system). It manages 
 | Packet forwarder management | Start/stop/restart `lora_pkt_fwd` process |
 | UDP protocol handling | Parse PUSH_DATA (RX), send PULL_RESP (TX), handle TX_ACK |
 | Channel dispatch | Map received packets to channels via frequency matching |
+| Channel sourcing (`get_radios()`) | Read channel definitions primarily from `wm1303_ui.json` (SSOT); fall back to `config.yaml` only when no active SSOT channels exist |
 | Configuration sync | Generate `global_conf.json` and `bridge_conf.json` from SSOT |
 | NoiseFloorMonitor | Periodic noise floor measurement via SX1261 spectral scan |
 | RX Watchdog | 3-mode detection of RX failures with auto-recovery |

@@ -127,6 +127,7 @@ Updates the system and installs required packages.
 - Install Python: `python3`, `python3-dev`, `python3-pip`, `python3-venv`, `python3-setuptools`
 - Install libraries: `libffi-dev`, `libssl-dev`
 - Install utilities: `jq`, `ntpdate`, `ntp`
+- Install RRDtool: `rrdtool`, `librrd-dev`, `python3-rrdtool`
 
 **Packages installed:**
 
@@ -137,6 +138,7 @@ Updates the system and installs required packages.
 | `libffi-dev`, `libssl-dev` | Cryptographic libraries for JWT and identity |
 | `jq` | JSON processing for GPIO script generation |
 | `ntp`, `ntpdate` | Time synchronization |
+| `rrdtool`, `librrd-dev`, `python3-rrdtool` | Round-robin database for time-series data storage |
 
 ### Phase 2: SPI & I2C Configuration Check
 
@@ -234,6 +236,10 @@ Copies configuration templates to their target locations. **Existing files are p
 | `config/global_conf.json` | `/home/pi/wm1303_pf/global_conf.json` | Only if not present |
 
 See [Configuration Reference](configuration.md) for detailed documentation of all config files.
+
+**Automatic identity key generation:**
+
+After deploying `config.yaml`, the installer checks whether a `repeater.identity_key` is present. If not, it generates a unique 32-byte random key using Python's `secrets.token_bytes(32)` and writes it into `config.yaml`. This key provides the repeater with a stable mesh identity. It is preserved during upgrades and should not be manually edited.
 
 ### Phase 9: Generate GPIO Reset Scripts
 
