@@ -341,6 +341,17 @@ if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ]; then
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/lora_pkt_fwd"
     chmod 755 "${PKTFWD_DIR}/lora_pkt_fwd"
     ok "Packet forwarder installed"
+
+    step "Building spectral_scan utility"
+    sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) 2>&1 | tail -5
+    ok "spectral_scan built"
+
+    step "Installing spectral_scan binary"
+    cp -v "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" 2>&1
+    chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/spectral_scan"
+    chmod 755 "${PKTFWD_DIR}/spectral_scan"
+    ok "spectral_scan installed"
+
 else
     step "Skipping HAL rebuild (no changes detected)"
     info "Use --rebuild to force a rebuild"

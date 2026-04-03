@@ -440,6 +440,17 @@ if [ "$SKIP_BUILD" = false ]; then
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/lora_pkt_fwd"
     chmod 755 "${PKTFWD_DIR}/lora_pkt_fwd"
     ok "Packet forwarder installed to ${PKTFWD_DIR}"
+
+    step "Building spectral_scan utility"
+    sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) 2>&1 | tail -5
+    ok "spectral_scan built successfully"
+
+    step "Installing spectral_scan binary"
+    cp -v "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" 2>&1
+    chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/spectral_scan"
+    chmod 755 "${PKTFWD_DIR}/spectral_scan"
+    ok "spectral_scan installed to ${PKTFWD_DIR}"
+
 else
     step "Skipping HAL build (--skip-build)"
     warn "HAL build skipped by user request"

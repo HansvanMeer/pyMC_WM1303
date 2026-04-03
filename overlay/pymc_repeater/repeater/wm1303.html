@@ -379,30 +379,30 @@ select.ci option{background:#1e293b}
 
 <!-- ═══════════════════ ADV. CONFIG TAB ═══════════════════ -->
 <div id="tab-adv-config" class="tp" style="padding:16px">
-  <h2 style="margin:0 0 16px 0;font-size:1.3em;color:var(--tx)">&#9881; Geavanceerde Configuratie</h2>
-  <p style="color:var(--txm);margin-bottom:20px;font-size:0.9em">Pas geavanceerde systeem parameters aan. Wijzigingen vereisen een service herstart.</p>
+  <h2 style="margin:0 0 16px 0;font-size:1.3em;color:var(--tx)">&#9881; Advanced Configuration</h2>
+  <p style="color:var(--txm);margin-bottom:20px;font-size:0.9em">Adjust advanced system parameters. Changes require a service restart.</p>
 
-  <!-- Group 1: Deduplicatie & Cache -->
+  <!-- Group 1: Deduplication & Cache -->
   <div style="background:var(--bg2);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px">
-    <h3 style="margin:0 0 16px 0;color:var(--tx);font-size:1.1em">&#128260; Deduplicatie &amp; Cache</h3>
+    <h3 style="margin:0 0 16px 0;color:var(--tx);font-size:1.1em">&#128260; Deduplication &amp; Cache</h3>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Dedup TTL (sec)</label>
         <input id="ac-dedup-ttl" type="number" min="10" max="3600" value="300" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">Hoe lang pakket-hashes worden onthouden om duplicaten te filteren</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">How long packet hashes are retained to filter duplicates</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Cache TTL (sec)</label>
         <input id="ac-cache-ttl" type="number" min="10" max="3600" value="60" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">TTL van de seen_packets cache (minimum 300s wordt afgedwongen in code)</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">TTL of the seen_packets cache (minimum 300s is enforced in code)</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Max Cache Size</label>
         <input id="ac-max-cache" type="number" min="100" max="10000" value="1000" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">Maximum aantal unieke pakketten in de dedup cache</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Maximum number of unique packets in the dedup cache</small>
       </div>
 
     </div>
@@ -419,19 +419,19 @@ select.ci option{background:#1e293b}
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Queue Size</label>
         <input id="ac-queue-size" type="number" min="1" max="100" value="15" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">Maximum pakketten in queue per channel</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Maximum packets in queue per channel</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; Inter-Packet Delay (ms)</label>
         <input id="ac-tx-delay" type="number" min="1" max="1000" value="20" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te laag kan het concentrator SPI bus overbelasten</small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Too low may overload the concentrator SPI bus</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Packet TTL (sec)</label>
         <input id="ac-pkt-ttl" type="number" min="1" max="60" value="5" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">Pakket wordt gedropt als het langer dan dit in de queue zit</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Packet is dropped if it stays in the queue longer than this</small>
       </div>
 
       <div class="ac-field">
@@ -440,7 +440,7 @@ select.ci option{background:#1e293b}
           <option value="drop_oldest">drop_oldest</option>
           <option value="drop_newest">drop_newest</option>
         </select>
-        <small style="color:var(--txm);display:block;margin-top:4px">Bij volle queue: welk pakket wordt gedropt</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">When queue is full: which packet gets dropped</small>
       </div>
 
     </div>
@@ -457,19 +457,19 @@ select.ci option{background:#1e293b}
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; NF Interval (sec)</label>
         <input id="ac-nf-interval" type="number" min="5" max="300" value="30" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te kort = meer TX onderbrekingen door spectral scans</small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Too short = more TX interruptions from spectral scans</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; NF TX Hold (sec)</label>
         <input id="ac-nf-hold" type="number" min="1" max="30" value="4" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te lang = veel TX uitval tijdens spectral scan</small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Too long = more TX failures during spectral scan</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">NF Buffer Size</label>
         <input id="ac-nf-buffer" type="number" min="5" max="100" value="20" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:var(--txm);display:block;margin-top:4px">Aantal RSSI metingen in het voortschrijdend gemiddelde</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Number of RSSI measurements in the rolling average</small>
       </div>
 
     </div>
@@ -478,11 +478,11 @@ select.ci option{background:#1e293b}
     </div>
   </div>
 
-  <!-- Group 4: HAL Geavanceerd -->
+  <!-- Group 4: HAL Advanced -->
   <div style="background:var(--bg2);border:1px solid rgba(239,68,68,.4);border-radius:12px;padding:20px;margin-bottom:16px">
-    <h3 style="margin:0 0 12px 0;color:var(--tx);font-size:1.1em">&#128295; HAL Geavanceerd</h3>
+    <h3 style="margin:0 0 12px 0;color:var(--tx);font-size:1.1em">&#128295; HAL Advanced</h3>
     <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.4);border-radius:8px;padding:12px;margin-bottom:16px;color:#fca5a5;font-size:0.85em">
-      &#9888;&#65039; <strong>WAARSCHUWING</strong>: Wijzigingen aan HAL parameters kunnen hardware beschadigen. Gebruik op eigen risico. De ontwikkelaar is niet aansprakelijk voor eventuele schade.
+      &#9888;&#65039; <strong>WARNING</strong>: Changes to HAL parameters can damage hardware. Use at your own risk. The developer is not liable for any damage.
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
 
@@ -492,19 +492,19 @@ select.ci option{background:#1e293b}
           <option value="false">false</option>
           <option value="true">true</option>
         </select>
-        <small style="color:var(--txm);display:block;margin-top:4px">Host-gebaseerde Front-End control forceren</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Force host-based Front-End control</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#128308; LNA LUT</label>
         <input id="ac-lna-lut" type="text" value="0x03" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(239,68,68,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: LNA gain LUT register. Verkeerde waarde kan de LNA beschadigen!</small>
+        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: LNA gain LUT register. Wrong value can damage the LNA!</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#128308; PA LUT</label>
         <input id="ac-pa-lut" type="text" value="0x04" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(239,68,68,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: PA gain LUT register. Verkeerde waarde kan de PA beschadigen!</small>
+        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: PA gain LUT register. Wrong value can damage the PA!</small>
       </div>
 
       <div class="ac-field">
@@ -516,11 +516,11 @@ select.ci option{background:#1e293b}
           <option value="2">2</option>
           <option value="3">3</option>
         </select>
-        <small style="color:var(--txm);display:block;margin-top:4px">AGC analoge gain modus</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">AGC analog gain mode</small>
       </div>
 
       <div class="ac-field">
-        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">AGC Decimatie Gain</label>
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">AGC Decimation Gain</label>
         <select id="ac-agc-dec" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
           <option value="auto">auto</option>
           <option value="0">0</option>
@@ -528,7 +528,7 @@ select.ci option{background:#1e293b}
           <option value="2">2</option>
           <option value="3">3</option>
         </select>
-        <small style="color:var(--txm);display:block;margin-top:4px">AGC decimatie gain modus</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">AGC decimation gain mode</small>
       </div>
 
       <div class="ac-field">
@@ -537,7 +537,7 @@ select.ci option{background:#1e293b}
           <option value="false">false</option>
           <option value="true">true</option>
         </select>
-        <small style="color:var(--txm);display:block;margin-top:4px">Vaste gain voor channelizer i.p.v. automatisch</small>
+        <small style="color:var(--txm);display:block;margin-top:4px">Fixed gain for channelizer instead of automatic</small>
       </div>
 
     </div>
@@ -546,42 +546,42 @@ select.ci option{background:#1e293b}
     </div>
   </div>
 
-  <!-- Group 5: GPIO Pin Configuratie -->
+  <!-- Group 5: GPIO Pin Configuration -->
   <div style="background:var(--bg2);border:1px solid rgba(251,191,36,.4);border-radius:12px;padding:20px;margin-bottom:16px">
-    <h3 style="margin:0 0 12px 0;color:var(--tx);font-size:1.1em">&#128268; GPIO Pin Configuratie</h3>
+    <h3 style="margin:0 0 12px 0;color:var(--tx);font-size:1.1em">&#128268; GPIO Pin Configuration</h3>
     <div style="background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.4);border-radius:8px;padding:12px;margin-bottom:16px;color:#fbbf24;font-size:0.85em">
-      &#9888;&#65039; <strong>WAARSCHUWING</strong>: Verkeerde pin-toewijzingen kunnen hardware beschadigen. Controleer de BCM pin-nummers van je board voordat je wijzigingen aanbrengt.
+      &#9888;&#65039; <strong>WARNING</strong>: Wrong pin assignments can damage hardware. Verify the BCM pin numbers of your board before making changes.
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">GPIO Base Offset</label>
         <input id="ac-gpio-base" type="number" min="0" max="1024" value="512" oninput="updateGpioSysfs()" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Base offset voor sysfs GPIO nummering. RPi4/5 gebruiken meestal 512</small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Base offset for sysfs GPIO numbering. RPi4/5 typically use 512</small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; SX1302 Reset Pin (BCM)</label>
         <input id="ac-gpio-sx1302-rst" type="number" min="0" max="27" value="17" oninput="updateGpioSysfs()" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin voor SX1302 reset &mdash; <span id="sysfs-sx1302-rst" style="font-weight:600">Sysfs: 529</span></small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin for SX1302 reset &mdash; <span id="sysfs-sx1302-rst" style="font-weight:600">Sysfs: 529</span></small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; SX1302 Power Enable Pin (BCM)</label>
         <input id="ac-gpio-sx1302-pwr" type="number" min="0" max="27" value="18" oninput="updateGpioSysfs()" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin voor SX1302 power enable &mdash; <span id="sysfs-sx1302-pwr" style="font-weight:600">Sysfs: 530</span></small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin for SX1302 power enable &mdash; <span id="sysfs-sx1302-pwr" style="font-weight:600">Sysfs: 530</span></small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; SX1261 Reset Pin (BCM)</label>
         <input id="ac-gpio-sx1261-rst" type="number" min="0" max="27" value="5" oninput="updateGpioSysfs()" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin voor SX1261 reset &mdash; <span id="sysfs-sx1261-rst" style="font-weight:600">Sysfs: 517</span></small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin for SX1261 reset &mdash; <span id="sysfs-sx1261-rst" style="font-weight:600">Sysfs: 517</span></small>
       </div>
 
       <div class="ac-field">
         <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; AD5338R Reset Pin (BCM)</label>
         <input id="ac-gpio-ad5338r-rst" type="number" min="0" max="27" value="13" oninput="updateGpioSysfs()" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
-        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin voor AD5338R reset &mdash; <span id="sysfs-ad5338r-rst" style="font-weight:600">Sysfs: 525</span></small>
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; BCM pin for AD5338R reset &mdash; <span id="sysfs-ad5338r-rst" style="font-weight:600">Sysfs: 525</span></small>
       </div>
 
     </div>
@@ -3163,11 +3163,11 @@ function renderTxActChart(channels) {
           }
         }
         updateGpioSysfs();
-        showAcStatus('Configuratie geladen', '#22c55e');
+        showAcStatus('Configuration loaded', '#22c55e');
       })
       .catch(function(err) {
         console.error('[AdvConfig] load error:', err);
-        showAcStatus('Fout bij laden: ' + err.message, '#ef4444');
+        showAcStatus('Error loading: ' + err.message, '#ef4444');
       });
   };
 
@@ -3176,23 +3176,23 @@ function renderTxActChart(channels) {
     if (!fields) { alert('Unknown group: ' + group); return; }
 
     var groupLabel = {
-      dedup_cache: 'Deduplicatie & Cache',
+      dedup_cache: 'Deduplication & Cache',
       tx_queue: 'TX Queue Management',
       noise_floor: 'Noise Floor Monitor',
-      hal_advanced: 'HAL Geavanceerd (GEVAARLIJK!)',
-      gpio_pins: 'GPIO Pin Configuratie'
+      hal_advanced: 'HAL Advanced (DANGEROUS!)',
+      gpio_pins: 'GPIO Pin Configuration'
     }[group] || group;
 
-    var confirmMsg = 'Weet je zeker dat je de "' + groupLabel + '" instellingen wilt opslaan?
+    var confirmMsg = 'Are you sure you want to save the "' + groupLabel + '" settings?
 
-De service wordt herstart.';
+The service will be restarted.';
     if (group === 'hal_advanced') {
-      confirmMsg = '⚠️ WAARSCHUWING: HAL wijzigingen kunnen hardware beschadigen!
+      confirmMsg = '⚠️ WARNING: HAL changes can damage hardware!
 
 ' + confirmMsg;
     }
     if (group === 'gpio_pins') {
-      confirmMsg = '⚠️ WAARSCHUWING: Verkeerde GPIO pins kunnen hardware beschadigen!\n\n' + confirmMsg;
+      confirmMsg = '⚠️ WARNING: Wrong GPIO pins can damage hardware!\n\n' + confirmMsg;
     }
     if (!confirm(confirmMsg)) return;
 
@@ -3203,7 +3203,7 @@ De service wordt herstart.';
       payload.params[key] = getVal(id);
     }
 
-    showAcStatus('Opslaan...', '#fbbf24');
+    showAcStatus('Saving...', '#fbbf24');
 
     fetch('/api/wm1303/adv_config', {
       method: 'POST',
@@ -3213,14 +3213,14 @@ De service wordt herstart.';
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.status === 'ok') {
-        showAcStatus('✅ ' + groupLabel + ' opgeslagen. Service wordt herstart...', '#22c55e');
+        showAcStatus('✅ ' + groupLabel + ' saved. Service is restarting...', '#22c55e');
         setTimeout(function() { loadAdvConfig(); }, 4000);
       } else {
-        showAcStatus('❌ Fout: ' + (data.error || 'onbekend'), '#ef4444');
+        showAcStatus('❌ Error: ' + (data.error || 'unknown'), '#ef4444');
       }
     })
     .catch(function(err) {
-      showAcStatus('❌ Fout: ' + err.message, '#ef4444');
+      showAcStatus('❌ Error: ' + err.message, '#ef4444');
     });
   };
 
