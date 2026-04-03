@@ -443,6 +443,22 @@ else
     ok "Configuration preserved"
 fi
 
+step "Ensuring mesh identity key exists"
+if ! grep -q 'identity_key' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+    ${VENV_DIR}/bin/python3 -c "
+import yaml, secrets
+with open('${CONFIG_DIR}/config.yaml') as f:
+    cfg = yaml.safe_load(f) or {}
+cfg.setdefault('repeater', {})['identity_key'] = secrets.token_bytes(32)
+with open('${CONFIG_DIR}/config.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+print('Identity key generated')
+"
+    ok "Unique mesh identity key generated"
+else
+    ok "Existing identity key preserved"
+fi
+
 step "Updating systemd service file"
 cp -v "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service 2>&1
 systemctl daemon-reload

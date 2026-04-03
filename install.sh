@@ -570,6 +570,23 @@ else
     ok "Existing config.yaml preserved"
 fi
 
+step "Generating mesh identity key"
+if ! grep -q 'identity_key' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+    ${VENV_DIR}/bin/python3 -c "
+import yaml, secrets, base64
+with open('${CONFIG_DIR}/config.yaml') as f:
+    cfg = yaml.safe_load(f) or {}
+cfg.setdefault('repeater', {})['identity_key'] = secrets.token_bytes(32)
+with open('${CONFIG_DIR}/config.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+print('Identity key generated')
+"
+    ok "Unique mesh identity key generated"
+else
+    info "identity_key already exists in config.yaml"
+    ok "Existing identity key preserved"
+fi
+
 step "Installing global_conf.json (HAL configuration)"
 if [ ! -f "${PKTFWD_DIR}/global_conf.json" ]; then
     cp -v "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" 2>&1
