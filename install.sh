@@ -524,7 +524,6 @@ if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
 else
     ok "pyMC_Repeater editable install working (imports from source)"
 fi
-fi
 
 # Clean Python bytecode caches to ensure updated overlay files are loaded
 step "Cleaning Python bytecode caches"

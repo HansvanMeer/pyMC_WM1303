@@ -409,7 +409,6 @@ if [ "$CORE_UPDATED" = true ] || [ "$REPEATER_UPDATED" = true ] || [ "$FORCE_REB
         ok "pyMC_Repeater editable install working (imports from source)"
     fi
 fi
-fi
 
 # Clean Python bytecode caches to ensure updated overlay files are loaded
 step "Cleaning Python bytecode caches"
