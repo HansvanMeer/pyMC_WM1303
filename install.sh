@@ -571,7 +571,7 @@ else
 fi
 
 step "Generating mesh identity key"
-if ! grep -q 'identity_key' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
+if ! grep -q '^[^#]*identity_key:' "${CONFIG_DIR}/config.yaml" 2>/dev/null; then
     ${VENV_DIR}/bin/python3 -c "
 import yaml, secrets, base64
 with open('${CONFIG_DIR}/config.yaml') as f:
