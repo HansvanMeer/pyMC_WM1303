@@ -228,7 +228,12 @@ else
             info "Enabling SPI in ${BOOT_CONFIG}..."
             # Remove any commented-out SPI line
             sed -i '/^#.*dtparam=spi/d' "$BOOT_CONFIG"
-            echo "dtparam=spi=on" >> "$BOOT_CONFIG"
+            # Insert in default section (before first [section] header) for Debian 13+ compatibility
+            if grep -q '^\[' "$BOOT_CONFIG"; then
+                sed -i '0,/^\[/{s/^\[/dtparam=spi=on\n\n[/}' "$BOOT_CONFIG"
+            else
+                echo "dtparam=spi=on" >> "$BOOT_CONFIG"
+            fi
             ok "SPI enabled in config.txt"
             warn "A REBOOT is required after installation for SPI to become active!"
             REBOOT_REQUIRED=true
@@ -270,8 +275,13 @@ else
         else
             info "Enabling I2C in ${BOOT_CONFIG}..."
             sed -i '/^#.*dtparam=i2c_arm/d' "$BOOT_CONFIG"
-            echo "# enable I2C for WM1303 temperature sensor and AD5338R DAC" >> "$BOOT_CONFIG"
-            echo "dtparam=i2c_arm=on" >> "$BOOT_CONFIG"
+            # Insert in default section (before first [section] header) for Debian 13+ compatibility
+            if grep -q '^\[' "$BOOT_CONFIG"; then
+                sed -i '0,/^\[/{s/^\[/# enable I2C for WM1303 temperature sensor and AD5338R DAC\ndtparam=i2c_arm=on\n\n[/}' "$BOOT_CONFIG"
+            else
+                echo "# enable I2C for WM1303 temperature sensor and AD5338R DAC" >> "$BOOT_CONFIG"
+                echo "dtparam=i2c_arm=on" >> "$BOOT_CONFIG"
+            fi
             ok "I2C enabled in config.txt"
             warn "A REBOOT is required after installation for I2C to become active!"
             REBOOT_REQUIRED=true
