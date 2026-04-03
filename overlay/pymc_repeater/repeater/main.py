@@ -910,6 +910,7 @@ class RepeaterDaemon:
         dropped as duplicates.
         """
         from pymc_core.protocol.packet import Packet
+        from pymc_core.node.handlers.advert import AdvertHandler
 
         # Parse raw bytes into Packet object
         pkt = Packet()
@@ -921,6 +922,21 @@ class RepeaterDaemon:
             "BridgeRepeaterHandler: parsed %d bytes, header=0x%02x",
             len(data), pkt.header
         )
+
+        # Process ADVERT packets for neighbor tracking
+        # The PacketRouter handles this for radio-received packets, but
+        # bridge-forwarded packets bypass the PacketRouter entirely.
+        # We must call process_advert_packet here so that adverts received
+        # via the WM1303 concentrator are parsed and neighbors are tracked.
+        payload_type = pkt.get_payload_type() if hasattr(pkt, 'get_payload_type') else None
+        if payload_type == AdvertHandler.payload_type() and self.advert_helper:
+            try:
+                rssi = getattr(pkt, 'rssi', 0) or 0
+                snr = getattr(pkt, 'snr', 0.0) or 0.0
+                await self.advert_helper.process_advert_packet(pkt, rssi, snr)
+                logger.info("BridgeRepeaterHandler: processed ADVERT for neighbor tracking")
+            except Exception as e:
+                logger.warning("BridgeRepeaterHandler: advert processing error: %s", e)
 
         # Run repeater forwarding logic (modifies path, calculates delay)
         # process_packet -> flood_forward/direct_forward will:
