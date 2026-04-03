@@ -315,20 +315,24 @@ chown -R ${PI_USER}:${PI_USER} "${REPO_DIR}"
 # =============================================================================
 phase "Rebuild HAL & Packet Forwarder"
 
-if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ]; then
     step "Cleaning previous build artifacts"
     cd "${HAL_DIR}"
     sudo -u ${PI_USER} make clean 2>&1 || true
     ok "Build artifacts cleaned"
 
+    step "Building libtools (tinymt32, parson, base64)"
+    cd "${HAL_DIR}"
+    sudo -u ${PI_USER} make -C libtools -j$(nproc) 2>&1 | tail -5
+    ok "libtools built"
+
     step "Building libloragw"
-    cd "${HAL_DIR}/libloragw"
-    sudo -u ${PI_USER} make -j$(nproc) 2>&1 | tail -5
+    cd "${HAL_DIR}"
+    sudo -u ${PI_USER} make -C libloragw -j$(nproc) 2>&1 | tail -5
     ok "libloragw built"
 
     step "Building lora_pkt_fwd"
-    cd "${HAL_DIR}/packet_forwarder"
-    sudo -u ${PI_USER} make -j$(nproc) 2>&1 | tail -5
+    cd "${HAL_DIR}"
+    sudo -u ${PI_USER} make -C packet_forwarder -j$(nproc) 2>&1 | tail -5
     ok "lora_pkt_fwd built"
 
     step "Installing packet forwarder binary"
