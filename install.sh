@@ -157,10 +157,17 @@ apt-get install -y \
     libffi-dev \
     libssl-dev \
     jq \
-    ntpdate \
-    ntp \
     2>&1 | tail -3
 ok "Build tools and dependencies installed"
+
+# NTP packages (optional - Debian 13+ uses systemd-timesyncd)
+step "Installing NTP client (if available)"
+if apt-get install -y ntpdate ntp 2>/dev/null; then
+    ok "NTP packages installed"
+else
+    info "NTP packages not available (Debian 13+ uses systemd-timesyncd)"
+    ok "Will use systemd-timesyncd instead"
+fi
 
 step "Verifying Python 3 version"
 PYTHON_VERSION=$(python3 --version 2>&1)
