@@ -434,20 +434,6 @@ cd "${REPO_DIR}/pyMC_core"
 sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
 ok "pyMC_core installed"
 
-# Verify editable install worked - if not, re-apply overlay to site-packages
-step "Verifying pyMC_core overlay is accessible"
-PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
-if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
-    warn "pyMC_core editable install fell back to regular install"
-    info "Re-applying pyMC_core overlay to site-packages..."
-    SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
-    cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" 2>&1
-    chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
-    ok "pyMC_core overlay re-applied to site-packages"
-else
-    ok "pyMC_core editable install working (imports from source)"
-fi
-
 step "Installing pyMC_Repeater (editable/dev mode)"
 cd "${REPO_DIR}/pyMC_Repeater"
 sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
@@ -464,6 +450,35 @@ sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install \
     aiohttp \
     2>&1 | tail -3
 ok "Additional dependencies installed"
+
+# Verify overlay is accessible after all pip installs
+# (pyMC_Repeater may reinstall pymc_core as regular package, overwriting editable install)
+step "Verifying pyMC_core overlay is accessible"
+PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
+if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
+    warn "pyMC_core installed as regular package (editable mode not active)"
+    info "Re-applying pyMC_core overlay to site-packages..."
+    SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
+    cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" 2>&1
+    chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
+    ok "pyMC_core overlay re-applied to site-packages"
+else
+    ok "pyMC_core editable install working (imports from source)"
+fi
+
+# Also verify pyMC_Repeater overlay
+step "Verifying pyMC_Repeater overlay is accessible"
+REPEATER_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import repeater.config; print(repeater.config.__file__)" 2>/dev/null || echo "")
+if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
+    warn "pyMC_Repeater installed as regular package (editable mode not active)"
+    info "Re-applying pyMC_Repeater overlay to site-packages..."
+    SITE_REPEATER_DIR=$(dirname "$REPEATER_IMPORT_PATH")
+    cp -rv "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" 2>&1 | tail -5
+    chown -R ${PI_USER}:${PI_USER} "${SITE_REPEATER_DIR}"
+    ok "pyMC_Repeater overlay re-applied to site-packages"
+else
+    ok "pyMC_Repeater editable install working (imports from source)"
+fi
 
 # =============================================================================
 # Phase 8: Install Configuration Files
