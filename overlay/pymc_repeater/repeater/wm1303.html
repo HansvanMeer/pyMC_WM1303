@@ -110,6 +110,7 @@ select.ci option{background:#1e293b}
       <button class="tab-btn" onclick="showTab('channels',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Channels</button>
       <button class="tab-btn" onclick="showTab('bridge',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M7 3v18M17 3v18"/></svg>Bridge Rules</button>
       <button class="tab-btn" onclick="showTab('logs',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>Logs</button>
+      <button class="tab-btn" onclick="showTab('adv-config',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Adv. Config</button>
     </div>
   </div>
 </div>
@@ -169,7 +170,7 @@ select.ci option{background:#1e293b}
   <!-- RF Chain Configuration -->
   <div class="gl p-5 mb-4" id="rf-config-section">
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <div><div class="stl mb-0">RF Chain Configuration</div><p class="text-xs mt-1" style="color:var(--txm)">Configure SX1250 radio front-ends &mdash; RF0 handles RX + TX (half-duplex via SKY66420 FEM), RF1 disabled</p></div>
+      <div><div class="stl mb-0">RF Chain Configuration</div><p class="text-xs mt-1" style="color:var(--txm)">Configure SX1250 radio front-ends &mdash; RF0 (RX) + RF1 (TX), each has ~925 kHz analog bandwidth (±500 kHz from center)</p></div>
       <div class="flex gap-2 flex-wrap">
         <button class="btn sec sm" onclick="refreshChannelsTab()"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9H3"/><path d="M3 3v6h6"/></svg>Reload</button>
         <button class="btn pri sm" onclick="saveRfChains(false)"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Save</button>
@@ -177,7 +178,7 @@ select.ci option{background:#1e293b}
       </div>
     </div>
 
-    <!-- RF Center Frequency (RF0 RX+TX half-duplex) -->
+    <!-- RF Center Frequency (shared RF1-Only (Half-Duplex)) -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
       <div class="sc p-4" style="border-left:3px solid var(--acc)">
         <div class="flex items-center justify-between mb-3">
@@ -187,7 +188,7 @@ select.ci option{background:#1e293b}
           </div>
         </div>
         <div class="mb-2">
-          <label class="text-xs" style="color:var(--txm)">Center frequency for RF0 (RX + TX, half-duplex)</label>
+          <label class="text-xs" style="color:var(--txm)">Center frequency for both RF0 (RX) and RF1 (TX)</label>
           <input type="text" pattern="[0-9]*[.]?[0-9]*" class="ci" lang="en" id="rf-shared-freq" placeholder="869.525" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="updateRfPreview()">
         </div>
         <div class="text-xs mt-2 p-2 rounded" style="background:var(--bgr);color:var(--txm)" id="rf-shared-range">Range: -- to -- MHz</div>
@@ -258,7 +259,7 @@ select.ci option{background:#1e293b}
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <div><div class="stl mb-0">Channel Status</div><p class="text-xs mt-1" style="color:var(--txm)">Per-channel TX queues &amp; live metrics &mdash; adaptive auto-refresh (3s&ndash;10s)</p></div>
       <div class="flex gap-2 items-center">
-        <span id="tx-arch-badge" class="text-xs px-2 py-1 rounded" style="background:rgba(99,102,241,0.15);color:var(--acc)">RF0 RX+TX</span>
+        <span id="tx-arch-badge" class="text-xs px-2 py-1 rounded" style="background:rgba(99,102,241,0.15);color:var(--acc)">Split RX(RF0) / TX(RF1)</span>
         <span id="live-uptime" class="text-xs px-2 py-1 rounded" style="background:rgba(99,102,241,0.15);color:var(--acc)">Uptime: --</span>
         <button class="btn sec sm" onclick="loadTxQueues()">&#8635; Refresh</button>
       </div>
@@ -375,6 +376,179 @@ select.ci option{background:#1e293b}
   </div>
 </div>
 </div>
+
+<!-- ═══════════════════ ADV. CONFIG TAB ═══════════════════ -->
+<div id="tab-adv-config" class="tp" style="padding:16px">
+  <h2 style="margin:0 0 16px 0;font-size:1.3em;color:var(--tx)">&#9881; Geavanceerde Configuratie</h2>
+  <p style="color:var(--txm);margin-bottom:20px;font-size:0.9em">Pas geavanceerde systeem parameters aan. Wijzigingen vereisen een service herstart.</p>
+
+  <!-- Group 1: Deduplicatie & Cache -->
+  <div style="background:var(--bg2);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 16px 0;color:var(--tx);font-size:1.1em">&#128260; Deduplicatie &amp; Cache</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Dedup TTL (sec)</label>
+        <input id="ac-dedup-ttl" type="number" min="10" max="3600" value="300" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">Hoe lang pakket-hashes worden onthouden om duplicaten te filteren</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Cache TTL (sec)</label>
+        <input id="ac-cache-ttl" type="number" min="10" max="3600" value="60" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">TTL van de seen_packets cache (minimum 300s wordt afgedwongen in code)</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Max Cache Size</label>
+        <input id="ac-max-cache" type="number" min="100" max="10000" value="1000" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">Maximum aantal unieke pakketten in de dedup cache</small>
+      </div>
+
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button onclick="saveAdvGroup('dedup_cache')" style="padding:8px 20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500">&#128190; Save &amp; Restart</button>
+    </div>
+  </div>
+
+  <!-- Group 2: TX Queue Management -->
+  <div style="background:var(--bg2);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 16px 0;color:var(--tx);font-size:1.1em">&#128228; TX Queue Management</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Queue Size</label>
+        <input id="ac-queue-size" type="number" min="1" max="100" value="15" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">Maximum pakketten in queue per channel</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; Inter-Packet Delay (ms)</label>
+        <input id="ac-tx-delay" type="number" min="1" max="1000" value="20" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te laag kan het concentrator SPI bus overbelasten</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Packet TTL (sec)</label>
+        <input id="ac-pkt-ttl" type="number" min="1" max="60" value="5" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">Pakket wordt gedropt als het langer dan dit in de queue zit</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Overflow Policy</label>
+        <select id="ac-overflow" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+          <option value="drop_oldest">drop_oldest</option>
+          <option value="drop_newest">drop_newest</option>
+        </select>
+        <small style="color:var(--txm);display:block;margin-top:4px">Bij volle queue: welk pakket wordt gedropt</small>
+      </div>
+
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button onclick="saveAdvGroup('tx_queue')" style="padding:8px 20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500">&#128190; Save &amp; Restart</button>
+    </div>
+  </div>
+
+  <!-- Group 3: Noise Floor Monitor -->
+  <div style="background:var(--bg2);border:1px solid var(--bd);border-radius:12px;padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 16px 0;color:var(--tx);font-size:1.1em">&#128225; Noise Floor Monitor</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; NF Interval (sec)</label>
+        <input id="ac-nf-interval" type="number" min="5" max="300" value="30" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te kort = meer TX onderbrekingen door spectral scans</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#9888;&#65039; NF TX Hold (sec)</label>
+        <input id="ac-nf-hold" type="number" min="1" max="30" value="4" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(251,191,36,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:#fbbf24;display:block;margin-top:4px">&#9888;&#65039; Te lang = veel TX uitval tijdens spectral scan</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">NF Buffer Size</label>
+        <input id="ac-nf-buffer" type="number" min="5" max="100" value="20" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:var(--txm);display:block;margin-top:4px">Aantal RSSI metingen in het voortschrijdend gemiddelde</small>
+      </div>
+
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button onclick="saveAdvGroup('noise_floor')" style="padding:8px 20px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500">&#128190; Save &amp; Restart</button>
+    </div>
+  </div>
+
+  <!-- Group 4: HAL Geavanceerd -->
+  <div style="background:var(--bg2);border:1px solid rgba(239,68,68,.4);border-radius:12px;padding:20px;margin-bottom:16px">
+    <h3 style="margin:0 0 12px 0;color:var(--tx);font-size:1.1em">&#128295; HAL Geavanceerd</h3>
+    <div style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.4);border-radius:8px;padding:12px;margin-bottom:16px;color:#fca5a5;font-size:0.85em">
+      &#9888;&#65039; <strong>WAARSCHUWING</strong>: Wijzigingen aan HAL parameters kunnen hardware beschadigen. Gebruik op eigen risico. De ontwikkelaar is niet aansprakelijk voor eventuele schade.
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px">
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Force Host FE Ctrl</label>
+        <select id="ac-force-fe" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+        <small style="color:var(--txm);display:block;margin-top:4px">Host-gebaseerde Front-End control forceren</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#128308; LNA LUT</label>
+        <input id="ac-lna-lut" type="text" value="0x03" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(239,68,68,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: LNA gain LUT register. Verkeerde waarde kan de LNA beschadigen!</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">&#128308; PA LUT</label>
+        <input id="ac-pa-lut" type="text" value="0x04" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid rgba(239,68,68,.5);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+        <small style="color:#ef4444;display:block;margin-top:4px">&#128308; DANGER: PA gain LUT register. Verkeerde waarde kan de PA beschadigen!</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">AGC Analog Gain</label>
+        <select id="ac-agc-ana" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+          <option value="auto">auto</option>
+          <option value="0">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+        <small style="color:var(--txm);display:block;margin-top:4px">AGC analoge gain modus</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">AGC Decimatie Gain</label>
+        <select id="ac-agc-dec" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+          <option value="auto">auto</option>
+          <option value="0">0</option>
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+        <small style="color:var(--txm);display:block;margin-top:4px">AGC decimatie gain modus</small>
+      </div>
+
+      <div class="ac-field">
+        <label style="color:var(--tx);font-weight:500;display:block;margin-bottom:4px">Channelizer Fixed Gain</label>
+        <select id="ac-chan-fixed" style="width:100%;padding:8px 12px;background:var(--bg);border:1px solid var(--bd);border-radius:8px;color:var(--tx);font-size:14px;box-sizing:border-box">
+          <option value="false">false</option>
+          <option value="true">true</option>
+        </select>
+        <small style="color:var(--txm);display:block;margin-top:4px">Vaste gain voor channelizer i.p.v. automatisch</small>
+      </div>
+
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button onclick="saveAdvGroup('hal_advanced')" style="padding:8px 20px;background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:500">&#128308; Save HAL &amp; Restart</button>
+    </div>
+  </div>
+
+  <div id="ac-status" style="display:none;padding:12px;border-radius:8px;margin-top:8px;font-size:0.9em"></div>
+</div>
+
 <script>
   // FIX: module-scope state vars
   let actH = [], pRx = 0, pTx = 0;
@@ -398,7 +572,7 @@ function toast(msg,type,dur){
   G('toasts').appendChild(e);
   setTimeout(()=>{e.style.animation='sOut .3s ease forwards';setTimeout(()=>e.remove(),300);},dur);
 }
-const TABS={status:function(){try{loadStatus();}catch(e){console.error('loadStatus err:',e);}},dedup:function(){try{dedupLoad();}catch(e){console.error('dedupLoad err:',e);}},channels:function(){try{loadCh();loadTxQueues();}catch(e){console.error('loadCh err:',e);G('tab-channels').innerHTML='<h3 style="color:red">Error: '+e.message+'</h3>';}},ifchains:function(){try{renderIfChains(true);}catch(e){console.error('renderIfChains err:',e);}},bridge:function(){try{loadBr();}catch(e){console.error('loadBr err:',e);}},logs:function(){try{startLogs();}catch(e){console.error('startLogs err:',e);}},spectrum:function(){try{specLoad();}catch(e){console.error('specLoad err:',e);}}};
+const TABS={status:function(){try{loadStatus();}catch(e){console.error('loadStatus err:',e);}},dedup:function(){try{dedupLoad();}catch(e){console.error('dedupLoad err:',e);}},channels:function(){try{loadCh();loadTxQueues();}catch(e){console.error('loadCh err:',e);G('tab-channels').innerHTML='<h3 style="color:red">Error: '+e.message+'</h3>';}},ifchains:function(){try{renderIfChains(true);}catch(e){console.error('renderIfChains err:',e);}},bridge:function(){try{loadBr();}catch(e){console.error('loadBr err:',e);}},logs:function(){try{startLogs();}catch(e){console.error('startLogs err:',e);}},spectrum:function(){try{specLoad();}catch(e){console.error('specLoad err:',e);}},'adv-config':function(){try{loadAdvConfig();}catch(e){console.error('loadAdvConfig err:',e);}}};
 function showTab(name,btn){
   console.log('showTab called:',name);
   document.querySelectorAll('.tp').forEach(p=>p.classList.remove('active'));
@@ -516,13 +690,12 @@ function renderRfInfoBlock(d) {
   var r1i = roleInfo(rf1Role);
   var rf0Extra = [];
   if (rf0Clock) rf0Extra.push('Clock Source');
-  if (rf0Role === 'rx_only' || rf0Role === 'rx_tx') rf0Extra.push('SKY66420 LNA');
-  if (rf0Tx) rf0Extra.push('SKY66420 PA');
+  if (rf0Role === 'rx_only' || rf0Role === 'rx_tx') rf0Extra.push('RX via SKY66420 LNA');
+  if (rf0Tx) rf0Extra.push('TX Enabled');
   var rf0ChainDesc = 'No IF chains';
   if (rf0Chains !== 'none') {
     rf0ChainDesc = 'IF Chains ' + rf0Chains + ' (multi-SF RX)';
-    if (rf0Role === 'rx_tx') rf0ChainDesc += ' \u00b7 Half-duplex (LNA_LUT=0x03 RX/TX switch)';
-    else if (rf0Role === 'rx_only') rf0ChainDesc += ' \u00b7 LNA always-on (0x0F)';
+    if (rf0Role === 'rx_only') rf0ChainDesc += ' \u00b7 LNA always-on (0x0F)';
   }
   var rf1Extra = [];
   if (rf1Tx) rf1Extra.push('TX via PULL_RESP');
@@ -533,7 +706,6 @@ function renderRfInfoBlock(d) {
     if (rf1Role === 'rx_tx') rf1ChainDesc += ' (RX+TX)';
   }
   if (rf1Gain) rf1ChainDesc += ' \u00b7 TX Gain: ' + rf1Gain.min + '\u2013' + rf1Gain.max + ' dBm';
-  var rf0Gain = rf0.tx_gain_range;
   var archLabels = {
     'SPLIT_RX_TX': 'Split RX(RF0) / TX(RF1)',
     'RF1_ONLY': 'RF1-Only (Half-Duplex)',
@@ -545,7 +717,7 @@ function renderRfInfoBlock(d) {
       '<div class="flex items-center gap-2">' +
         '<span class="bdg text-xs" style="background:' + r0i.color + '22;color:' + r0i.color + ';border:1px solid ' + r0i.color + '44">RF0 (SX1250_0) \u2014 ' + r0i.label + (rf0Clock ? ' + Clock' : '') + '</span>' +
         '<span class="text-xs" style="color:' + r0i.color + '">' + rf0Extra.join(' \u00b7 ') + '</span>' +
-        '<span class="text-xs px-2 py-0.5 rounded" style="background:' + r0i.color + '22;color:' + r0i.color + '">' + (rf0Tx ? 'Half-Duplex' : 'Always ON') + '</span>' +
+        '<span class="text-xs px-2 py-0.5 rounded" style="background:' + r0i.color + '22;color:' + r0i.color + '">Always ON</span>' +
       '</div>' +
     '</div>' +
     '<div class="text-xs mb-1" style="color:' + r0i.color + '">' + rf0ChainDesc + '</div>' +
@@ -564,11 +736,10 @@ function renderRfInfoBlock(d) {
   var detailsEl = G('rf-arch-details');
   if (detailsEl) {
     detailsEl.innerHTML =
-      '<div>\u2022 <b>RF0 (SX1250_0)</b>: ' + r0i.label + (rf0Clock ? ' + Clock source (clksrc=0)' : '') + ' \u2014 IF chains ' + rf0Chains + (rf0Role === 'rx_tx' ? ', SKY66420 FEM (PA+LNA), half-duplex LNA_LUT=0x03' : (rf0Role.indexOf('rx') >= 0 ? ', SKY66420 LNA (always-on 0x0F)' : '')) + '</div>' +
-      '<div>\u2022 <b>RF1 (SX1250_1)</b>: ' + r1i.label + ' \u2014 ' + (rf1Chains !== 'none' ? 'IF chains ' + rf1Chains : 'no IF chains') + (rf1Tx ? ', via PULL_RESP' : '') + ' (no PA on RF1)' + '</div>' +
-      '<div>\u2022 Only RF0 is active \u2014 center frequency set above applies to RF0</div>' +
-      (rf0Gain ? '<div>\u2022 TX power controlled by RF0 gain LUT (<b>' + rf0Gain.min + '\u2013' + rf0Gain.max + ' dBm</b>). LNA_LUT=0x03 switches LNA off during TX.</div>' : '') +
-      (rf1Gain ? '<div>\u2022 TX power controlled by RF1 gain LUT (<b>' + rf1Gain.min + '\u2013' + rf1Gain.max + ' dBm</b>).</div>' : '') +
+      '<div>\u2022 <b>RF0 (SX1250_0)</b>: ' + r0i.label + (rf0Clock ? ' + Clock source (clksrc=0)' : '') + ' \u2014 IF chains ' + rf0Chains + (rf0Role.indexOf('rx') >= 0 ? ', SKY66420 LNA (always-on 0x0F)' : '') + '</div>' +
+      '<div>\u2022 <b>RF1 (SX1250_1)</b>: ' + r1i.label + ' \u2014 ' + (rf1Chains !== 'none' ? 'IF chains ' + rf1Chains : 'no IF chains') + (rf1Tx ? ', via PULL_RESP' : '') + '</div>' +
+      '<div>\u2022 Both radios share the same center frequency (set above)</div>' +
+      (rf1Gain ? '<div>\u2022 TX power controlled by RF1 gain LUT (<b>' + rf1Gain.min + '\u2013' + rf1Gain.max + ' dBm</b>). LNA patch keeps RX sensitive after TX.</div>' : '') +
       '<div>\u2022 <b>SX1261</b> is NOT used for TX \u2014 only LBT, CAD, and Spectrum Analysis</div>' +
       '<div>\u2022 Each SX1250 has ~<b>925 kHz analog bandwidth</b> (\u00b1500 kHz from center)</div>';
   }
@@ -586,12 +757,13 @@ async function loadRfChains(){
     if(ifc && ifc.ifchains) ifChainData = ifc.ifchains;
     else if(ifc && ifc.channels) ifChainData = ifc.channels;
     else if(Array.isArray(ifc)) ifChainData = ifc;
-    // RF0 handles both RX + TX (half-duplex via SKY66420 FEM)
+    // RF0 disabled (RF1-only mode)
     G('rf-shared-freq').value = d.rf0.freq_mhz || '';
     G('rf-shared-status').textContent = 'Enabled';
     G('rf-shared-status').style.background = '#60a5fa22';
     G('rf-shared-status').style.color = '#60a5fa';
-    // RF1 disabled (no PA, no IF chains)
+    // RF1 handles RX+TX (half-duplex)
+    // RF1 is the only active radio
     // rf1 status handled by shared badge
     var _rf1s = G('rf1-status');
     if(_rf1s){ _rf1s.style.background = '#a78bfa22'; _rf1s.style.color = '#a78bfa'; }
@@ -694,7 +866,8 @@ function loadTxQueues(){
       var txPkts=live?live.tx_packets||0:0;
       var rssiVal=live&&live.rssi_last!=null?live.rssi_last:-120;
       var snrVal=live&&live.snr_last!=null?live.snr_last:0;
-      var noiseVal=(live&&live.noise_floor!=null&&live.noise_floor!==0)?live.noise_floor:-120;
+      var nfLbtAvg=live?live.noise_floor_lbt_avg:null;
+      var noiseVal=(nfLbtAvg!=null)?nfLbtAvg:((live&&live.noise_floor!=null&&live.noise_floor!==0&&live.noise_floor!==-120)?live.noise_floor:null);
       var dutyPct=live?live.tx_duty_pct||0:0;
       // Software LBT stats from live API
       var lbtBlocked=live?live.lbt_blocked||0:0;
@@ -710,17 +883,23 @@ function loadTxQueues(){
       var avgSend=q?q.avg_send_ms||0:0;
       var avgWait=q?q.avg_wait_ms||0:0;
       var totalAir=q?q.total_airtime_ms||0:0;
-      // RSSI/SNR/Noise handling for channels with no RX packets
-      var rssiStr,snrStr,noiseStr,rssiColor,snrColor;
+      // RSSI/SNR/Noise handling
+      var rssiStr,snrStr,noiseStr,noiseColor,rssiColor,snrColor;
       if(rxPkts===0){
-        rssiStr='--'; snrStr='--'; noiseStr='--';
+        rssiStr='--'; snrStr='--';
         rssiColor='var(--txm)'; snrColor='var(--txm)';
       } else {
         rssiStr=rssiVal.toFixed(1)+' dBm';
         snrStr=snrVal.toFixed(1)+' dB';
         rssiColor=rssiVal>-90?'#22c55e':rssiVal>-110?'#f59e0b':'#ef4444';
         snrColor=snrVal>5?'#22c55e':snrVal>0?'#f59e0b':'#ef4444';
+      }
+      // Noise floor: prefer LBT RSSI measurements, show '--' when no real data
+      if(noiseVal!=null){
         noiseStr=noiseVal.toFixed(1)+' dBm';
+        noiseColor=noiseVal<-110?'#22c55e':noiseVal<-90?'#f59e0b':'#ef4444';
+      } else {
+        noiseStr='--'; noiseColor='var(--txm)';
       }
       // --- Start card ---
       html+='<div style="border:1px solid '+borderC+';border-radius:8px;padding:14px;background:'+bgC+';">';
@@ -748,7 +927,7 @@ function loadTxQueues(){
       html+='<div style="color:var(--txm)">RSSI</div><div style="color:'+rssiColor+';font-weight:500;">'+rssiStr+'</div>';
       html+='<div style="color:var(--txm)">SNR</div><div style="color:'+snrColor+';font-weight:500;">'+snrStr+'</div>';
       // Row: Noise Floor
-      html+='<div style="color:var(--txm)">Noise Floor</div><div style="color:var(--txm);font-weight:500;">'+noiseStr+'</div>';
+      html+='<div style="color:var(--txm)">Noise Floor</div><div style="color:'+noiseColor+';font-weight:500;">'+noiseStr+'</div>';
       // Row: Avg Airtime / Avg Send
       html+='<div style="color:var(--txm)" title="LoRa time-on-air">Avg Airtime</div>';
       html+='<div style="color:#a78bfa;font-weight:500;">'+_fmtMs(avgAirtime)+' ms</div>';
@@ -1483,7 +1662,7 @@ showTab = function(name, btn) {
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px">
     <div>
       <h2 style="margin:0;font-size:18px;font-weight:600;color:var(--tx)">📊 SX1261 Spectrum & Signal Quality</h2>
-      <small style="color:#666;font-weight:normal;display:block;margin-top:2px">RX channels show RSSI/SNR. TX-only channels show noise floor (dashed).</small>
+      
       <p style="margin:4px 0 0;font-size:12px;color:var(--txm)">RF Signal Monitoring — Per-Channel RSSI, SNR, Noise Floor</p>
     </div>
   </div>
@@ -1537,7 +1716,6 @@ showTab = function(name, btn) {
       <span><span style="display:inline-block;width:12px;height:12px;background:#6366f1;border-radius:2px;margin-right:4px"></span>Multi-SF IF Chain</span>
       <span><span style="display:inline-block;width:12px;height:12px;background:#f59e0b;border-radius:2px;margin-right:4px"></span>LoRa Std (IF8)</span>
       <span><span style="display:inline-block;width:12px;height:12px;background:#10b981;border-radius:2px;margin-right:4px"></span>FSK (IF9)</span>
-      <span><span style="display:inline-block;width:12px;height:12px;background:rgba(255,255,255,.1);border-radius:2px;margin-right:4px"></span>Noise floor</span>
     </div>
   </div>
 
@@ -1763,49 +1941,11 @@ function renderRssiChart(channels, noiseFloor) {
       tension: 0.3
     });
   });
-  // Add noise floor line
-  if (noiseFloor && noiseFloor.timeseries && noiseFloor.timeseries.length > 0) {
-    var nfPts = noiseFloor.timeseries.map(function(pt) {
-      return { x: new Date(pt.timestamp * 1000), y: pt.avg_nf };
-    });
-    datasets.push({
-      label: 'Noise Floor',
-      data: nfPts,
-      borderColor: '#ef4444',
-      borderWidth: 1,
-      borderDash: [6, 4],
-      pointRadius: 0,
-      backgroundColor: 'transparent',
-      tension: 0.3
-    });
-  }
   if (datasets.length === 0) {
     datasets.push({ label: 'No data', data: [{ x: new Date(), y: -120 }], borderColor: '#666', pointRadius: 3 });
   }
   var el = document.getElementById('sigRssiCount');
   if (el) el.textContent = totalPts + ' data points';
-  // Show noise floor for TX-only channels
-  channels.forEach(function(ch, ci) {
-      if (!ch.timeseries || ch.timeseries.length === 0) return;
-      var hasRssi = ch.timeseries.some(function(pt) { return pt.avg_rssi !== null && pt.avg_rssi !== undefined; });
-      if (hasRssi) return;
-      var color = getChColor(ci, ch.friendly_name);
-      var nfPts = ch.timeseries.filter(function(pt) { return pt.noise_floor_dbm !== null && pt.noise_floor_dbm !== undefined; }).map(function(pt) {
-          return { x: new Date(pt.timestamp * 1000), y: pt.noise_floor_dbm };
-      });
-      if (nfPts.length > 0) {
-          datasets.push({
-              label: (ch.friendly_name || ch.name) + ' Noise Floor',
-              data: nfPts,
-              borderColor: color,
-              borderWidth: 1.5,
-              borderDash: [4, 3],
-              pointRadius: 0,
-              backgroundColor: 'transparent',
-              tension: 0.3
-          });
-      }
-  });
   sigRssiChart = new Chart(canvas, {
     type: 'line',
     data: { datasets: datasets },
@@ -1949,32 +2089,33 @@ async function loadPerChannelNF() {
   }
 }
 
+function formatChannelName(chId) {
+  var m = chId.match(/^channel_([a-z])$/);
+  if (m) return 'Channel ' + m[1].toUpperCase();
+  return chId;
+}
+
 function renderPerChannelNfChart(channels) {
   var canvas = document.getElementById('perChNfChart');
   if (!canvas) return;
   if (perChNfChart) perChNfChart.destroy();
   var datasets = [];
   var chNames = Object.keys(channels);
+  // Active channel filtering done server-side, no client filter needed
   var el = document.getElementById('perChNfCount');
   if (el) el.textContent = chNames.length + ' channels';
 
-  // Load channel friendly names from UI config (fallback to channel id)
-  var chFriendly = {};
-  try {
-    if (typeof chData !== 'undefined' && chData) {
-      chData.forEach(function(c) { chFriendly[c.name] = c.friendly_name || c.name; });
-    }
-  } catch(e) {}
+  // Channel labels come from API as 'Channel A', 'Channel B', etc.
 
   chNames.forEach(function(chId, idx) {
     var ch = channels[chId];
     if (!ch.history || ch.history.length === 0) return;
-    var color = getChColor(idx, chFriendly[chId]);
+    var color = getChColor(idx, chId);
     var pts = ch.history.map(function(pt) {
       return { x: new Date(pt.ts * 1000), y: pt.avg_nf };
     });
     datasets.push({
-      label: (chFriendly[chId] || chId) + ' NF',
+      label: chId,
       data: pts,
       borderColor: color,
       backgroundColor: 'transparent',
@@ -1982,33 +2123,6 @@ function renderPerChannelNfChart(channels) {
       pointRadius: pts.length > 100 ? 0 : 2,
       tension: 0.3
     });
-    // Min/max as dashed lines
-    if (ch.history.length > 1) {
-      var minPts = ch.history.map(function(pt) { return { x: new Date(pt.ts * 1000), y: pt.min_nf }; });
-      var maxPts = ch.history.map(function(pt) { return { x: new Date(pt.ts * 1000), y: pt.max_nf }; });
-      datasets.push({
-        label: (chFriendly[chId] || chId) + ' Min',
-        data: minPts,
-        borderColor: color,
-        borderWidth: 1,
-        borderDash: [3, 3],
-        pointRadius: 0,
-        backgroundColor: 'transparent',
-        tension: 0.3,
-        hidden: true
-      });
-      datasets.push({
-        label: (chFriendly[chId] || chId) + ' Max',
-        data: maxPts,
-        borderColor: color,
-        borderWidth: 1,
-        borderDash: [6, 3],
-        pointRadius: 0,
-        backgroundColor: 'transparent',
-        tension: 0.3,
-        hidden: true
-      });
-    }
   });
 
   if (datasets.length === 0) {
@@ -2033,21 +2147,17 @@ function renderNfCards(channels) {
   var el = document.getElementById('perChNfCards');
   if (!el) return;
   var chNames = Object.keys(channels);
+  // Active channel filtering done server-side, no client filter needed
   if (chNames.length === 0) {
     el.innerHTML = '<div style="text-align:center;color:var(--txm);padding:8px;font-size:12px">No per-channel noise floor data</div>';
     return;
   }
-  var chFriendly = {};
-  try {
-    if (typeof chData !== 'undefined' && chData) {
-      chData.forEach(function(c) { chFriendly[c.name] = c.friendly_name || c.name; });
-    }
-  } catch(e) {}
+  // Channel labels come from API as 'Channel A', 'Channel B', etc.
 
   var html = '';
   chNames.forEach(function(chId, idx) {
     var ch = channels[chId];
-    var color = getChColor(idx, chFriendly[chId]);
+    var color = getChColor(idx, chId);
     var current = ch.current !== null && ch.current !== undefined ? ch.current + ' dBm' : '—';
     var nfColor = ch.current < -100 ? '#22c55e' : ch.current < -85 ? '#f59e0b' : '#ef4444';
     var stats = ch.stats || {};
@@ -2056,7 +2166,7 @@ function renderNfCards(channels) {
     var max = stats.max !== null && stats.max !== undefined ? stats.max + ' dBm' : '—';
 
     html += '<div style="background:' + color + '10;border:1px solid ' + color + '40;border-radius:10px;padding:12px">';
-    html += '<div style="font-weight:600;font-size:13px;color:' + color + ';margin-bottom:6px">' + (chFriendly[chId] || chId) + '</div>';
+    html += '<div style="font-weight:600;font-size:13px;color:' + color + ';margin-bottom:6px">' + chId + '</div>';
     html += '<div style="font-size:20px;font-weight:700;color:' + nfColor + ';margin-bottom:4px">' + current + '</div>';
     html += '<div style="font-size:11px;color:var(--txm);display:grid;grid-template-columns:1fr 1fr;gap:2px">';
     html += '<span>Avg: ' + avg + '</span>';
@@ -2169,7 +2279,7 @@ function renderNfCards(channels) {
       var clearData = timestamps.map(function(ts) { return dataMap[ts] ? dataMap[ts].clear : 0; });
       var detData = timestamps.map(function(ts) { return dataMap[ts] ? dataMap[ts].detected : 0; });
       var skipData = timestamps.map(function(ts) { return dataMap[ts] ? dataMap[ts].skipped : 0; });
-      var label = chFriendly[chId] || chId;
+      var label = chFriendly[chId] || formatChannelName(chId);
 
       datasets.push({
         label: label + ' Clear',
@@ -2284,7 +2394,7 @@ function renderNfCards(channels) {
 
       html += '<div style="background:rgba(' + rgb + ',0.06);border:1px solid rgba(' + rgb + ',0.25);border-radius:10px;padding:10px">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">';
-      html += '<span style="font-weight:600;font-size:12px;color:' + color + '">' + (chFriendly[chId] || chId) + '</span>';
+      html += '<span style="font-weight:600;font-size:12px;color:' + color + '">' + (chFriendly[chId] || formatChannelName(chId)) + '</span>';
       html += '<span style="font-size:11px">' + statusIcon + '</span>';
       html += '</div>';
       html += '<div style="font-size:11px;color:var(--txm);display:grid;grid-template-columns:1fr 1fr;gap:2px">';
@@ -2471,7 +2581,7 @@ function renderLbtHistChart(channels) {
           ticks: { color: '#999' }
         },
         y: {
-          title: { display: true, text: 'RSSI / Noise Floor (dBm)', color: '#999' },
+          title: { display: true, text: 'Noise Floor (dBm)', color: '#999' },
           grid: { color: 'rgba(128,128,128,0.1)' },
           ticks: { color: '#999' }
         }
@@ -2938,6 +3048,137 @@ function renderTxActChart(channels) {
     setTimeout(function() { pktActLoad(); }, 2000);
     pktActTimer = setInterval(pktActLoad, 60000);
   });
+})();
+</script>
+<script>
+/* ═══════════════════ ADV. CONFIG TAB JS ═══════════════════ */
+(function(){
+  var acData = {};
+
+  var AC_FIELDS = {
+    'ac-dedup-ttl':   { key: 'dedup_ttl_seconds',           source: 'config' },
+    'ac-cache-ttl':   { key: 'cache_ttl',                   source: 'config' },
+    'ac-max-cache':   { key: 'max_cache_size',               source: 'ui' },
+    'ac-queue-size':  { key: 'queue_size',                   source: 'config' },
+    'ac-tx-delay':    { key: 'inter_packet_delay',           source: 'config' },
+    'ac-pkt-ttl':     { key: 'packet_ttl',                   source: 'ui' },
+    'ac-overflow':    { key: 'overflow_policy',              source: 'ui' },
+    'ac-nf-interval': { key: 'nf_interval',                  source: 'ui' },
+    'ac-nf-hold':     { key: 'nf_tx_hold',                   source: 'ui' },
+    'ac-nf-buffer':   { key: 'nf_buffer_size',               source: 'ui' },
+    'ac-force-fe':    { key: 'force_host_fe_ctrl',           source: 'hal' },
+    'ac-lna-lut':     { key: 'lna_lut',                      source: 'hal' },
+    'ac-pa-lut':      { key: 'pa_lut',                       source: 'hal' },
+    'ac-agc-ana':     { key: 'agc_ana_gain',                 source: 'hal' },
+    'ac-agc-dec':     { key: 'agc_dec_gain',                 source: 'hal' },
+    'ac-chan-fixed':   { key: 'channelizer_fixed_gain',      source: 'hal' }
+  };
+
+  var AC_GROUPS = {
+    dedup_cache:  ['ac-dedup-ttl', 'ac-cache-ttl', 'ac-max-cache'],
+    tx_queue:     ['ac-queue-size', 'ac-tx-delay', 'ac-pkt-ttl', 'ac-overflow'],
+    noise_floor:  ['ac-nf-interval', 'ac-nf-hold', 'ac-nf-buffer'],
+    hal_advanced: ['ac-force-fe', 'ac-lna-lut', 'ac-pa-lut', 'ac-agc-ana', 'ac-agc-dec', 'ac-chan-fixed']
+  };
+
+  function setVal(id, val) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (typeof val === 'boolean') val = val.toString();
+    if (val === null || val === undefined) return;
+    el.value = val;
+  }
+
+  function getVal(id) {
+    var el = document.getElementById(id);
+    if (!el) return null;
+    var v = el.value;
+    if (el.type === 'number') return parseFloat(v);
+    if (v === 'true') return true;
+    if (v === 'false') return false;
+    return v;
+  }
+
+  window.loadAdvConfig = function() {
+    fetch('/api/wm1303/adv_config')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        acData = data;
+        console.log('[AdvConfig] loaded:', data);
+        for (var id in AC_FIELDS) {
+          var key = AC_FIELDS[id].key;
+          if (data.hasOwnProperty(key)) {
+            setVal(id, data[key]);
+          }
+        }
+        showAcStatus('Configuratie geladen', '#22c55e');
+      })
+      .catch(function(err) {
+        console.error('[AdvConfig] load error:', err);
+        showAcStatus('Fout bij laden: ' + err.message, '#ef4444');
+      });
+  };
+
+  window.saveAdvGroup = function(group) {
+    var fields = AC_GROUPS[group];
+    if (!fields) { alert('Unknown group: ' + group); return; }
+
+    var groupLabel = {
+      dedup_cache: 'Deduplicatie & Cache',
+      tx_queue: 'TX Queue Management',
+      noise_floor: 'Noise Floor Monitor',
+      hal_advanced: 'HAL Geavanceerd (GEVAARLIJK!)'
+    }[group] || group;
+
+    var confirmMsg = 'Weet je zeker dat je de "' + groupLabel + '" instellingen wilt opslaan?
+
+De service wordt herstart.';
+    if (group === 'hal_advanced') {
+      confirmMsg = '⚠️ WAARSCHUWING: HAL wijzigingen kunnen hardware beschadigen!
+
+' + confirmMsg;
+    }
+    if (!confirm(confirmMsg)) return;
+
+    var payload = { group: group, params: {} };
+    for (var i = 0; i < fields.length; i++) {
+      var id = fields[i];
+      var key = AC_FIELDS[id].key;
+      payload.params[key] = getVal(id);
+    }
+
+    showAcStatus('Opslaan...', '#fbbf24');
+
+    fetch('/api/wm1303/adv_config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === 'ok') {
+        showAcStatus('✅ ' + groupLabel + ' opgeslagen. Service wordt herstart...', '#22c55e');
+        setTimeout(function() { loadAdvConfig(); }, 4000);
+      } else {
+        showAcStatus('❌ Fout: ' + (data.error || 'onbekend'), '#ef4444');
+      }
+    })
+    .catch(function(err) {
+      showAcStatus('❌ Fout: ' + err.message, '#ef4444');
+    });
+  };
+
+  function showAcStatus(msg, color) {
+    var el = document.getElementById('ac-status');
+    if (!el) return;
+    el.style.display = 'block';
+    el.style.background = color + '22';
+    el.style.border = '1px solid ' + color;
+    el.style.color = color;
+    el.textContent = msg;
+    setTimeout(function() { el.style.display = 'none'; }, 6000);
+  }
+
 })();
 </script>
 </body>

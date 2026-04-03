@@ -189,7 +189,7 @@ select.ci option{background:#1e293b}
         </div>
         <div class="mb-2">
           <label class="text-xs" style="color:var(--txm)">Center frequency for both RF0 (RX) and RF1 (TX)</label>
-          <input type="number" step="0.001" min="150" max="960" class="ci" lang="en" id="rf-shared-freq" placeholder="869.525" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="updateRfPreview()">
+          <input type="text" pattern="[0-9]*[.]?[0-9]*" class="ci" lang="en" id="rf-shared-freq" placeholder="869.525" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="updateRfPreview()">
         </div>
         <div class="text-xs mt-2 p-2 rounded" style="background:var(--bgr);color:var(--txm)" id="rf-shared-range">Range: -- to -- MHz</div>
       </div>
@@ -1286,7 +1286,7 @@ function renderCh(){
   l.innerHTML=chData.map((ch,i)=>`<div class="crow${ch.active?' con':''}" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 44px 68px 44px 32px">
     <select class="ci" style="font-weight:500" onchange="chData[${i}].friendly_name=this.value;renderCh()">${buildChDropdown(i,ch)}</select>
     <input class="ci" value="${esc(ch.name)}" onchange="chData[${i}].name=this.value" placeholder="name">
-    <input class="ci" lang="en" type="number" step="0.001" value="${(ch.frequency/1e6).toFixed(3)}" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="chData[${i}].frequency=Math.round(parseFloat(this.value.replace(/,/g,'.'))*1e6)">
+    <input class="ci" lang="en" type="text" pattern="[0-9]*[.]?[0-9]*" value="${(ch.frequency/1e6).toFixed(3)}" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="chData[${i}].frequency=Math.round(parseFloat(this.value.replace(/,/g,'.'))*1e6)">
     <select class="ci" onchange="chData[${i}].bandwidth=parseInt(this.value)">${mkSel(BW,ch.bandwidth,v=>v/1000)}</select>
     <select class="ci" onchange="chData[${i}].spreading_factor=parseInt(this.value)">${mkSel(SF,ch.spreading_factor)}</select>
     <select class="ci" onchange="chData[${i}].coding_rate=this.value">${mkSel(CR,ch.coding_rate)}</select>
