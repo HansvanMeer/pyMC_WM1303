@@ -98,6 +98,28 @@ for arg in "$@"; do
     esac
 done
 
+# Installation state tracking
+REBOOT_REQUIRED=false
+INSTALL_SUCCESS=false
+
+# Trap to handle installation failures
+cleanup_on_failure() {
+    if [ "$INSTALL_SUCCESS" = false ]; then
+        echo ""
+        echo -e "  ${BOLD}${RED}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "  ${BOLD}${RED}║     Installation FAILED!                                ║${NC}"
+        echo -e "  ${BOLD}${RED}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  ${RED}The installation encountered an error and could not complete.${NC}"
+        echo -e "  ${RED}Please check the output above for details.${NC}"
+        echo ""
+        echo -e "  ${BOLD}To retry:${NC}  sudo bash install.sh"
+        echo -e "  ${BOLD}For help:${NC}  Check the documentation in docs/installation.md"
+        echo ""
+    fi
+}
+trap cleanup_on_failure EXIT
+
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
@@ -199,7 +221,8 @@ else
 
     if [ -f "$BOOT_CONFIG" ]; then
         if grep -q "^dtparam=spi=on" "$BOOT_CONFIG"; then
-            warn "SPI is enabled in config.txt but devices not present. Reboot may be required."
+            warn "SPI is enabled in config.txt but devices not present. Reboot required."
+            REBOOT_REQUIRED=true
         else
             info "Enabling SPI in ${BOOT_CONFIG}..."
             # Remove any commented-out SPI line
@@ -207,6 +230,7 @@ else
             echo "dtparam=spi=on" >> "$BOOT_CONFIG"
             ok "SPI enabled in config.txt"
             warn "A REBOOT is required after installation for SPI to become active!"
+            REBOOT_REQUIRED=true
         fi
     else
         fail "Cannot find boot config file. Please enable SPI manually."
@@ -687,40 +711,49 @@ fi
 # =============================================================================
 phase "Start and Verify Service"
 
-step "Starting pymc-repeater service"
-systemctl start pymc-repeater.service 2>&1
-sleep 3
-ok "Service start command issued"
-
-step "Checking service status"
-if systemctl is-active --quiet pymc-repeater.service; then
-    ok "pymc-repeater service is RUNNING"
-    info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -5)"
+if [ "$REBOOT_REQUIRED" = true ]; then
+    step "SPI devices not yet available (reboot required)"
+    info "Service is installed and enabled for auto-start on boot."
+    info "After reboot, SPI devices will be available and the service will start automatically."
+    ok "Service will start automatically after reboot"
 else
-    warn "Service may not have started correctly"
-    info "Check logs with: journalctl -u pymc-repeater -f"
-    info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -10)"
-fi
+    step "Starting pymc-repeater service"
+    systemctl start pymc-repeater.service 2>&1
+    sleep 5
+    ok "Service start command issued"
 
-step "Checking web interface availability"
-sleep 2
-WEB_PORT=$(grep -oP 'port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null || echo "8000")
-if command -v curl &>/dev/null; then
-    if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
-        ok "Web interface responding on port ${WEB_PORT}"
+    step "Checking service status"
+    if systemctl is-active --quiet pymc-repeater.service; then
+        ok "pymc-repeater service is RUNNING"
+        info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -5)"
     else
-        info "Web interface not yet responding (may need a few more seconds)"
+        warn "Service may not have started correctly"
+        info "Check logs with: journalctl -u pymc-repeater -f"
+        info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -10)"
     fi
-else
-    info "curl not available, skipping web interface check"
+
+    step "Checking web interface availability"
+    sleep 5
+    WEB_PORT=$(grep -oP 'port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null || echo "8000")
+    if command -v curl &>/dev/null; then
+        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
+            ok "Web interface responding on port ${WEB_PORT}"
+        else
+            info "Web interface not yet responding (may need a few more seconds)"
+        fi
+    else
+        info "curl not available, skipping web interface check"
+    fi
 fi
 
 # =============================================================================
 # Installation Complete
 # =============================================================================
+INSTALL_SUCCESS=true
+
 echo -e "\n${BOLD}${GREEN}"
 echo "  ╔══════════════════════════════════════════════════════════╗"
-echo "  ║     Installation Complete!                              ║"
+echo "  ║     Installation Completed Successfully!               ║"
 echo "  ╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 echo -e "  ${BOLD}Quick Reference:${NC}"
@@ -730,3 +763,18 @@ echo -e "  Service logs:     ${CYAN}journalctl -u pymc-repeater -f${NC}"
 echo -e "  Web interface:    ${CYAN}http://<this-pi-ip>:8000/wm1303.html${NC}"
 echo -e "  Repeater UI:      ${CYAN}http://<this-pi-ip>:8000/${NC}"
 echo ""
+
+if [ "$REBOOT_REQUIRED" = true ]; then
+    echo -e "  ${BOLD}${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  REBOOT REQUIRED to activate SPI and start the service  ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  The service is installed and enabled. It will start automatically after reboot."
+    echo ""
+    read -r -p "  Press ENTER to reboot now (or Ctrl+C to cancel)... "
+    echo -e "\n  ${CYAN}Rebooting...${NC}"
+    reboot
+else
+    echo -e "  ${GREEN}The service is running. No reboot required.${NC}"
+    echo ""
+fi
