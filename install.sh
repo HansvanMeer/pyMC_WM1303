@@ -180,6 +180,9 @@ apt-get install -y \
     libssl-dev \
     jq \
     i2c-tools \
+    rrdtool \
+    librrd-dev \
+    python3-rrdtool \
     2>&1 | tail -3
 ok "Build tools and dependencies installed"
 

@@ -399,11 +399,13 @@ class WM1303Backend:
         self.channels[radio.channel_id] = radio.channel_config
 
     def get_radios(self) -> list:
-        """Create and register VirtualLoRaRadio instances from config + SSOT.
+        """Create and register VirtualLoRaRadio instances from SSOT + config.
 
-        Reads channel definitions from config.yaml (self.config['wm1303']['channels'])
-        and filters by active status from wm1303_ui.json (SSOT).
-        Each VirtualLoRaRadio self-registers via register_virtual_radio() in __init__.
+        PRIMARY source: wm1303_ui.json (SSOT) — the user-facing channel config.
+        FALLBACK: config.yaml wm1303.channels — only used when SSOT has no channels.
+
+        Each active SSOT channel becomes a VirtualLoRaRadio that self-registers
+        via register_virtual_radio() in __init__.
 
         Returns:
             List of VirtualLoRaRadio instances (one per active channel).
@@ -418,49 +420,73 @@ class WM1303Backend:
                        len(self.virtual_radios))
             return list(self.virtual_radios.values())
 
-        # Read channel configs from config.yaml
-        wm1303_cfg = self.config.get('wm1303', {})
-        channels_cfg = wm1303_cfg.get('channels', {})
-        if not channels_cfg:
-            logger.warning('WM1303Backend.get_radios(): no channels in config.yaml')
-            return []
+        _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
 
-        # Read SSOT (wm1303_ui.json) for active channel filtering
+        # ---- PRIMARY: read channels from SSOT (wm1303_ui.json) ----
         ui_path = _Path('/etc/pymc_repeater/wm1303_ui.json')
-        active_freqs = set()
-        inactive_freqs = set()
+        ssot_channels = []
         try:
             if ui_path.exists():
                 ui = _json.loads(ui_path.read_text())
-                for uc in ui.get('channels', []):
-                    freq = int(uc.get('frequency', 0))
-                    if uc.get('active', True):
-                        active_freqs.add(freq)
-                    else:
-                        inactive_freqs.add(freq)
-                logger.info('WM1303Backend.get_radios(): SSOT active=%d inactive=%d',
-                           len(active_freqs), len(inactive_freqs))
+                ssot_channels = ui.get('channels', [])
         except Exception as e:
             logger.warning('WM1303Backend.get_radios(): failed to read SSOT: %s', e)
 
+        # Filter to active-only SSOT channels
+        active_ssot = [ch for ch in ssot_channels if ch.get('active', True)]
+
+        if active_ssot:
+            logger.info('WM1303Backend.get_radios(): SSOT has %d active channels '
+                       '(of %d total)', len(active_ssot), len(ssot_channels))
+            radios = []
+            for idx, ssot_ch in enumerate(active_ssot):
+                if idx >= len(_CHANNEL_ID_BY_INDEX):
+                    logger.warning('WM1303Backend.get_radios(): max %d channels '
+                                  'supported, ignoring extra', len(_CHANNEL_ID_BY_INDEX))
+                    break
+                channel_id = _CHANNEL_ID_BY_INDEX[idx]
+                channel_config = {
+                    'frequency': int(ssot_ch.get('frequency', 0)),
+                    'spreading_factor': int(ssot_ch.get('spreading_factor', 7)),
+                    'bandwidth': int(ssot_ch.get('bandwidth', 125000)),
+                    'coding_rate': ssot_ch.get('coding_rate', '4/5'),
+                    'preamble_length': int(ssot_ch.get('preamble_length', 17)),
+                    'tx_power': int(ssot_ch.get('tx_power', 14)),
+                    'tx_enable': ssot_ch.get('tx_enabled', True),
+                    'active': True,
+                    'name': ssot_ch.get('name', f'ch_{idx}'),
+                    'friendly_name': ssot_ch.get('friendly_name', f'Channel {idx}'),
+                }
+                logger.info('WM1303Backend.get_radios(): SSOT -> %s freq=%d SF%d (%s)',
+                           channel_id, channel_config['frequency'],
+                           channel_config['spreading_factor'],
+                           channel_config['friendly_name'])
+                radio = VirtualLoRaRadio(self, channel_id, channel_config)
+                radios.append(radio)
+
+            logger.info('WM1303Backend.get_radios(): created %d radios from SSOT: %s',
+                       len(radios), [r.channel_id for r in radios])
+            return radios
+
+        # ---- FALLBACK: read from config.yaml ----
+        logger.warning('WM1303Backend.get_radios(): no active SSOT channels, '
+                      'falling back to config.yaml')
+        wm1303_cfg = self.config.get('wm1303', {})
+        channels_cfg = wm1303_cfg.get('channels', {})
+        if not channels_cfg:
+            logger.warning('WM1303Backend.get_radios(): no channels in config.yaml either')
+            return []
+
         radios = []
         for channel_id, cfg in channels_cfg.items():
-            ch_freq = int(cfg.get('frequency', 0))
-            if inactive_freqs and ch_freq in inactive_freqs:
-                logger.info('WM1303Backend.get_radios(): skip %s (freq=%d inactive)',
-                           channel_id, ch_freq)
-                continue
-            if active_freqs and ch_freq not in active_freqs:
-                logger.info('WM1303Backend.get_radios(): skip %s (freq=%d not active)',
-                           channel_id, ch_freq)
-                continue
             channel_config = dict(cfg)
-            logger.info('WM1303Backend.get_radios(): creating VirtualLoRaRadio %s freq=%d SF%s',
+            ch_freq = int(cfg.get('frequency', 0))
+            logger.info('WM1303Backend.get_radios(): config.yaml -> %s freq=%d SF%s',
                        channel_id, ch_freq, channel_config.get('spreading_factor', '?'))
             radio = VirtualLoRaRadio(self, channel_id, channel_config)
             radios.append(radio)
 
-        logger.info('WM1303Backend.get_radios(): created %d radios: %s',
+        logger.info('WM1303Backend.get_radios(): created %d radios from config.yaml: %s',
                    len(radios), [r.channel_id for r in radios])
         return radios
 
