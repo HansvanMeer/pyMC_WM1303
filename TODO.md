@@ -96,21 +96,13 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | **Legal** | No responsibility disclaimer for potential hardware damage when using this code |
 
 ---
-
-
 ## ✅ Completed
-
-### Week 1: 2026-03-17 — 2026-03-19 | Project Setup & Initial Integration
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **Project setup** | Cloned repos (pyMC_Repeater, pyMC_core), configured Pi SSH access. Required as the foundation for all further development. |
 | 2 | **Systemd service** | Hardened `pymc-repeater.service` unit file + `install_sensecap_m1.sh` script. Ensures automatic startup, crash recovery, and secured runtime (NoNewPrivileges, PrivateTmp, etc.). |
 | 3 | **HAL debug tools** | SPI probing scripts, GPIO reset test, HAL shared library validation. Needed to determine which SPI device (`spidev0.0` vs `0.1`) the SX1302 uses and whether the HAL initializes correctly. |
 | 4 | **WM1303 integration** | First version of `wm1303_backend.py` (HAL control), `wm1303_api.py` (REST endpoints), `wm1303.html` (web UI). Replaces the standalone packet forwarder with an integrated Python-driven system. |
-
-### Week 1: 2026-03-22 — 2026-03-23 | UI, API & Multi-Channel
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **RF chain split** | Channel A on RF0, Channel B on RF1. The SX1302 has 2 RF chains that can each independently receive a frequency. Splitting them allows 2 LoRa channels to be active simultaneously. |
@@ -119,9 +111,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 4 | **API endpoint fix** | 10 missing endpoints restored, 3 recurring errors resolved. API calls from the UI failed on endpoints that existed in the HTML but not in the backend. |
 | 5 | **Phase 2 integration** | WebSocket handler (ws4py) for realtime updates, TextHelper fix for MeshCore messages, bridge stats in API. Needed for live data in the UI without polling. |
 | 6 | **Packet counting** | Red dot indicator fix (always showed red), TX advert counting corrected, bridge status attribute fix. Statistics in the UI did not match actual RX/TX counts. |
-
-### Week 1: 2026-03-24 | Bridge Engine & Spectrum
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **Single Source of Truth** | `wm1303_ui.json` as central configuration. Previously channel settings were scattered across multiple files (global_conf, bridge_conf, Python code). Now there is one source. |
@@ -140,9 +129,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 14 | **Channel naming** | RX dispatch used wrong channel names. "channel_a" and "channel_b" did not match UI names ("SF8", "SF7"). |
 | 15 | **TX power UI** | Dropdown in UI to select TX power per channel (2–27 dBm). Previously TX power was hardcoded at 14 dBm. |
 | 16 | **AGC recalibration** | First attempt to restore Automatic Gain Control after TX. After each TX, the AGC goes out of calibration, causing RX sensitivity to drop. |
-
-### Week 2: 2026-03-25 | TX Pipeline & IF Chains
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **PULL_RESP format** | TX packets were rejected by the packet forwarder. PULL_RESP JSON structure was incorrect (wrong field names, missing `imme` flag). |
@@ -161,9 +147,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 14 | **Double AGC reload** | AGC was executed twice after TX (once by HAL, once by our code). Caused double RX interruptions. |
 | 15 | **Concentrator reset** | GPIO-based power cycle of the SX1302. Needed when the concentrator enters an unrecoverable state. |
 | 16 | **Advertisement interval** | MeshCore advertisement packets were sent too often/infrequently. Timer was not correctly configured after bridge integration. |
-
-### Week 2: 2026-03-26 | LBT, LNA & Signal Quality
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **Software LBT** | Per-channel RSSI check via SX1261 spectral scan data. HAL-level LBT conflicted with multi-channel setup; software LBT provides more control. |
@@ -183,9 +166,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 15 | **LNA back to 0x02** | 0x0F caused too much noise; 0x02 provides better balance between gain and noise figure. |
 | 16 | **Deduplication bugs** | Packets were sometimes incorrectly marked as duplicate (too broad hash match) or not detected (too narrow window). |
 | 17 | **AGC defaults + HAL optimization** | AGC reverted to HAL defaults after experimental implementations. HAL configuration optimized for stability. |
-
-### Week 2: 2026-03-27 | AGC, LNA & HAL Optimization
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **AGC auto-recovery** | Automatic recovery when AGC enters a bad state. Detects AGC failure via RSSI anomalies and triggers reinitialization. |
@@ -193,34 +173,22 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 3 | **AGC speed** | AGC recalibration reduced from ~200ms to ~50ms. Less RX loss after each TX through faster gain settling. |
 | 4 | **Chart.js bugs** | Multiple charts (signal quality, spectrum, LBT) had rendering issues: wrong data binding, memory leaks, tooltip errors. |
 | 5 | **LNA final config** | Register 0x02 as final choice after extensive A/B tests (0x02 vs 0x03 vs 0x0F). Best balance: -3 dB noise figure, +12 dB gain. |
-
-### Week 2: 2026-03-28 | FEM & Adaptive AGC
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **AGC health monitor** | Periodic AGC check (every 10s): measures RSSI baseline, compares with expected value, triggers recalibration if deviation >5 dB. |
 | 2 | **FEM register forced** | Front-End Module LNA/PA registers are now rewritten on every TX/RX switch. Previously they sometimes became corrupt after frequent switching. |
 | 3 | **FEM non-blocking** | FEM initialization blocked RX for ~100ms. Now executed asynchronously so RX resumes immediately after TX. |
 | 4 | **LNA LUT register** | Look-Up Table register set to 0x03 for experiments with per-signal-strength gain adjustment. |
-
-### Week 2: 2026-03-29 | HAL Stabilization & Backup
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **AGC off + TX batching** | AGC fully disabled (caused more problems than it solved), combined with improved TX batch scheduling. Most stable configuration to date. |
 | 2 | **MCU firmware reload** | SX1302 internal microcontroller firmware reloaded after AGC corruption. Deeper reset than just register writing. |
 | 3 | **LNA LUT revert** | Back to 0x03 after analysis: 0x02 gave ~1 dB better gain but 2 dB more noise. 0x03 is the better compromise. |
-
-### Week 3: 2026-03-30 | P1-P5 HAL Optimization & Dedup Chart
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **P1-P5 HAL optimization** | 5 priorities tackled simultaneously: (P1) AGC stability, (P2) FEM register retention, (P3) IF chain fine-tuning, (P4) spectral scan timing, (P5) TX/RX switching. Results in the most stable HAL configuration. |
 | 2 | **Final IF chain mapping** | IF chains definitively locked: IF0-3 on RF0 (Channel A), IF4-7 on RF1 (Channel B). No more dynamic reassignment; fixed mapping prevents configuration drift. |
 | 3 | **Dedup chart** | Deduplication event visualization in UI with SQLite storage. Shows when and how often packets are detected as duplicates. Helps with tuning the dedup window. |
-
-### Week 3: 2026-03-31 | Watchdog, CAD & JSON Fixes
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **RX Watchdog** | 3 automatic detection modes: (1) PUSH_DATA statistics (2× rxnb=0 with active TX), (2) RSSI spike detection (5+ strong signals without successful RX), (3) RX timeout (180s no packet). On detection: automatic packet forwarder restart. Previously required manual service restart on RX failure. |
@@ -229,9 +197,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 4 | **Chart.js race condition** | Charts crashed on tab switching: Chart.js + date adapter were dynamically loaded but not ready when the chart initialized. Fix: wait for library load before chart init. |
 | 5 | **JSON serialization** | API returned 500 errors for datetime and numpy objects. Python's json.dumps cannot serialize these types. Fix: custom JSON encoder converting datetime→ISO string and numpy→float. |
 | 6 | **AGC debounce** | HAL C-code patch in loragw_hal.c: AGC recalibration is debounced (minimum 100ms between recalibrations). Prevents oscillation during rapid successive RX/TX events. |
-
-### Week 3: 2026-04-01 | Dev Branch, Bridge & MQTT
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **Dev branch migration** | pyMC_Repeater + pyMC_core from main → dev branch with 7 patches applied. All local changes committed to dev so they are not lost during updates. |
@@ -240,9 +205,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 4 | **IF chain index mapping** | After config change in UI, IF chain indices were calculated incorrectly: index 0-3 became 1-4. Cause: off-by-one in the config generator. Resulted in wrong SF per IF chain. |
 | 5 | **MQTT fully removed** | MQTT tab, JavaScript handlers, API endpoints (`/api/wm1303/mqtt/*`), config entries from config.yaml. MQTT was not in use and caused import errors and UI confusion. |
 | 6 | **Spectral scan activation** | SX1261 spectral scan enabled in global_conf.json with correct parameters (freq_start=863MHz, freq_stop=870MHz, nb_chan=36, pace_s=1). Was configured in bridge_conf but not in the HAL config that actually controls the SX1261. |
-
-### Week 3: 2026-04-02 | TX Queue Fix, LBT RSSI & Documentation
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **Channels tab UI updates** | 6 changes: (1) decimal comma→period conversion for input fields, (2) IF Chain Configuration block repositioned, (3) Radio Summary block with total RX/TX, (4) TX airtime and duty cycle, (5) adaptive refresh, (6) noise floor guard against -120 fallback. |
@@ -253,9 +215,6 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 6 | **Auto-update LBT/CAD** | Per-channel LBT/CAD settings from IF Chain Configuration are automatically reloaded with 5s cache TTL. No service restart needed after changes in UI. |
 | 7 | **LBT RSSI deploy** | Updated wm1303_backend.py + wm1303.html with real noise floor values, color coding (green <-110, yellow <-90, red ≥-90), and "--" instead of -120 when no data available. |
 | 8 | **TX_Queue_Flow.md** | 452 lines of documentation on the complete TX processing flow: RX receipt → Bridge Engine → TX Queue (9 steps) → Radio TX. Including timing, SPI bus analysis, background processes, API statistics, configuration, and troubleshooting. |
-
-### Week 3: 2026-04-03 | pyMC_WM1303 Repository Creation
-
 | # | Title | What & Why |
 |---|-------|------------|
 | 1 | **pyMC_WM1303 repository created** | Clean GitHub repository with comprehensive installation script (`install.sh`, 12 phases) for deploying WM1303 LoRa concentrator with MeshCore on SenseCAP M1 / Raspberry Pi. Separates deployment artifacts from the development project. |
@@ -265,5 +224,3 @@ The comprehensive documentation (item #24) should cover the following topics, or
 | 5 | **Overlay verification** | Verified all overlay files against pi01 reference system. 100% match confirmed across all HAL source modifications, pyMC_core hardware modules, and pyMC_Repeater integration files. |
 | 6 | **Missing __init__.py fix** | Found and fixed missing `__init__.py` in pymc_core overlay (`overlay/pymc_core/src/pymc_core/hardware/`). Added proper imports for WM1303Backend and VirtualLoRaRadio classes to ensure Python package discovery works correctly during installation. |
 | 7 | **GPIO pin configuration via Adv. Config tab** | Added Group 5 (GPIO Pin Configuratie) to the WM1303 Manager's Adv. Config tab with configurable BCM pin numbers for SX1302 Reset, SX1302 Power Enable, SX1261 Reset, AD5338R Reset, and GPIO Base Offset. Includes live sysfs number preview, hardware warning dialog, and auto-regeneration of `reset_lgw.sh` and `power_cycle_lgw.sh` when pins are changed. API endpoint extended with GET/POST support for `gpio_pins` group. |
-
-
