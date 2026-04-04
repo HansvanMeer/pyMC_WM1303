@@ -95,34 +95,67 @@ def _save_ui(data: dict):
 
 
 def _get_ui_channel_id_map():
-    """Map each UI channel index to its actual config.yaml channel key.
-    Active UI channels matched by position to config.yaml wm1303.channels keys.
+    """Map each UI channel index to its backend channel key.
+    Active UI channels are mapped by position to channel_a..channel_d,
+    matching the backend's _CHANNEL_ID_BY_INDEX in get_radios().
     Inactive channels get a non-colliding 'inactive_N' key."""
-    import yaml
-    ui_chs = _load_ui().get("channels", [])
-    config_keys = []
-    try:
-        with open("/etc/pymc_repeater/config.yaml") as _f:
-            cfg = yaml.safe_load(_f)
-        config_keys = list(cfg.get("wm1303", {}).get("channels", {}).keys())
-    except Exception:
-        pass
+    _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
+    ui_chs = _load_ui().get('channels', [])
     id_map = {}
-    used_keys = set()
     active_pos = 0
     for ui_idx, ch in enumerate(ui_chs):
-        if ch.get("active", False):
-            if active_pos < len(config_keys):
-                key = config_keys[active_pos]
+        if ch.get('active', False):
+            if active_pos < len(_CHANNEL_ID_BY_INDEX):
+                key = _CHANNEL_ID_BY_INDEX[active_pos]
             else:
-                key = "channel_" + chr(97 + ui_idx)
+                key = 'channel_' + chr(97 + active_pos)
             id_map[ui_idx] = key
-            used_keys.add(key)
             active_pos += 1
         else:
-            id_map[ui_idx] = "inactive_" + str(ui_idx)
+            id_map[ui_idx] = 'inactive_' + str(ui_idx)
     return id_map
 
+
+def _sync_config_yaml_channels(channels: list) -> None:
+    """Sync active channels from SSOT to config.yaml wm1303.channels section.
+
+    Maps active channels to channel_a..channel_d by index (same as backend)
+    and writes them to config.yaml so it stays in sync with wm1303_ui.json.
+    """
+    import yaml
+    _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
+    cfg_path = Path('/etc/pymc_repeater/config.yaml')
+    try:
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f) or {}
+        if 'wm1303' not in cfg:
+            cfg['wm1303'] = {}
+        new_channels = {}
+        active_idx = 0
+        for ch in channels:
+            if not ch.get('active', False):
+                continue
+            if active_idx >= len(_CHANNEL_ID_BY_INDEX):
+                break
+            ch_id = _CHANNEL_ID_BY_INDEX[active_idx]
+            new_channels[ch_id] = {
+                'frequency': int(ch.get('frequency', 0)),
+                'spreading_factor': int(ch.get('spreading_factor', 7)),
+                'bandwidth': int(ch.get('bandwidth', 125000)),
+                'coding_rate': ch.get('coding_rate', '4/5'),
+                'preamble_length': int(ch.get('preamble_length', 17)),
+                'tx_power': int(ch.get('tx_power', 14)),
+                'tx_enable': ch.get('tx_enabled', True),
+                'description': 'MeshCore {} (SF{})'.format(
+                    ch.get('friendly_name', 'Channel ' + chr(65 + active_idx)),
+                    ch.get('spreading_factor', 7)),
+            }
+            active_idx += 1
+        cfg['wm1303']['channels'] = new_channels
+        with open(cfg_path, 'w') as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        logger.warning('_sync_config_yaml_channels: failed to sync config.yaml: %s', e)
 
 def sync_global_conf():
     """Regenerate bridge_conf.json from wm1303_ui.json using the backend's
@@ -825,6 +858,8 @@ class WM1303API:
         ui = _load_ui()
         ui["channels"] = channels
         _save_ui(ui)
+        # Sync config.yaml wm1303.channels so it stays in sync with SSOT
+        _sync_config_yaml_channels(channels)
         # SSOT: sync IF chains in global_conf.json
         sync_result = sync_global_conf()
         result = {"status": "ok", "sync": sync_result}
@@ -844,20 +879,20 @@ class WM1303API:
 
     # -- channels/live -------------------------------------------------------
     def _channels_live_get(self):
-        """Return aggregated live operational data per channel."""
+        """Return aggregated live operational data per channel.
+
+        Uses wm1303_ui.json (SSOT) as the channel source — NOT config.yaml.
+        Active channels are mapped to channel_a..channel_d by index, matching
+        the backend's _CHANNEL_ID_BY_INDEX mapping in get_radios().
+        """
         import time as _t
-        import yaml
         import urllib.request, json as _json2
 
-        # Load channel config from yaml
-        channels_config = {}
-        try:
-            cfg_path = Path("/etc/pymc_repeater/config.yaml")
-            with open(cfg_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            channels_config = cfg.get("wm1303", {}).get("channels", {})
-        except Exception:
-            pass
+        _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
+        _abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+        # Load channels from SSOT (wm1303_ui.json) — same source as backend
+        _ui_chs = _load_ui().get('channels', [])
 
         # Get per-channel stats from backend (direct reference)
         channel_stats = {}
@@ -873,9 +908,9 @@ class WM1303API:
 
         if not tx_stats:
             try:
-                _resp = urllib.request.urlopen("http://127.0.0.1:8000/api/wm1303/tx_queues", timeout=2)
+                _resp = urllib.request.urlopen('http://127.0.0.1:8000/api/wm1303/tx_queues', timeout=2)
                 _tq = _json2.loads(_resp.read())
-                tx_stats = _tq.get("queues", {})
+                tx_stats = _tq.get('queues', {})
             except Exception:
                 pass
 
@@ -883,24 +918,24 @@ class WM1303API:
         total_rx = 0
         total_tx = 0
         for _cn_t, _cs_t in channel_stats.items():
-            total_rx += _cs_t.get("rx_count", 0)
-            total_tx += _cs_t.get("tx_count", 0)
+            total_rx += _cs_t.get('rx_count', 0)
+            total_tx += _cs_t.get('tx_count', 0)
 
         # Get service uptime in seconds
         uptime_seconds = 0
         try:
             import subprocess as _sp
             ru = _sp.run(
-                ["sudo", "systemctl", "show", _SVC_NAME, "--property=ActiveEnterTimestamp"],
+                ['sudo', 'systemctl', 'show', _SVC_NAME, '--property=ActiveEnterTimestamp'],
                 capture_output=True, text=True, timeout=5
             )
             for line in ru.stdout.splitlines():
-                if line.startswith("ActiveEnterTimestamp="):
-                    ts_str = line.split("=", 1)[1].strip()
+                if line.startswith('ActiveEnterTimestamp='):
+                    ts_str = line.split('=', 1)[1].strip()
                     if ts_str:
                         from datetime import datetime as _dtc
                         try:
-                            dt = _dtc.strptime(ts_str, "%a %Y-%m-%d %H:%M:%S %Z")
+                            dt = _dtc.strptime(ts_str, '%a %Y-%m-%d %H:%M:%S %Z')
                             uptime_seconds = int(_t.time() - dt.timestamp())
                         except Exception:
                             pass
@@ -912,10 +947,10 @@ class WM1303API:
         try:
             if _SPECTRAL_RES.exists():
                 scan = json.loads(_SPECTRAL_RES.read_text())
-                scan_points = scan.get("scan_points", [])
+                scan_points = scan.get('scan_points', [])
                 for pt in scan_points:
-                    freq_hz = int(pt.get("freq_hz", 0))
-                    rssi = pt.get("rssi_dbm", -120)
+                    freq_hz = int(pt.get('freq_hz', 0))
+                    rssi = pt.get('rssi_dbm', -120)
                     noise_data[freq_hz] = rssi
         except Exception:
             pass
@@ -926,9 +961,9 @@ class WM1303API:
                 collector = get_collector()
                 recent = collector.get_spectrum_history(hours=1)
                 for pt in recent:
-                    freq_mhz = pt.get("freq_mhz", 0)
+                    freq_mhz = pt.get('freq_mhz', 0)
                     freq_hz = int(freq_mhz * 1e6)
-                    rssi = pt.get("rssi_dbm", -120)
+                    rssi = pt.get('rssi_dbm', -120)
                     if freq_hz not in noise_data or rssi < noise_data[freq_hz]:
                         noise_data[freq_hz] = rssi
             except Exception:
@@ -936,7 +971,7 @@ class WM1303API:
 
         def _find_noise(freq_hz, tolerance=150000):
             best = -120.0
-            best_dist = float("inf")
+            best_dist = float('inf')
             for nf_hz, nf_rssi in noise_data.items():
                 dist = abs(nf_hz - freq_hz)
                 if dist < tolerance and dist < best_dist:
@@ -945,87 +980,84 @@ class WM1303API:
             result = round(best, 1)
             return result if result != 0 else -120.0
 
-        # Build per-channel live data
-        channel_names = ["channel_a", "channel_b", "channel_c", "channel_d"]
-        ch_labels = {"channel_a": "ch-a", "channel_b": "ch-b", "channel_c": "ch-c", "channel_d": "ch-d"}
-        # Load friendly names from UI config
-        _ui_chs = _load_ui().get("channels", [])
-        _abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        _friendly_map = {}
-        for _idx, _uch in enumerate(_ui_chs):
-            _fn = _uch.get("friendly_name", "Channel " + (_abc[_idx] if _idx < len(_abc) else str(_idx + 1)))
-            _friendly_map[_idx] = _fn
+        # Build per-channel live data from SSOT
+        # Map active channels to channel_a..channel_d by index (same as backend)
         channels_live = []
-        active_count = sum(1 for cn in channel_names if channels_config.get(cn, {}).get("frequency", 0))
-        active_idx = -1
-        for ch_name in channel_names:
-            ch_cfg = channels_config.get(ch_name, {})
-            if not ch_cfg:
+        active_idx = 0
+        for ui_idx, uch in enumerate(_ui_chs):
+            if not uch.get('active', False):
                 continue
-            freq = ch_cfg.get("frequency", 0)
+            if active_idx >= len(_CHANNEL_ID_BY_INDEX):
+                break
+            ch_id = _CHANNEL_ID_BY_INDEX[active_idx]
+            freq = int(uch.get('frequency', 0))
             if not freq:
+                active_idx += 1
                 continue
-            active_idx += 1
-            # Get real per-channel stats from backend
-            ch_st = channel_stats.get(ch_name, {})
-            ch_tx = tx_stats.get(ch_name, {})
-            rx_count = ch_st.get("rx_count", 0)
-            tx_sent = ch_st.get("tx_count", 0) or ch_tx.get("total_sent", 0)
-            tx_failed = ch_st.get("tx_failed", 0) or ch_tx.get("total_failed", 0)
-            last_tx = ch_st.get("last_tx_time") or ch_tx.get("last_tx_time")
-            last_rx = ch_st.get("last_rx_time")
-            rssi_last = ch_st.get("last_rssi", -120.0)
-            rssi_avg = ch_st.get("rssi_avg", -120.0)
-            snr_last = ch_st.get("last_snr", 0.0)
+            friendly_name = uch.get('friendly_name',
+                                    'Channel ' + (_abc[ui_idx] if ui_idx < len(_abc) else str(ui_idx + 1)))
+
+            # Get real per-channel stats from backend using mapped channel_id
+            ch_st = channel_stats.get(ch_id, {})
+            ch_tx = tx_stats.get(ch_id, {})
+            rx_count = ch_st.get('rx_count', 0)
+            tx_sent = ch_st.get('tx_count', 0) or ch_tx.get('total_sent', 0)
+            tx_failed = ch_st.get('tx_failed', 0) or ch_tx.get('total_failed', 0)
+            last_tx = ch_st.get('last_tx_time') or ch_tx.get('last_tx_time')
+            last_rx = ch_st.get('last_rx_time')
+            rssi_last = ch_st.get('last_rssi', -120.0)
+            rssi_avg = ch_st.get('rssi_avg', -120.0)
+            snr_last = ch_st.get('last_snr', 0.0)
             # Noise floor: prefer LBT RSSI rolling average from TX queue, fallback to spectral scan
-            nf_lbt_avg = ch_tx.get("noise_floor_lbt_avg")
+            nf_lbt_avg = ch_tx.get('noise_floor_lbt_avg')
             noise_floor = _find_noise(freq)
             if noise_floor == 0 or noise_floor is None: noise_floor = -120.0
             # If LBT rolling RSSI average available and spectral gave fallback, use LBT
             if nf_lbt_avg is not None and nf_lbt_avg > -119.0:
                 noise_floor = nf_lbt_avg
             channels_live.append({
-                "name": ch_labels.get(ch_name, ch_name),
-                "friendly_name": _friendly_map.get(active_idx, "Channel " + (_abc[active_idx] if active_idx < len(_abc) else str(active_idx + 1))),
-                "frequency": freq,
-                "bandwidth": ch_cfg.get("bandwidth", 125000),
-                "spreading_factor": ch_cfg.get("spreading_factor", 7),
-                "coding_rate": ch_cfg.get("coding_rate", "4/5"),
-                "rx_packets": rx_count,
-                "tx_packets": tx_sent,
-                "tx_failed": tx_failed,
-                "last_rx": last_rx,
-                "last_tx": last_tx,
-                "rssi_last": rssi_last,
-                "rssi_avg": rssi_avg,
-                "snr_last": snr_last,
-                "noise_floor": noise_floor,
+                'name': uch.get('name', ch_id),
+                'friendly_name': friendly_name,
+                'frequency': freq,
+                'bandwidth': int(uch.get('bandwidth', 125000)),
+                'spreading_factor': int(uch.get('spreading_factor', 7)),
+                'coding_rate': uch.get('coding_rate', '4/5'),
+                'rx_packets': rx_count,
+                'tx_packets': tx_sent,
+                'tx_failed': tx_failed,
+                'last_rx': last_rx,
+                'last_tx': last_tx,
+                'rssi_last': rssi_last,
+                'rssi_avg': rssi_avg,
+                'snr_last': snr_last,
+                'noise_floor': noise_floor,
                 # TX timing stats
-                "avg_tx_airtime_ms": ch_st.get("avg_tx_airtime_ms", 0),
-                "avg_tx_send_ms": ch_st.get("avg_tx_send_ms", 0),
-                "avg_tx_wait_ms": ch_st.get("avg_tx_wait_ms", 0),
-                "last_tx_airtime_ms": ch_st.get("last_tx_airtime_ms", 0),
-                "total_tx_airtime_ms": ch_st.get("total_tx_airtime_ms", 0),
-                "total_tx_send_ms": ch_st.get("total_tx_send_ms", 0),
-                "tx_bytes": ch_st.get("tx_bytes", 0),
-                "tx_duty_pct": ch_st.get("tx_duty_pct", 0),
+                'avg_tx_airtime_ms': ch_st.get('avg_tx_airtime_ms', 0),
+                'avg_tx_send_ms': ch_st.get('avg_tx_send_ms', 0),
+                'avg_tx_wait_ms': ch_st.get('avg_tx_wait_ms', 0),
+                'last_tx_airtime_ms': ch_st.get('last_tx_airtime_ms', 0),
+                'total_tx_airtime_ms': ch_st.get('total_tx_airtime_ms', 0),
+                'total_tx_send_ms': ch_st.get('total_tx_send_ms', 0),
+                'tx_bytes': ch_st.get('tx_bytes', 0),
+                'tx_duty_pct': ch_st.get('tx_duty_pct', 0),
                 # Software LBT stats (prefer tx_queue stats, fallback to backend stats)
-                "lbt_blocked": ch_tx.get("lbt_blocked", 0) or ch_st.get("lbt_blocked", 0),
-                "lbt_passed": ch_tx.get("lbt_passed", 0) or ch_st.get("lbt_passed", 0),
-                "lbt_skipped": ch_tx.get("lbt_skipped", 0) or ch_st.get("lbt_skipped", 0),
-                "lbt_last_blocked_at": ch_tx.get("lbt_last_blocked_at") or ch_st.get("lbt_last_blocked_at"),
-                "lbt_last_rssi": ch_tx.get("lbt_last_rssi") or ch_st.get("lbt_last_rssi"),
+                'lbt_blocked': ch_tx.get('lbt_blocked', 0) or ch_st.get('lbt_blocked', 0),
+                'lbt_passed': ch_tx.get('lbt_passed', 0) or ch_st.get('lbt_passed', 0),
+                'lbt_skipped': ch_tx.get('lbt_skipped', 0) or ch_st.get('lbt_skipped', 0),
+                'lbt_last_blocked_at': ch_tx.get('lbt_last_blocked_at') or ch_st.get('lbt_last_blocked_at'),
+                'lbt_last_rssi': ch_tx.get('lbt_last_rssi') or ch_st.get('lbt_last_rssi'),
                 # LBT RSSI noise floor estimates (rolling buffer of last 20 measurements)
-                "noise_floor_lbt_avg": ch_tx.get("noise_floor_lbt_avg"),
-                "noise_floor_lbt_min": ch_tx.get("noise_floor_lbt_min"),
-                "noise_floor_lbt_max": ch_tx.get("noise_floor_lbt_max"),
-                "noise_floor_lbt_samples": ch_tx.get("noise_floor_lbt_samples", 0),
+                'noise_floor_lbt_avg': ch_tx.get('noise_floor_lbt_avg'),
+                'noise_floor_lbt_min': ch_tx.get('noise_floor_lbt_min'),
+                'noise_floor_lbt_max': ch_tx.get('noise_floor_lbt_max'),
+                'noise_floor_lbt_samples': ch_tx.get('noise_floor_lbt_samples', 0),
                 # Queue health stats
-                "queue_pending": ch_tx.get("pending", 0),
-                "queue_size": ch_tx.get("queue_size", 15),
-                "dropped_overflow": ch_tx.get("dropped_overflow", 0),
-                "dropped_ttl": ch_tx.get("dropped_ttl", 0),
+                'queue_pending': ch_tx.get('pending', 0),
+                'queue_size': ch_tx.get('queue_size', 15),
+                'dropped_overflow': ch_tx.get('dropped_overflow', 0),
+                'dropped_ttl': ch_tx.get('dropped_ttl', 0),
             })
+            active_idx += 1
 
         return _j({
             "channels": channels_live,
