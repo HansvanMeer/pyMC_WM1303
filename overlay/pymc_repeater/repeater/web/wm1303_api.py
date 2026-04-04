@@ -799,12 +799,37 @@ class WM1303API:
         else:
             channels = body.get("channels", [])
             do_restart = body.get("restart", False)
+
+        # Pre-save validation: check IF range constraints
+        # SX1302 HAL constant: LGW_RF_RX_BANDWIDTH_125KHZ = 1600000
+        RF_RX_BW = 1_600_000
+        warnings = []
+        active_freqs = [int(ch.get('frequency', 0))
+                        for ch in channels
+                        if ch.get('active', False) and ch.get('frequency', 0)]
+        if active_freqs:
+            center = sum(active_freqs) // len(active_freqs)
+            for ch in channels:
+                f = int(ch.get('frequency', 0))
+                bw = int(ch.get('bandwidth', 125000))
+                max_if = (RF_RX_BW // 2) - (bw // 2) - 7500
+                if f and abs(f - center) > max_if:
+                    ch_name = ch.get('friendly_name', ch.get('name', '?'))
+                    delta_khz = abs(f - center) / 1000
+                    max_khz = max_if / 1000
+                    warnings.append(
+                        f"Channel '{ch_name}' at {f/1e6:.3f} MHz is {delta_khz:.1f} kHz "
+                        f"from center {center/1e6:.3f} MHz (max {max_khz:.1f} kHz for "
+                        f"BW {bw/1000:.0f} kHz). It will be force-disabled at startup.")
+
         ui = _load_ui()
         ui["channels"] = channels
         _save_ui(ui)
         # SSOT: sync IF chains in global_conf.json
         sync_result = sync_global_conf()
         result = {"status": "ok", "sync": sync_result}
+        if warnings:
+            result["warnings"] = warnings
 
         if do_restart:
             try:

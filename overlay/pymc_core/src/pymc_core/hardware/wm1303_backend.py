@@ -115,11 +115,18 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
       - RF1 (SX1250_1): RX only (no PA), tx_enable=false
       - TX via PULL_RESP routed to RF0 (rfch=0)
 
-    IF chain mapping is FIXED by channel name (CHANNEL_IF_MAP).
-    Center frequency is computed as the average of ALL defined channel
-    frequencies (not just active ones), ensuring IF offsets remain stable
-    when channels are activated/deactivated.
+    IF chain mapping is FIXED by channel position in the UI list.
+    Center frequency is computed from ACTIVE channels only, since only
+    active channels need valid IF chain offsets.  Inactive channels are
+    mapped with enable=false when within range, or skipped with a warning.
+
+    IF offset limit follows the SX1302 HAL constant:
+      LGW_RF_RX_BANDWIDTH_125KHZ = 1 600 000 Hz  (±800 kHz from center)
+      max usable IF offset = RF_RX_BW/2 − channel_BW/2
     """
+    # SX1302 HAL constant: usable RF RX bandwidth for 125 kHz channels
+    RF_RX_BANDWIDTH_HZ = 1_600_000  # from loragw_hal.c LGW_RF_RX_BANDWIDTH_125KHZ
+
     # Read ALL channel definitions from wm1303_ui.json (the SSOT)
     all_ui_channels = []
     try:
@@ -129,31 +136,48 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     except Exception as ex:
         logger.warning('_generate_bridge_conf: could not read %s: %s', UI_JSON_PATH, ex)
 
+    active_freqs = []  # track for logging
     if not all_ui_channels:
         logger.warning('_generate_bridge_conf: no channels in UI config, '
                       'falling back to channels arg')
         # Fallback: use passed-in channels (legacy behavior)
-        freqs = [int(cfg['frequency']) for cfg in channels.values()]
-        if not freqs:
+        active_freqs = [int(cfg['frequency']) for cfg in channels.values()]
+        if not active_freqs:
             raise ValueError('No channels configured')
-        center = sum(freqs) // len(freqs)
+        center = sum(active_freqs) // len(active_freqs)
     else:
-        # Compute center from ALL defined channel frequencies (active + inactive)
-        all_freqs = [int(ch.get('frequency', 0))
-                     for ch in all_ui_channels if ch.get('frequency', 0)]
-        if not all_freqs:
+        # Compute center from ACTIVE channels only — inactive channels don't
+        # need IF chain slots and should not shift the center frequency.
+        active_freqs = [int(ch.get('frequency', 0))
+                        for ch in all_ui_channels
+                        if ch.get('active', False) and ch.get('frequency', 0)]
+        if not active_freqs:
+            # No active channels — fall back to all defined frequencies
+            active_freqs = [int(ch.get('frequency', 0))
+                           for ch in all_ui_channels if ch.get('frequency', 0)]
+        if not active_freqs:
             raise ValueError('No channel frequencies found in UI config')
-        center = sum(all_freqs) // len(all_freqs)
+        center = sum(active_freqs) // len(active_freqs)
 
-    logger.info('_generate_bridge_conf: center=%d Hz (from %d defined channels)',
-                center, len(all_ui_channels) if all_ui_channels else len(channels))
+    logger.info('_generate_bridge_conf: center=%d Hz (from %d channels)',
+                center, len(active_freqs))
 
-    # Validate all frequencies are within +/-500kHz of center
+    # Validate channel frequencies against SX1302 IF range.
+    # max_if_offset = (RF_RX_BW / 2) − (channel_BW / 2)
+    # For 125 kHz BW: (1600000/2) − (125000/2) = 737500 Hz
+    # We use a small safety margin → 730 kHz.
     for ch in (all_ui_channels or []):
         f = int(ch.get('frequency', 0))
-        if f and abs(f - center) > 490000:
-            raise ValueError(
-                f'Channel {ch.get("name", "?")} freq {f} too far from center {center}')
+        bw = int(ch.get('bandwidth', 125000))
+        max_if_offset = (RF_RX_BANDWIDTH_HZ // 2) - (bw // 2) - 7500  # 7.5 kHz margin
+        if f and abs(f - center) > max_if_offset:
+            ch_name = ch.get('name', ch.get('friendly_name', '?'))
+            delta = abs(f - center)
+            logger.warning(
+                '_generate_bridge_conf: channel %s freq %d is %d Hz from '
+                'center %d (max %d Hz for BW %d) — forcing DISABLED',
+                ch_name, f, delta, center, max_if_offset, bw)
+            ch['active'] = False  # force-disable to prevent HAL rejection
 
     # --- HAL-level LBT is ALWAYS DISABLED ---
     # All LBT logic is handled in Python software (GlobalTXScheduler)

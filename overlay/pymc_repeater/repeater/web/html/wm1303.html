@@ -1315,7 +1315,7 @@ async function loadCh(){
     ifChainData=sd.channels||[];
     rfCenterData={rf0:sd.radio_0_freq_mhz,rf1:sd.radio_1_freq_mhz};
   }catch(e){ifChainData=[];}
-  var _abc='ABCDEFGHIJKLMNOPQRSTUVWXYZ';chData.forEach(function(c,i){if(c.lbt_enabled===undefined)c.lbt_enabled=false;if(c.cad_enabled===undefined)c.cad_enabled=true;if(!c.friendly_name)c.friendly_name='Channel '+(_abc[i]||(i+1));});
+  var _abc='ABCDEFGHIJKLMNOPQRSTUVWXYZ';chData.forEach(function(c,i){if(c.lbt_enabled===undefined)c.lbt_enabled=false;if(c.cad_enabled===undefined)c.cad_enabled=false;if(!c.lbt_enabled)c.cad_enabled=false;if(!c.friendly_name)c.friendly_name='Channel '+(_abc[i]||(i+1));});
   renderCh();
   renderIfChains();
 }
@@ -1337,14 +1337,14 @@ function renderCh(){
     <select class="ci" onchange="chData[${i}].coding_rate=this.value">${mkSel(CR,ch.coding_rate)}</select>
     <input class="ci" type="number" min="6" max="65535" value="${ch.preamble_length||17}" onchange="chData[${i}].preamble_length=parseInt(this.value)">
     <input class="ci" type="number" min="-120" max="0" value="${ch.lbt_rssi_target||-80}" onchange="chData[${i}].lbt_rssi_target=parseInt(this.value)">
-    <div style="display:flex;align-items:center;justify-content:center"><label class="tgl"><input type="checkbox" ${ch.lbt_enabled?' checked':''} onchange="chData[${i}].lbt_enabled=this.checked"><span class="tsl"></span></label></div>
-    <div style="display:flex;align-items:center;justify-content:center"><label class="tgl"><input type="checkbox" ${ch.cad_enabled?' checked':''} onchange="chData[${i}].cad_enabled=this.checked"><span class="tsl"></span></label></div>
+    <div style="display:flex;align-items:center;justify-content:center"><label class="tgl"><input type="checkbox" ${ch.lbt_enabled?' checked':''} onchange="chData[${i}].lbt_enabled=this.checked;if(!this.checked){chData[${i}].cad_enabled=false;}renderCh()"><span class="tsl"></span></label></div>
+    <div style="display:flex;align-items:center;justify-content:center"><label class="tgl" ${!ch.lbt_enabled?'style="opacity:0.35;pointer-events:none"':''}><input type="checkbox" ${ch.cad_enabled?' checked':''} ${!ch.lbt_enabled?'disabled':''} onchange="chData[${i}].cad_enabled=this.checked"><span class="tsl"></span></label></div>
     <select class="ci" onchange="chData[${i}].tx_power=parseInt(this.value)"><option value='12' ${(ch.tx_power||14)==12?'selected':''}>12</option><option value='14' ${(ch.tx_power||14)==14?'selected':''}>14</option><option value='17' ${(ch.tx_power||14)==17?'selected':''}>17</option><option value='20' ${(ch.tx_power||14)==20?'selected':''}>20</option><option value='27' ${(ch.tx_power||14)==27?'selected':''}>27</option></select>
     <div style="display:flex;align-items:center;justify-content:center"><label class="tgl"><input type="checkbox" ${ch.active?'checked':''}  onchange="chData[${i}].active=this.checked;renderCh()"><span class="tsl"></span></label></div>
     <button class="btn ber ic" onclick="chData.splice(${i},1);renderCh()" title="Delete"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
   </div>`).join('');
 }
-function addCh(){var _l='ABCDEFGHIJKLMNOPQRSTUVWXYZ';var _fn='Channel '+(_l[chData.length]||(chData.length+1));chData.push({name:'ch-new',friendly_name:_fn,frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:14,lbt_rssi_target:-80,lbt_enabled:false,cad_enabled:true,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
+function addCh(){var _l='ABCDEFGHIJKLMNOPQRSTUVWXYZ';var _fn='Channel '+(_l[chData.length]||(chData.length+1));chData.push({name:'ch-new',friendly_name:_fn,frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:14,lbt_rssi_target:-80,lbt_enabled:false,cad_enabled:false,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
 function renderIfChains(doFetch){
   if(doFetch){
     api('GET','/api/wm1303/spectrum').then(sd=>{
@@ -1395,6 +1395,10 @@ async function saveCh(restart){
     const payload = {channels: chData};
     if(restart) payload.restart = true;
     const resp = await api('POST','/api/wm1303/channels', payload);
+    // Show IF range warnings if any channels are out of range
+    if(resp.warnings && resp.warnings.length){
+      resp.warnings.forEach(w => toast('⚠️ '+w, 'wa', 8000));
+    }
     if(restart){
       toast('Channels saved — restarting service...','ok');
       let secs = 25;
