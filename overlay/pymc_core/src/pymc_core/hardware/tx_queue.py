@@ -402,75 +402,107 @@ class GlobalTXScheduler:
         logger.info("GlobalTXScheduler: scheduler loop running with %d queues",
                    n_queues)
 
-        while self._running:
-            sent_any = False
-            # Rotate start position for fair scheduling
-            start = self._round_index % n_queues
-            rotated = queue_list[start:] + queue_list[:start]
-            for channel_id, queue in rotated:
-                try:
-                    request = queue.dequeue_nowait()
-                except asyncio.QueueEmpty:
-                    continue
+        try:
+            while self._running:
+                sent_any = False
+                # Rotate start position for fair scheduling
+                start = self._round_index % n_queues
+                rotated = queue_list[start:] + queue_list[:start]
+                for channel_id, queue in rotated:
+                    try:
+                        request = queue.dequeue_nowait()
+                    except asyncio.QueueEmpty:
+                        continue
 
-                # TTL check
-                age = time.time() - request["enqueue_time"]
-                if age > queue.ttl_seconds:
-                    logger.warning("GlobalTXScheduler: packet expired on %s "
-                                  "(age=%.1fs, TTL=%.0fs)",
-                                  channel_id, age, queue.ttl_seconds)
-                    queue.stats["dropped_ttl"] += 1
-                    future = request.get("future")
-                    if future and not future.done():
-                        future.set_result({"ok": False, "error": "ttl_expired",
-                                           "age": round(age, 1)})
-                    continue
+                    # TTL check
+                    age = time.time() - request["enqueue_time"]
+                    if age > queue.ttl_seconds:
+                        logger.warning("GlobalTXScheduler: packet expired on %s "
+                                      "(age=%.1fs, TTL=%.0fs)",
+                                      channel_id, age, queue.ttl_seconds)
+                        queue.stats["dropped_ttl"] += 1
+                        future = request.get("future")
+                        if future and not future.done():
+                            future.set_result({"ok": False, "error": "ttl_expired",
+                                               "age": round(age, 1)})
+                        continue
 
-                # Build txpk using the queue's channel config
-                txpk = queue.build_txpk(
-                    request["payload"],
-                    request.get("tx_power", queue.tx_power))
+                    # Build txpk using the queue's channel config
+                    txpk = queue.build_txpk(
+                        request["payload"],
+                        request.get("tx_power", queue.tx_power))
 
-                # FIX Bug4: Measure queue wait BEFORE calling send_func
-                # This captures dequeue_time - enqueue_time only
-                queue_wait_ms = (time.time() - request["enqueue_time"]) * 1000
+                    # FIX Bug4: Measure queue wait BEFORE calling send_func
+                    # This captures dequeue_time - enqueue_time only
+                    queue_wait_ms = (time.time() - request["enqueue_time"]) * 1000
 
-                # --- Software LBT check ---
-                # When LBT is DISABLED: TX immediately, no check
-                # When LBT is ENABLED: 4 attempts with 2s/3s/4s delays, force-send on failure
-                lbt_tx_blocked = False
-                if self._lbt_check:
-                    lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
-                    if not lbt_result.get("lbt_enabled", False):
-                        # LBT disabled on this channel - send immediately
-                        queue.stats["lbt_skipped"] += 1
-                        queue.stats["cad_skipped"] += 1
-                    else:
-                        # LBT enabled - check spectral scan RSSI vs threshold
-                        lbt_delays = [0, 2.0, 3.0, 4.0]  # 4 attempts: immediate, +2s, +3s, +4s
-                        lbt_passed = False
-                        for attempt, delay in enumerate(lbt_delays):
-                            if delay > 0:
-                                logger.info("GlobalTXScheduler: LBT retry %d/%d on %s, "
-                                           "waiting %.0fs (rssi=%.1f, threshold=%.1f)",
-                                           attempt + 1, len(lbt_delays), channel_id,
-                                           delay,
-                                           lbt_result.get("rssi", 0),
-                                           lbt_result.get("threshold", 0))
-                                await asyncio.sleep(delay)
-                                lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
+                    # --- Software LBT check ---
+                    # When LBT is DISABLED: TX immediately, no check
+                    # When LBT is ENABLED: 4 attempts with 2s/3s/4s delays, force-send on failure
+                    lbt_tx_blocked = False
+                    if self._lbt_check:
+                        lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
+                        if not lbt_result.get("lbt_enabled", False):
+                            # LBT disabled on this channel - send immediately
+                            queue.stats["lbt_skipped"] += 1
+                            queue.stats["cad_skipped"] += 1
+                        else:
+                            # LBT enabled - check spectral scan RSSI vs threshold
+                            lbt_delays = [0, 2.0, 3.0, 4.0]  # 4 attempts: immediate, +2s, +3s, +4s
+                            lbt_passed = False
+                            for attempt, delay in enumerate(lbt_delays):
+                                if delay > 0:
+                                    logger.info("GlobalTXScheduler: LBT retry %d/%d on %s, "
+                                               "waiting %.0fs (rssi=%.1f, threshold=%.1f)",
+                                               attempt + 1, len(lbt_delays), channel_id,
+                                               delay,
+                                               lbt_result.get("rssi", 0),
+                                               lbt_result.get("threshold", 0))
+                                    await asyncio.sleep(delay)
+                                    lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
 
-                            # Record LBT RSSI in rolling buffer (Task 2)
-                            _lbt_rssi = lbt_result.get("rssi")
-                            if _lbt_rssi is not None:
-                                queue.record_lbt_rssi(_lbt_rssi)
+                                # Record LBT RSSI in rolling buffer (Task 2)
+                                _lbt_rssi = lbt_result.get("rssi")
+                                if _lbt_rssi is not None:
+                                    queue.record_lbt_rssi(_lbt_rssi)
 
-                            if lbt_result.get("allow", True):
-                                lbt_passed = True
-                                queue.stats["lbt_passed"] += 1
-                                # Track CAD stats from enhanced LBT result
+                                if lbt_result.get("allow", True):
+                                    lbt_passed = True
+                                    queue.stats["lbt_passed"] += 1
+                                    # Track CAD stats from enhanced LBT result
+                                    _cad = lbt_result.get('cad_result')
+                                    if isinstance(_cad, dict):
+                                        _src = _cad.get('source', 'unknown')
+                                        if _cad.get('detected', False):
+                                            queue.stats["cad_detected"] += 1
+                                            if 'hardware' in _src:
+                                                queue.stats["cad_hw_detected"] += 1
+                                            else:
+                                                queue.stats["cad_sw_detected"] += 1
+                                        else:
+                                            queue.stats["cad_clear"] += 1
+                                            if 'hardware' in _src:
+                                                queue.stats["cad_hw_clear"] += 1
+                                            else:
+                                                queue.stats["cad_sw_clear"] += 1
+                                        queue.stats["cad_last_result"] = _cad.get('reason', 'unknown')
+                                        queue.stats["cad_last_source"] = _src
+                                    else:
+                                        queue.stats["cad_skipped"] += 1
+                                    queue.stats["lbt_last_threshold"] = lbt_result.get("threshold")
+                                    if attempt > 0:
+                                        logger.info("GlobalTXScheduler: LBT PASSED on %s "
+                                                   "after %d attempts (rssi=%.1f, threshold=%.1f)",
+                                                   channel_id, attempt + 1,
+                                                   lbt_result.get("rssi", 0),
+                                                   lbt_result.get("threshold", 0))
+                                    break
+                            if not lbt_passed:
+                                # All 4 attempts failed - wait 5s then FORCE SEND
+                                queue.stats["lbt_blocked"] += 1
+                                # Track CAD stats for blocked case
                                 _cad = lbt_result.get('cad_result')
-                                if _cad is not None:
+                                if isinstance(_cad, dict):
                                     _src = _cad.get('source', 'unknown')
                                     if _cad.get('detected', False):
                                         queue.stats["cad_detected"] += 1
@@ -478,129 +510,109 @@ class GlobalTXScheduler:
                                             queue.stats["cad_hw_detected"] += 1
                                         else:
                                             queue.stats["cad_sw_detected"] += 1
-                                    else:
-                                        queue.stats["cad_clear"] += 1
-                                        if 'hardware' in _src:
-                                            queue.stats["cad_hw_clear"] += 1
-                                        else:
-                                            queue.stats["cad_sw_clear"] += 1
                                     queue.stats["cad_last_result"] = _cad.get('reason', 'unknown')
                                     queue.stats["cad_last_source"] = _src
-                                else:
-                                    queue.stats["cad_skipped"] += 1
+                                queue.stats["lbt_last_blocked_at"] = time.time()
                                 queue.stats["lbt_last_threshold"] = lbt_result.get("threshold")
-                                if attempt > 0:
-                                    logger.info("GlobalTXScheduler: LBT PASSED on %s "
-                                               "after %d attempts (rssi=%.1f, threshold=%.1f)",
-                                               channel_id, attempt + 1,
-                                               lbt_result.get("rssi", 0),
-                                               lbt_result.get("threshold", 0))
-                                break
-                        if not lbt_passed:
-                            # All 4 attempts failed - wait 5s then FORCE SEND
-                            queue.stats["lbt_blocked"] += 1
-                            # Track CAD stats for blocked case
-                            _cad = lbt_result.get('cad_result')
-                            if _cad is not None:
-                                _src = _cad.get('source', 'unknown')
-                                if _cad.get('detected', False):
-                                    queue.stats["cad_detected"] += 1
-                                    if 'hardware' in _src:
-                                        queue.stats["cad_hw_detected"] += 1
-                                    else:
-                                        queue.stats["cad_sw_detected"] += 1
-                                queue.stats["cad_last_result"] = _cad.get('reason', 'unknown')
-                                queue.stats["cad_last_source"] = _src
-                            queue.stats["lbt_last_blocked_at"] = time.time()
-                            queue.stats["lbt_last_threshold"] = lbt_result.get("threshold")
-                            logger.warning("GlobalTXScheduler: LBT BLOCKED on %s after %d "
-                                          "attempts - waiting 5s then FORCE SENDING "
-                                          "(rssi=%.1f, threshold=%.1f, freq=%.3fMHz)",
-                                          channel_id, len(lbt_delays),
-                                          lbt_result.get("rssi", 0),
-                                          lbt_result.get("threshold", 0),
-                                          queue.freq_hz / 1e6)
-                            await asyncio.sleep(5.0)
-                            queue.stats["lbt_force_sent"] += 1
-                            logger.warning("GlobalTXScheduler: FORCE SENDING packet on %s "
-                                          "despite LBT block (rssi=%.1f, threshold=%.1f)",
-                                          channel_id,
-                                          lbt_result.get("rssi", 0),
-                                          lbt_result.get("threshold", 0))
+                                logger.warning("GlobalTXScheduler: LBT BLOCKED on %s after %d "
+                                              "attempts - waiting 5s then FORCE SENDING "
+                                              "(rssi=%.1f, threshold=%.1f, freq=%.3fMHz)",
+                                              channel_id, len(lbt_delays),
+                                              lbt_result.get("rssi", 0),
+                                              lbt_result.get("threshold", 0),
+                                              queue.freq_hz / 1e6)
+                                await asyncio.sleep(5.0)
+                                queue.stats["lbt_force_sent"] += 1
+                                logger.warning("GlobalTXScheduler: FORCE SENDING packet on %s "
+                                              "despite LBT block (rssi=%.1f, threshold=%.1f)",
+                                              channel_id,
+                                              lbt_result.get("rssi", 0),
+                                              lbt_result.get("threshold", 0))
 
-                if lbt_tx_blocked:
-                    continue  # Skip TX, move to next queue
+                    if lbt_tx_blocked:
+                        continue  # Skip TX, move to next queue
 
-                # TX Hold check: if RX batching window active, wait before TX
-                if self._tx_hold_getter:
-                    _hold_until = self._tx_hold_getter()
-                    _hold_remaining = _hold_until - time.monotonic()
-                    if _hold_remaining > 0.01:
-                        logger.info("GlobalTXScheduler: TX hold active on %s, "
-                                   "waiting %.1fs (batch window)",
-                                   channel_id, _hold_remaining)
-                        await asyncio.sleep(_hold_remaining)
+                    # TX Hold check: if RX batching window active, wait before TX
+                    if self._tx_hold_getter:
+                        _hold_until = self._tx_hold_getter()
+                        _hold_remaining = _hold_until - time.monotonic()
+                        if _hold_remaining > 0.01:
+                            logger.info("GlobalTXScheduler: TX hold active on %s, "
+                                       "waiting %.1fs (batch window)",
+                                       channel_id, _hold_remaining)
+                            await asyncio.sleep(_hold_remaining)
 
-                # Send via the backend's PULL_RESP sender
-                try:
-                    result = await self._send_func(txpk, channel_id)
-                except Exception as e:
-                    logger.error("GlobalTXScheduler: send error on %s: %s",
-                                channel_id, e, exc_info=True)
-                    result = {"ok": False, "error": str(e)}
+                    # Send via the backend's PULL_RESP sender
+                    try:
+                        result = await self._send_func(txpk, channel_id)
+                    except Exception as e:
+                        logger.error("GlobalTXScheduler: send error on %s: %s",
+                                    channel_id, e, exc_info=True)
+                        result = {"ok": False, "error": str(e)}
 
-                # FIX Bug1: Use send_ms from result dict (UDP send only)
-                # not wall-clock around send_func (includes airtime wait)
-                send_ms = result.get("send_ms", 0)
-                airtime_ms = result.get("airtime_ms", 0)
+                    # FIX Bug1: Use send_ms from result dict (UDP send only)
+                    # not wall-clock around send_func (includes airtime wait)
+                    send_ms = result.get("send_ms", 0)
+                    airtime_ms = result.get("airtime_ms", 0)
 
-                if result.get("ok"):
-                    queue.stats["total_sent"] += 1
-                    queue.stats["last_tx_time"] = time.time()
-                    queue.record_tx_time(send_ms)
-                    queue.record_tx_timing(send_ms, airtime_ms, queue_wait_ms)
-                    result["send_ms"] = send_ms
-                    result["airtime_ms"] = airtime_ms
-                    result["queue_wait_ms"] = queue_wait_ms
-                    logger.info("GlobalTXScheduler: TX OK on %s (%d bytes, "
-                               "freq=%.3f, datr=%s, send=%.1fms, "
-                               "airtime=%.1fms, queue_wait=%.1fms)",
-                               channel_id, len(request["payload"]),
-                               txpk.get("freq", 0), txpk.get("datr", ""),
-                               send_ms, airtime_ms, queue_wait_ms)
-                    # Notify backend for per-channel TX stats tracking
-                    if self._post_tx_callback:
-                        try:
-                            self._post_tx_callback(
-                                channel_id, send_ms, airtime_ms,
-                                queue_wait_ms, len(request["payload"]))
-                        except Exception as _cb_err:
-                            logger.debug("GlobalTXScheduler: post_tx_callback error: %s", _cb_err)
+                    if result.get("ok"):
+                        queue.stats["total_sent"] += 1
+                        queue.stats["last_tx_time"] = time.time()
+                        queue.record_tx_time(send_ms)
+                        queue.record_tx_timing(send_ms, airtime_ms, queue_wait_ms)
+                        result["send_ms"] = send_ms
+                        result["airtime_ms"] = airtime_ms
+                        result["queue_wait_ms"] = queue_wait_ms
+                        logger.info("GlobalTXScheduler: TX OK on %s (%d bytes, "
+                                   "freq=%.3f, datr=%s, send=%.1fms, "
+                                   "airtime=%.1fms, queue_wait=%.1fms)",
+                                   channel_id, len(request["payload"]),
+                                   txpk.get("freq", 0), txpk.get("datr", ""),
+                                   send_ms, airtime_ms, queue_wait_ms)
+                        # Notify backend for per-channel TX stats tracking
+                        if self._post_tx_callback:
+                            try:
+                                self._post_tx_callback(
+                                    channel_id, send_ms, airtime_ms,
+                                    queue_wait_ms, len(request["payload"]))
+                            except Exception as _cb_err:
+                                logger.debug("GlobalTXScheduler: post_tx_callback error: %s", _cb_err)
+                    else:
+                        queue.stats["total_failed"] += 1
+                        logger.warning("GlobalTXScheduler: TX FAIL on %s: %s "
+                                      "(send=%.1fms, queue_wait=%.1fms)",
+                                      channel_id, result.get("error", "unknown"),
+                                      send_ms, queue_wait_ms)
+
+                    # Resolve the caller's future
+                    future = request.get("future")
+                    if future and not future.done():
+                        future.set_result(result)
+
+                    self._packets_scheduled += 1
+                    sent_any = True
+
+                    # 50ms inter-packet gap for radio to settle
+                    await asyncio.sleep(0.002)
+
+                if sent_any:
+                    # Rotate start position for next round
+                    self._round_index += 1
                 else:
-                    queue.stats["total_failed"] += 1
-                    logger.warning("GlobalTXScheduler: TX FAIL on %s: %s "
-                                  "(send=%.1fms, queue_wait=%.1fms)",
-                                  channel_id, result.get("error", "unknown"),
-                                  send_ms, queue_wait_ms)
+                    # No packets in any queue - brief sleep to avoid busy-wait
+                    await asyncio.sleep(0.01)  # 10ms poll interval
 
-                # Resolve the caller's future
-                future = request.get("future")
-                if future and not future.done():
-                    future.set_result(result)
-
-                self._packets_scheduled += 1
-                sent_any = True
-
-                # 50ms inter-packet gap for radio to settle
-                await asyncio.sleep(0.002)
-
-            if sent_any:
-                # Rotate start position for next round
-                self._round_index += 1
-            else:
-                # No packets in any queue - brief sleep to avoid busy-wait
-                await asyncio.sleep(0.01)  # 10ms poll interval
-
+        except asyncio.CancelledError:
+            logger.info("GlobalTXScheduler: loop cancelled")
+            return
+        except Exception as _loop_exc:
+            logger.error("GlobalTXScheduler: FATAL scheduler loop crashed: %s",
+                        _loop_exc, exc_info=True)
+            # Try to restart after a brief pause
+            await asyncio.sleep(1.0)
+            logger.warning("GlobalTXScheduler: attempting to restart scheduler loop")
+            self._task = asyncio.create_task(self._scheduler_loop())
+            return
         logger.info("GlobalTXScheduler: loop exited")
 
     def get_stats(self) -> dict:

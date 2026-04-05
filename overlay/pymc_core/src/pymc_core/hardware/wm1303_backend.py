@@ -1601,7 +1601,7 @@ class WM1303Backend:
                 'noise_floor': ch_nf,
                 'freq_mhz': best_freq,
                 'reason': 'channel_busy',
-                'cad_result': 'skipped_rssi_blocked',
+                'cad_result': {'detected': False, 'source': 'skipped_rssi_blocked', 'reason': 'rssi_above_threshold'},
             }
 
         # ② CAD check (if enabled for this channel)
