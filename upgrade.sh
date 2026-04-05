@@ -973,7 +973,7 @@ fi
 
 echo -e "\n${BOLD}${GREEN}"
 echo "  ╔══════════════════════════════════════════════════════════╗"
-echo "  ║     Upgrade Complete!  ${VERSION_STR}                         ║"
+printf "  ║%-58s║\n" "     Upgrade Complete!  ${VERSION_STR}"
 echo "  ╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 echo -e "  ${BOLD}Summary:${NC}"

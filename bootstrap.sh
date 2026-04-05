@@ -65,14 +65,14 @@ cd "${INSTALL_DIR}"
 if [ -d "/opt/pymc_repeater" ] && systemctl is-enabled pymc-repeater &>/dev/null; then
     echo ""
     echo "  ╔══════════════════════════════════════════════════════════╗"
-    echo "  ║  Existing installation detected — running UPGRADE       ║"
+    echo "  ║  Existing installation detected — running UPGRADE        ║"
     echo "  ╚══════════════════════════════════════════════════════════╝"
     echo ""
     bash upgrade.sh
 else
     echo ""
     echo "  ╔══════════════════════════════════════════════════════════╗"
-    echo "  ║  No installation found — running INSTALL                ║"
+    echo "  ║  No installation found — running INSTALL                 ║"
     echo "  ╚══════════════════════════════════════════════════════════╝"
     echo ""
     bash install.sh
