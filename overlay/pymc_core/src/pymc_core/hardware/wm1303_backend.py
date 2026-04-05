@@ -130,10 +130,15 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
 
     # Read ALL channel definitions from wm1303_ui.json (the SSOT)
     all_ui_channels = []
+    manual_center_hz = 0  # Manual RF center override from UI (MHz -> Hz)
     try:
         if UI_JSON_PATH.exists():
             ui_data = json.loads(UI_JSON_PATH.read_text())
             all_ui_channels = ui_data.get('channels', [])
+            # Check for manually-set RF center frequency (saved by UI)
+            _rf_mhz = ui_data.get('rf_center_freq_mhz', 0)
+            if _rf_mhz:
+                manual_center_hz = int(float(_rf_mhz) * 1_000_000)
     except Exception as ex:
         logger.warning('_generate_bridge_conf: could not read %s: %s', UI_JSON_PATH, ex)
 
@@ -145,7 +150,7 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
         active_freqs = [int(cfg['frequency']) for cfg in channels.values()]
         if not active_freqs:
             raise ValueError('No channels configured')
-        center = sum(active_freqs) // len(active_freqs)
+        auto_center = sum(active_freqs) // len(active_freqs)
     else:
         # Compute center from ACTIVE channels only — inactive channels don't
         # need IF chain slots and should not shift the center frequency.
@@ -158,10 +163,17 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
                            for ch in all_ui_channels if ch.get('frequency', 0)]
         if not active_freqs:
             raise ValueError('No channel frequencies found in UI config')
-        center = sum(active_freqs) // len(active_freqs)
+        auto_center = sum(active_freqs) // len(active_freqs)
 
-    logger.info('_generate_bridge_conf: center=%d Hz (from %d channels)',
-                center, len(active_freqs))
+    # Use manual RF center frequency if set, otherwise use auto-calculated
+    if manual_center_hz:
+        center = manual_center_hz
+        logger.info('_generate_bridge_conf: center=%d Hz (MANUAL from rf_center_freq_mhz=%.3f MHz)',
+                    center, manual_center_hz / 1_000_000)
+    else:
+        center = auto_center
+        logger.info('_generate_bridge_conf: center=%d Hz (AUTO from %d active channels)',
+                    center, len(active_freqs))
 
     # Validate channel frequencies against SX1302 IF range.
     # max_if_offset = (RF_RX_BW / 2) − (channel_BW / 2)

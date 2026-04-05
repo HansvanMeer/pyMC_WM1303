@@ -169,6 +169,14 @@ See [docs/installation.md](docs/installation.md) for detailed installation instr
 
 ## Upgrading
 
+**One-line upgrade** (recommended):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/upgrade_bootstrap.sh | sudo bash
+```
+
+**Or manually**:
+
 ```bash
 cd pyMC_WM1303
 git pull
@@ -180,7 +188,12 @@ Options:
 - `--force-config` — Overwrite existing configuration with templates
 - `--skip-pull` — Skip pulling from fork repositories
 
-The upgrade script automatically backs up your configuration before making changes.
+The upgrade script:
+- Automatically backs up your configuration before making changes
+- Smart-merges config files (adds missing keys without overwriting your settings)
+- Runs database schema migrations
+- Detects HAL overlay changes via checksums and rebuilds only when needed
+- Preserves all your channel settings, bridge rules, and database history
 
 ## WM1303 Manager UI
 
@@ -216,7 +229,10 @@ See [Quick Start — Step 4](#4-configure-bridge-rules) above for details.
 ```
 pyMC_WM1303/
 ├── install.sh              # Full installation script (12 phases)
-├── upgrade.sh              # Upgrade script (8 phases)
+├── upgrade.sh              # Upgrade script with smart config merge & DB migration
+├── upgrade_bootstrap.sh    # One-line upgrade bootstrap
+├── bootstrap.sh            # One-line install bootstrap
+├── VERSION                 # Version tracking file
 ├── README.md               # This file
 ├── TODO.md                 # Development task tracking
 ├── LICENSE                 # MIT License

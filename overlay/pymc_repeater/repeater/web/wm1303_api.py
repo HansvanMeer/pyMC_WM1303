@@ -778,10 +778,10 @@ class WM1303API:
                 _pkt_fwd = _pkt_tx
         except Exception:
             pass
-        # Read version from VERSION file
-        _version = "0.9.315"
+        # Read version from VERSION file (deployed by install/upgrade scripts)
+        _version = "0.10.0"
         try:
-            _vf = Path("/opt/pymc_repeater/repos/pyMC_Repeater/repeater/web/html/VERSION")
+            _vf = Path("/etc/pymc_repeater/version")
             if _vf.exists():
                 _version = _vf.read_text().strip()
         except Exception:

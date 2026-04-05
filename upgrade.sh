@@ -321,7 +321,40 @@ chown -R ${PI_USER}:${PI_USER} "${REPO_DIR}"
 # =============================================================================
 phase "Rebuild HAL & Packet Forwarder"
 
-if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ]; then
+# Detect overlay changes via checksums (rebuild even without git changes)
+HAL_OVERLAY_CHANGED=false
+step "Checking HAL overlay checksums"
+OVERLAY_DIFFS=0
+for overlay_file in \
+    "libloragw/src/loragw_hal.c" \
+    "libloragw/src/loragw_sx1302.c" \
+    "libloragw/src/loragw_sx1261.c" \
+    "libloragw/inc/loragw_sx1302.h" \
+    "libloragw/inc/loragw_sx1261.h" \
+    "libloragw/inc/sx1261_defs.h" \
+    "libloragw/Makefile" \
+    "packet_forwarder/src/lora_pkt_fwd.c" \
+    "packet_forwarder/Makefile"; do
+    src="${OVERLAY_DIR}/hal/${overlay_file}"
+    dst="${HAL_DIR}/${overlay_file}"
+    if [ -f "${src}" ] && [ -f "${dst}" ]; then
+        if ! cmp -s "${src}" "${dst}"; then
+            OVERLAY_DIFFS=$((OVERLAY_DIFFS + 1))
+            echo "  Changed: ${overlay_file}" >> "${LOG_FILE}"
+        fi
+    elif [ -f "${src}" ]; then
+        OVERLAY_DIFFS=$((OVERLAY_DIFFS + 1))
+        echo "  New: ${overlay_file}" >> "${LOG_FILE}"
+    fi
+done
+if [ ${OVERLAY_DIFFS} -gt 0 ]; then
+    HAL_OVERLAY_CHANGED=true
+    ok "${OVERLAY_DIFFS} file(s) differ from deployed version"
+else
+    ok "All overlay files match deployed version"
+fi
+
+if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ]; then
     step "Cleaning previous build artifacts"
     cd "${HAL_DIR}"
     sudo -u ${PI_USER} make clean >> "${LOG_FILE}" 2>&1 || true
@@ -441,18 +474,105 @@ if [ "$FORCE_CONFIG" = true ]; then
 
     step "Updating wm1303_ui.json"
     cp "${SCRIPT_DIR}/config/wm1303_ui.json" "${CONFIG_DIR}/wm1303_ui.json" >> "${LOG_FILE}" 2>&1
-    ok "Updated"
+    ok "Overwritten"
 
     step "Updating config.yaml"
     cp "${SCRIPT_DIR}/config/config.yaml.template" "${CONFIG_DIR}/config.yaml" >> "${LOG_FILE}" 2>&1
-    ok "Updated"
+    ok "Overwritten"
 
     step "Updating global_conf.json"
     cp "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" >> "${LOG_FILE}" 2>&1
-    ok "Updated"
+    ok "Overwritten"
 else
-    step "Preserving existing configuration files"
-    ok "Use --force-config to overwrite"
+    # Smart merge: add missing keys from template without overwriting existing values
+    step "Merging wm1303_ui.json (adding missing keys)"
+    MERGE_RESULT=$(${VENV_DIR}/bin/python3 << PYMERGE 2>>${LOG_FILE}
+import json, sys
+try:
+    tmpl_path = "${SCRIPT_DIR}/config/wm1303_ui.json"
+    live_path = "${CONFIG_DIR}/wm1303_ui.json"
+    with open(tmpl_path) as f:
+        tmpl = json.load(f)
+    with open(live_path) as f:
+        live = json.load(f)
+    added = []
+    for key in tmpl:
+        if key not in live:
+            live[key] = tmpl[key]
+            added.append(key)
+    if added:
+        with open(live_path, 'w') as f:
+            json.dump(live, f, indent=2)
+        print("added: " + ", ".join(added))
+    else:
+        print("up-to-date")
+except FileNotFoundError:
+    import shutil
+    shutil.copy2(tmpl_path, live_path)
+    print("installed-from-template")
+except Exception as e:
+    print("error: " + str(e), file=sys.stderr)
+    print("error")
+PYMERGE
+    )
+    if [ "${MERGE_RESULT}" = "up-to-date" ]; then
+        ok "All keys present"
+    elif echo "${MERGE_RESULT}" | grep -q "^added:"; then
+        ok "${MERGE_RESULT}"
+    elif [ "${MERGE_RESULT}" = "installed-from-template" ]; then
+        ok "Installed from template (first upgrade)"
+    else
+        warn "Config merge issue — see ${LOG_FILE}"
+    fi
+
+    step "Merging config.yaml (adding missing fields)"
+    YAML_MERGE=$(${VENV_DIR}/bin/python3 << PYYAML 2>>${LOG_FILE}
+import yaml, sys
+def deep_merge(base, override):
+    added = []
+    for key, val in base.items():
+        if key not in override:
+            override[key] = val
+            added.append(key)
+        elif isinstance(val, dict) and isinstance(override.get(key), dict):
+            sub = deep_merge(val, override[key])
+            added.extend(key + "." + s for s in sub)
+    return added
+try:
+    tmpl_path = "${SCRIPT_DIR}/config/config.yaml.template"
+    live_path = "${CONFIG_DIR}/config.yaml"
+    with open(tmpl_path) as f:
+        tmpl = yaml.safe_load(f) or {}
+    with open(live_path) as f:
+        live = yaml.safe_load(f) or {}
+    added = deep_merge(tmpl, live)
+    if added:
+        with open(live_path, 'w') as f:
+            yaml.dump(live, f, default_flow_style=False, allow_unicode=True)
+        print("added: " + ", ".join(added))
+    else:
+        print("up-to-date")
+except FileNotFoundError:
+    import shutil
+    shutil.copy2(tmpl_path, live_path)
+    print("installed-from-template")
+except Exception as e:
+    print("error: " + str(e), file=sys.stderr)
+    print("error")
+PYYAML
+    )
+    if [ "${YAML_MERGE}" = "up-to-date" ]; then
+        ok "All fields present"
+    elif echo "${YAML_MERGE}" | grep -q "^added:"; then
+        ok "${YAML_MERGE}"
+    elif [ "${YAML_MERGE}" = "installed-from-template" ]; then
+        ok "Installed from template (first upgrade)"
+    else
+        warn "Config merge issue — see ${LOG_FILE}"
+    fi
+
+    step "Preserving bridge_config.yaml"
+    ok "Preserved (never overwritten)"
 fi
 
 step "Ensuring mesh identity key exists"
@@ -474,6 +594,16 @@ step "Updating systemd service file"
 cp "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service >> "${LOG_FILE}" 2>&1
 systemctl daemon-reload >> "${LOG_FILE}" 2>&1
 ok "Service file updated"
+
+step "Updating version file"
+if [ -f "${SCRIPT_DIR}/VERSION" ]; then
+    cp "${SCRIPT_DIR}/VERSION" "${CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1
+    chown ${PI_USER}:${PI_USER} "${CONFIG_DIR}/version"
+    ok "v$(cat ${SCRIPT_DIR}/VERSION)"
+else
+    warn "VERSION file not found in repo"
+fi
+
 
 step "Regenerating GPIO reset scripts"
 # Read GPIO config from wm1303_ui.json
@@ -616,23 +746,142 @@ chown -R ${PI_USER}:${PI_USER} "${PKTFWD_DIR}"
 
 
 # =============================================================================
-# Phase 7b: Database Cleanup
+# Phase 7b: Database Schema Migration & Cleanup
 # =============================================================================
-phase "Database Cleanup"
+phase "Database Schema Migration & Cleanup"
 
 DB_PATH="${DATA_DIR}/repeater.db"
+SPECTRUM_DB="${DATA_DIR}/spectrum_history.db"
+
 if [ -f "${DB_PATH}" ]; then
+    step "Running schema migration"
+    MIGRATION_RESULT=$(${VENV_DIR}/bin/python3 << DBMIGRATE 2>>${LOG_FILE}
+import sqlite3, sys, time
+
+def migrate(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    changes = []
+
+    # --- Create tables if missing ---
+    tables = {
+        'channel_stats_history': '''CREATE TABLE IF NOT EXISTS channel_stats_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT, timestamp REAL, avg_rssi REAL, avg_snr REAL,
+            pkt_count INTEGER, noise_floor_dbm REAL
+        )''',
+        'noise_floor_history': '''CREATE TABLE IF NOT EXISTS noise_floor_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT, timestamp REAL, noise_floor_dbm REAL
+        )''',
+        'noise_floor': '''CREATE TABLE IF NOT EXISTS noise_floor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            noise_floor_dbm REAL NOT NULL
+        )''',
+        'packets': '''CREATE TABLE IF NOT EXISTS packets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL, direction TEXT, channel TEXT,
+            frequency REAL, sf INTEGER, bw INTEGER,
+            rssi REAL, snr REAL, payload BLOB,
+            raw_hex TEXT, size INTEGER
+        )''',
+        'adverts': '''CREATE TABLE IF NOT EXISTS adverts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL, node_id TEXT, short_name TEXT,
+            long_name TEXT, rssi REAL, snr REAL, hops INTEGER
+        )''',
+        'crc_errors': '''CREATE TABLE IF NOT EXISTS crc_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL, channel TEXT, frequency REAL,
+            sf INTEGER, bw INTEGER, rssi REAL, snr REAL
+        )''',
+        'dedup_events': '''CREATE TABLE IF NOT EXISTS dedup_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL, channel TEXT, frequency REAL,
+            payload_hash TEXT, action TEXT
+        )''',
+        'migrations': '''CREATE TABLE IF NOT EXISTS migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            applied_at REAL NOT NULL
+        )''',
+    }
+    for tname, ddl in tables.items():
+        # Check if table exists
+        exists = cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (tname,)).fetchone()
+        if not exists:
+            cur.execute(ddl)
+            changes.append("created table " + tname)
+
+    # --- Add missing columns ---
+    def has_column(table, column):
+        try:
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(" + table + ")").fetchall()]
+            return column in cols
+        except Exception:
+            return True  # assume exists if check fails
+
+    col_migrations = [
+        ('adverts', 'zero_hop', 'BOOLEAN NOT NULL DEFAULT FALSE'),
+        ('packets', 'lbt_attempts', 'INTEGER DEFAULT 0'),
+        ('packets', 'lbt_backoff_delays_ms', 'TEXT'),
+        ('packets', 'lbt_channel_busy', 'BOOLEAN DEFAULT FALSE'),
+        ('channel_stats_history', 'noise_floor_dbm', 'REAL'),
+        ('channel_stats_history', 'pkt_count', 'INTEGER'),
+    ]
+    for table, column, coldef in col_migrations:
+        if not has_column(table, column):
+            try:
+                cur.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + coldef)
+                changes.append("added " + table + "." + column)
+            except Exception as e:
+                pass  # column may already exist
+
+    # --- Create indexes ---
+    indexes = [
+        ('idx_noise_timestamp', 'noise_floor', 'timestamp'),
+        ('idx_stats_channel_ts', 'channel_stats_history', 'channel_id, timestamp'),
+        ('idx_packets_timestamp', 'packets', 'timestamp'),
+    ]
+    for idx_name, table, cols in indexes:
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS " + idx_name + " ON " + table + "(" + cols + ")")
+        except Exception:
+            pass
+
+    conn.commit()
+    conn.close()
+    return changes
+
+try:
+    result = migrate("${DB_PATH}")
+    if result:
+        print(str(len(result)) + " changes: " + ", ".join(result))
+    else:
+        print("up-to-date")
+except Exception as e:
+    print("error: " + str(e), file=sys.stderr)
+    print("error")
+DBMIGRATE
+    )
+    if [ "${MIGRATION_RESULT}" = "up-to-date" ]; then
+        ok "Schema up to date"
+    elif echo "${MIGRATION_RESULT}" | grep -q "changes:"; then
+        ok "${MIGRATION_RESULT}"
+    else
+        warn "Migration issue — see ${LOG_FILE}"
+    fi
+
     step "Cleaning bogus TX echo data (avg_rssi > -50 dBm)"
     BOGUS_COUNT=$(${VENV_DIR}/bin/python3 -c "
 import sqlite3
 try:
     conn = sqlite3.connect('${DB_PATH}')
     cur = conn.cursor()
-    cur.execute('''CREATE TABLE IF NOT EXISTS channel_stats_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        channel_id TEXT, timestamp REAL, avg_rssi REAL, avg_snr REAL,
-        pkt_count INTEGER, noise_floor_dbm REAL
-    )''')
     count = cur.execute('SELECT COUNT(*) FROM channel_stats_history WHERE avg_rssi > -50').fetchone()[0]
     if count > 0:
         cur.execute('UPDATE channel_stats_history SET avg_rssi = NULL, avg_snr = NULL WHERE avg_rssi > -50')
@@ -643,12 +892,12 @@ except Exception as e:
     print(0)
 " 2>/dev/null || echo "0")
     if [ "${BOGUS_COUNT}" -gt 0 ]; then
-        ok "Cleaned ${BOGUS_COUNT} rows with bogus RSSI values"
+        ok "Cleaned ${BOGUS_COUNT} rows"
     else
-        ok "No bogus TX echo data found"
+        ok "No bogus data found"
     fi
 
-    step "Cleaning old channel_id formats from stats history"
+    step "Cleaning old channel_id formats"
     OLD_FORMAT_COUNT=$(${VENV_DIR}/bin/python3 -c "
 import sqlite3
 try:
@@ -657,29 +906,25 @@ try:
     total = 0
     for table in ['channel_stats_history', 'noise_floor_history']:
         try:
-            cur.execute(f'''CREATE TABLE IF NOT EXISTS {table} (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id TEXT, timestamp REAL
-            )''')
-            count = cur.execute(f'SELECT COUNT(*) FROM {table} WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"').fetchone()[0]
+            count = cur.execute('SELECT COUNT(*) FROM ' + table + ' WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"').fetchone()[0]
             if count > 0:
-                cur.execute(f'DELETE FROM {table} WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"')
+                cur.execute('DELETE FROM ' + table + ' WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"')
                 total += count
         except Exception:
             pass
     conn.commit()
     print(total)
     conn.close()
-except Exception as e:
+except Exception:
     print(0)
 " 2>/dev/null || echo "0")
     if [ "${OLD_FORMAT_COUNT}" -gt 0 ]; then
-        ok "Removed ${OLD_FORMAT_COUNT} rows with old channel_id formats"
+        ok "Removed ${OLD_FORMAT_COUNT} rows"
     else
-        ok "No old format channel IDs found"
+        ok "No old format IDs found"
     fi
 else
-    info "Database not found at ${DB_PATH}, skipping cleanup"
+    info "Database not found at ${DB_PATH}, skipping migration"
 fi
 
 # =============================================================================
@@ -714,22 +959,29 @@ fi
 # =============================================================================
 # Upgrade Complete
 # =============================================================================
+VERSION_STR="unknown"
+if [ -f "${SCRIPT_DIR}/VERSION" ]; then
+    VERSION_STR="v$(cat ${SCRIPT_DIR}/VERSION)"
+fi
+
 echo -e "\n${BOLD}${GREEN}"
 echo "  ╔══════════════════════════════════════════════════════════╗"
-echo "  ║     Upgrade Complete!                                    ║"
+echo "  ║     Upgrade Complete!  ${VERSION_STR}                         ║"
 echo "  ╚══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 echo -e "  ${BOLD}Summary:${NC}"
 echo -e "  ─────────────────────────────────────────────────────────"
+echo -e "  Version:          ${CYAN}${VERSION_STR}${NC}"
 echo -e "  Backup location:  ${CYAN}${UPGRADE_BACKUP}${NC}"
 echo -e "  HAL updated:      ${CYAN}${HAL_UPDATED}${NC}"
+echo -e "  HAL overlay diff: ${CYAN}${HAL_OVERLAY_CHANGED}${NC}"
 echo -e "  pyMC_core updated: ${CYAN}${CORE_UPDATED}${NC}"
 echo -e "  pyMC_Repeater updated: ${CYAN}${REPEATER_UPDATED}${NC}"
-echo -e "  HAL rebuilt:      ${CYAN}$( [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] && echo 'yes' || echo 'no')${NC}"
+echo -e "  HAL rebuilt:      ${CYAN}$( [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ] && echo 'yes' || echo 'no')${NC}"
 echo -e "  Full log:         ${CYAN}${LOG_FILE}${NC}"
 echo ""
 echo -e "  ${BOLD}Service control:${NC}"
-echo -e "  Service control:  ${CYAN}sudo systemctl {start|stop|restart} pymc-repeater${NC}"
-echo -e "  Service logs:     ${CYAN}journalctl -u pymc-repeater -f${NC}"
+echo -e "  sudo systemctl {start|stop|restart} pymc-repeater"
+echo -e "  journalctl -u pymc-repeater -f"
 echo -e "  Web interface:    ${CYAN}http://<this-pi-ip>:${WEB_PORT}/wm1303.html${NC}"
 echo ""

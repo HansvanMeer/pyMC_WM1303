@@ -29,6 +29,11 @@ NC='\033[0m' # No Color
 phase_num=0
 step_count=0
 
+# Log file for verbose output
+LOG_FILE="/tmp/wm1303_install.log"
+rm -f "${LOG_FILE}"
+touch "${LOG_FILE}"
+
 phase() {
     phase_num=$((phase_num + 1))
     step_count=0
@@ -39,19 +44,20 @@ phase() {
 
 step() {
     step_count=$((step_count + 1))
-    echo -e "\n${CYAN}  [${phase_num}.${step_count}]${NC} $1"
+    echo -ne "  ${CYAN}[${phase_num}.${step_count}]${NC} $1 ... "
 }
 
 ok() {
-    echo -e "  ${GREEN}✓${NC} $1"
+    echo -e "${GREEN}✓${NC} $1"
 }
 
 warn() {
-    echo -e "  ${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}⚠${NC} $1"
 }
 
 fail() {
-    echo -e "  ${RED}✗${NC} $1"
+    echo -e "${RED}✗${NC} $1"
+    echo -e "  ${RED}See ${LOG_FILE} for details${NC}"
     exit 1
 }
 
@@ -111,7 +117,7 @@ cleanup_on_failure() {
         echo -e "  ${BOLD}${RED}╚══════════════════════════════════════════════════════════╝${NC}"
         echo ""
         echo -e "  ${RED}The installation encountered an error and could not complete.${NC}"
-        echo -e "  ${RED}Please check the output above for details.${NC}"
+        echo -e "  ${RED}Check ${LOG_FILE} for detailed output.${NC}"
         echo ""
         echo -e "  ${BOLD}To retry:${NC}  sudo bash install.sh"
         echo -e "  ${BOLD}For help:${NC}  Check the documentation in docs/installation.md"
@@ -143,9 +149,7 @@ PI_HOME=$(eval echo ~${PI_USER})
 
 info "Installation directory: ${INSTALL_BASE}"
 info "Configuration directory: ${CONFIG_DIR}"
-info "Packet forwarder directory: ${PKTFWD_DIR}"
-info "HAL directory: ${HAL_DIR}"
-info "Script source: ${SCRIPT_DIR}"
+info "Log file: ${LOG_FILE}"
 
 # =============================================================================
 # Phase 1: System Prerequisites
@@ -154,19 +158,23 @@ phase "System Prerequisites"
 
 if [ "$SKIP_UPDATE" = false ]; then
     step "Updating package lists"
-    apt-get update -y 2>&1 | tail -1
-    ok "Package lists updated"
+    if ! apt-get update -y >> "${LOG_FILE}" 2>&1; then
+        fail "Package list update failed"
+    fi
+    ok "Done"
 
     step "Upgrading installed packages"
-    apt-get upgrade -y 2>&1 | tail -3
-    ok "System packages upgraded"
+    if ! apt-get upgrade -y >> "${LOG_FILE}" 2>&1; then
+        fail "Package upgrade failed"
+    fi
+    ok "Done"
 else
     step "Skipping system update (--skip-update)"
-    warn "Package update skipped by user request"
+    ok "Skipped"
 fi
 
 step "Installing build tools and dependencies"
-apt-get install -y \
+if ! apt-get install -y \
     build-essential \
     gcc \
     make \
@@ -183,22 +191,22 @@ apt-get install -y \
     rrdtool \
     librrd-dev \
     python3-rrdtool \
-    2>&1 | tail -3
-ok "Build tools and dependencies installed"
+    >> "${LOG_FILE}" 2>&1; then
+    fail "Dependency installation failed"
+fi
+ok "Done"
 
 # NTP packages (optional - Debian 13+ uses systemd-timesyncd)
-step "Installing NTP client (if available)"
-if apt-get install -y ntpdate ntp 2>/dev/null; then
+step "Installing NTP client"
+if apt-get install -y ntpdate ntp >> "${LOG_FILE}" 2>&1; then
     ok "NTP packages installed"
 else
-    info "NTP packages not available (Debian 13+ uses systemd-timesyncd)"
-    ok "Will use systemd-timesyncd instead"
+    ok "Using systemd-timesyncd"
 fi
 
 step "Verifying Python 3 version"
 PYTHON_VERSION=$(python3 --version 2>&1)
-info "${PYTHON_VERSION}"
-ok "Python 3 available"
+ok "${PYTHON_VERSION}"
 
 # =============================================================================
 # Phase 2: SPI & I2C Configuration
@@ -209,36 +217,30 @@ step "Checking SPI kernel module"
 if lsmod | grep -q spi_bcm2835 || lsmod | grep -q spidev; then
     ok "SPI kernel module loaded"
 else
-    warn "SPI kernel module not detected"
-    info "Attempting to load spidev module..."
     modprobe spidev 2>/dev/null || true
+    warn "SPI kernel module not detected (loaded spidev)"
 fi
 
 step "Checking SPI device nodes"
 if [ -e /dev/spidev0.0 ] && [ -e /dev/spidev0.1 ]; then
-    ok "SPI devices found: /dev/spidev0.0, /dev/spidev0.1"
+    ok "SPI devices found"
 else
-    warn "SPI device nodes not found!"
-    info "Checking /boot/firmware/config.txt for SPI configuration..."
     BOOT_CONFIG="/boot/firmware/config.txt"
     [ ! -f "$BOOT_CONFIG" ] && BOOT_CONFIG="/boot/config.txt"
 
     if [ -f "$BOOT_CONFIG" ]; then
         if grep -q "^dtparam=spi=on" "$BOOT_CONFIG"; then
-            warn "SPI is enabled in config.txt but devices not present. Reboot required."
+            warn "SPI enabled in config.txt but devices not present. Reboot required."
             REBOOT_REQUIRED=true
         else
-            info "Enabling SPI in ${BOOT_CONFIG}..."
-            # Remove any commented-out SPI line
             sed -i '/^#.*dtparam=spi/d' "$BOOT_CONFIG"
-            # Insert in default section (before first [section] header) for Debian 13+ compatibility
             if grep -q '^\[' "$BOOT_CONFIG"; then
                 sed -i '0,/^\[/{s/^\[/dtparam=spi=on\n\n[/}' "$BOOT_CONFIG"
             else
                 echo "dtparam=spi=on" >> "$BOOT_CONFIG"
             fi
             ok "SPI enabled in config.txt"
-            warn "A REBOOT is required after installation for SPI to become active!"
+            warn "Reboot required for SPI!"
             REBOOT_REQUIRED=true
         fi
     else
@@ -250,22 +252,19 @@ step "Checking SPI overlay for SenseCAP M1 Pi HAT"
 BOOT_CONFIG="/boot/firmware/config.txt"
 [ ! -f "$BOOT_CONFIG" ] && BOOT_CONFIG="/boot/config.txt"
 if [ -f "$BOOT_CONFIG" ]; then
-    # Ensure SPI speed is not limited and dual CS is available
     if ! grep -q "dtoverlay=spi0-1cs" "$BOOT_CONFIG" && ! grep -q "dtoverlay=spi0-2cs" "$BOOT_CONFIG"; then
-        info "SPI CS overlay not explicitly set, default configuration should work"
+        ok "Default SPI configuration"
+    else
+        ok "SPI overlay configured"
     fi
-    ok "Boot configuration checked"
 fi
 
 step "Checking I2C for WM1303 temperature sensor and AD5338R DAC"
 if [ -e /dev/i2c-1 ]; then
-    ok "I2C device /dev/i2c-1 found"
+    ok "I2C device found"
 else
-    warn "I2C device /dev/i2c-1 not found"
-    info "Attempting to load I2C modules..."
     modprobe i2c-dev 2>/dev/null || true
     modprobe i2c-bcm2835 2>/dev/null || true
-    # Ensure i2c-dev loads on boot
     echo "i2c-dev" > /etc/modules-load.d/i2c-dev.conf
 
     BOOT_CONFIG="/boot/firmware/config.txt"
@@ -273,12 +272,10 @@ else
 
     if [ -f "$BOOT_CONFIG" ]; then
         if grep -q "^dtparam=i2c_arm=on" "$BOOT_CONFIG"; then
-            warn "I2C is enabled in config.txt but /dev/i2c-1 not present. Reboot required."
+            warn "I2C enabled but /dev/i2c-1 not present. Reboot required."
             REBOOT_REQUIRED=true
         else
-            info "Enabling I2C in ${BOOT_CONFIG}..."
             sed -i '/^#.*dtparam=i2c_arm/d' "$BOOT_CONFIG"
-            # Insert in default section (before first [section] header) for Debian 13+ compatibility
             if grep -q '^\[' "$BOOT_CONFIG"; then
                 sed -i '0,/^\[/{s/^\[/# enable I2C for WM1303 temperature sensor and AD5338R DAC\ndtparam=i2c_arm=on\n\n[/}' "$BOOT_CONFIG"
             else
@@ -286,7 +283,7 @@ else
                 echo "dtparam=i2c_arm=on" >> "$BOOT_CONFIG"
             fi
             ok "I2C enabled in config.txt"
-            warn "A REBOOT is required after installation for I2C to become active!"
+            warn "Reboot required for I2C!"
             REBOOT_REQUIRED=true
         fi
     else
@@ -308,7 +305,7 @@ mkdir -p "${PKTFWD_DIR}"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}"
 mkdir -p "${PI_HOME}/backups"
-ok "Installation directories created"
+ok "Created"
 
 step "Setting directory ownership"
 chown -R ${PI_USER}:${PI_USER} "${INSTALL_BASE}"
@@ -316,7 +313,7 @@ chown -R ${PI_USER}:${PI_USER} "${PKTFWD_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${LOG_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${DATA_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${CONFIG_DIR}"
-ok "Directory ownership set to ${PI_USER}"
+ok "Ownership set"
 
 # =============================================================================
 # Phase 4: Clone Repositories
@@ -330,16 +327,16 @@ clone_or_update_repo() {
     local name="$(basename "$target_dir")"
 
     if [ -d "${target_dir}/.git" ]; then
-        info "${name} already cloned, updating..."
         cd "${target_dir}"
-        sudo -u ${PI_USER} git fetch --all 2>&1 | tail -1
-        sudo -u ${PI_USER} git checkout "${branch}" 2>&1 | tail -1
-        sudo -u ${PI_USER} git pull origin "${branch}" 2>&1 | tail -1
+        sudo -u ${PI_USER} git fetch --all >> "${LOG_FILE}" 2>&1
+        sudo -u ${PI_USER} git checkout "${branch}" >> "${LOG_FILE}" 2>&1
+        sudo -u ${PI_USER} git pull origin "${branch}" >> "${LOG_FILE}" 2>&1
         ok "${name} updated to latest ${branch}"
     else
-        info "Cloning ${name} (${branch} branch)..."
-        sudo -u ${PI_USER} git clone -b "${branch}" "${repo_url}" "${target_dir}" 2>&1 | tail -2
-        ok "${name} cloned successfully"
+        if ! sudo -u ${PI_USER} git clone -b "${branch}" "${repo_url}" "${target_dir}" >> "${LOG_FILE}" 2>&1; then
+            fail "Failed to clone ${name}"
+        fi
+        ok "${name} cloned"
     fi
 }
 
@@ -363,56 +360,55 @@ if [ ! -d "${OVERLAY_DIR}" ]; then
     fail "Overlay directory not found at ${OVERLAY_DIR}"
 fi
 
-step "Applying HAL overlay (loragw_hal.c, loragw_sx1302.c/h, loragw_sx1261.c/h, sx1261_defs.h, lora_pkt_fwd.c, Makefiles)"
-cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_hal.c"     "${HAL_DIR}/libloragw/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1302.c"  "${HAL_DIR}/libloragw/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1261.c"  "${HAL_DIR}/libloragw/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1302.h"  "${HAL_DIR}/libloragw/inc/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1261.h"  "${HAL_DIR}/libloragw/inc/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/inc/sx1261_defs.h"    "${HAL_DIR}/libloragw/inc/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/Makefile"             "${HAL_DIR}/libloragw/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/packet_forwarder/src/lora_pkt_fwd.c" "${HAL_DIR}/packet_forwarder/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwarder/" 2>&1
+step "Applying HAL overlay"
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_hal.c"     "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1302.c"  "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1261.c"  "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1302.h"  "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1261.h"  "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/sx1261_defs.h"    "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/Makefile"             "${HAL_DIR}/libloragw/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/packet_forwarder/src/lora_pkt_fwd.c" "${HAL_DIR}/packet_forwarder/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwarder/" >> "${LOG_FILE}" 2>&1
 ok "HAL overlay applied"
 
-step "Applying pyMC_core overlay (WM1303 hardware modules)"
+step "Applying pyMC_core overlay"
 CORE_HW_DIR="${REPO_DIR}/pyMC_core/src/pymc_core/hardware"
 for f in __init__.py wm1303_backend.py sx1302_hal.py tx_queue.py sx1261_driver.py signal_utils.py virtual_radio.py; do
     if [ -f "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" "${CORE_HW_DIR}/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" "${CORE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
 done
 ok "pyMC_core overlay applied"
 
-step "Applying pyMC_Repeater overlay (WM1303 API, UI, bridge, engine, config)"
+step "Applying pyMC_Repeater overlay"
 RPT_DIR="${REPO_DIR}/pyMC_Repeater"
 
 # repeater/ level files
 for f in bridge_engine.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
 # repeater/web/ level files
 for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
 # repeater/web/html/ files
 if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" ]; then
-    cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" "${RPT_DIR}/repeater/web/html/" 2>&1
+    cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" "${RPT_DIR}/repeater/web/html/" >> "${LOG_FILE}" 2>&1
 fi
 
 # repeater/data_acquisition/ files
 for f in sqlite_handler.py storage_collector.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" >> "${LOG_FILE}" 2>&1
     fi
 done
-
 
 ok "pyMC_Repeater overlay applied"
 
@@ -428,43 +424,51 @@ phase "Build HAL & Packet Forwarder"
 if [ "$SKIP_BUILD" = false ]; then
     step "Cleaning previous HAL build artifacts"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make clean 2>&1 || true
-    ok "Build artifacts cleaned"
+    sudo -u ${PI_USER} make clean >> "${LOG_FILE}" 2>&1 || true
+    ok "Cleaned"
 
-    step "Building libtools (tinymt32, parson, base64)"
+    step "Building libtools"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C libtools -j$(nproc) 2>&1 | tail -5
-    ok "libtools built successfully"
+    if ! sudo -u ${PI_USER} make -C libtools -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "libtools build failed"
+    fi
+    ok "Built"
 
-    step "Building libloragw (HAL library)"
+    step "Building libloragw"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C libloragw -j$(nproc) 2>&1 | tail -5
-    ok "libloragw built successfully"
+    if ! sudo -u ${PI_USER} make -C libloragw -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "libloragw build failed"
+    fi
+    ok "Built"
 
-    step "Building lora_pkt_fwd (packet forwarder)"
+    step "Building lora_pkt_fwd"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C packet_forwarder -j$(nproc) 2>&1 | tail -5
-    ok "lora_pkt_fwd built successfully"
+    if ! sudo -u ${PI_USER} make -C packet_forwarder -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "packet_forwarder build failed"
+    fi
+    ok "Built"
 
     step "Installing packet forwarder binary"
-    cp -v "${HAL_DIR}/packet_forwarder/lora_pkt_fwd" "${PKTFWD_DIR}/" 2>&1
+    cp "${HAL_DIR}/packet_forwarder/lora_pkt_fwd" "${PKTFWD_DIR}/" >> "${LOG_FILE}" 2>&1
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/lora_pkt_fwd"
     chmod 755 "${PKTFWD_DIR}/lora_pkt_fwd"
-    ok "Packet forwarder installed to ${PKTFWD_DIR}"
+    ok "Installed"
 
     step "Building spectral_scan utility"
-    sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) 2>&1 | tail -5
-    ok "spectral_scan built successfully"
+    if ! sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "spectral_scan build failed"
+    fi
+    ok "Built"
 
     step "Installing spectral_scan binary"
-    cp -v "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" 2>&1
+    cp "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" >> "${LOG_FILE}" 2>&1
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/spectral_scan"
     chmod 755 "${PKTFWD_DIR}/spectral_scan"
-    ok "spectral_scan installed to ${PKTFWD_DIR}"
+    ok "Installed"
 
 else
     step "Skipping HAL build (--skip-build)"
-    warn "HAL build skipped by user request"
+    ok "Skipped"
 fi
 
 # =============================================================================
@@ -474,29 +478,36 @@ phase "Python Virtual Environment & Package Installation"
 
 step "Creating Python virtual environment"
 if [ ! -d "${VENV_DIR}" ]; then
-    sudo -u ${PI_USER} python3 -m venv "${VENV_DIR}"
-    ok "Virtual environment created at ${VENV_DIR}"
+    if ! sudo -u ${PI_USER} python3 -m venv "${VENV_DIR}" >> "${LOG_FILE}" 2>&1; then
+        fail "venv creation failed"
+    fi
+    ok "Created"
 else
-    info "Virtual environment already exists"
-    ok "Using existing virtual environment"
+    ok "Already exists"
 fi
 
 step "Upgrading pip and setuptools"
-sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel 2>&1 | tail -2
-ok "pip and setuptools upgraded"
+if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install --upgrade pip setuptools wheel >> "${LOG_FILE}" 2>&1; then
+    fail "pip upgrade failed"
+fi
+ok "Done"
 
 step "Installing pyMC_core (editable/dev mode)"
 cd "${REPO_DIR}/pyMC_core"
-sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
-ok "pyMC_core installed"
+if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . >> "${LOG_FILE}" 2>&1; then
+    fail "pyMC_core install failed"
+fi
+ok "Installed"
 
 step "Installing pyMC_Repeater (editable/dev mode)"
 cd "${REPO_DIR}/pyMC_Repeater"
-sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
-ok "pyMC_Repeater installed"
+if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . >> "${LOG_FILE}" 2>&1; then
+    fail "pyMC_Repeater install failed"
+fi
+ok "Installed"
 
 step "Installing additional Python dependencies"
-sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install \
+if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install \
     spidev \
     RPi.GPIO \
     pyyaml \
@@ -504,44 +515,41 @@ sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install \
     pyjwt \
     cryptography \
     aiohttp \
-    2>&1 | tail -3
-ok "Additional dependencies installed"
+    >> "${LOG_FILE}" 2>&1; then
+    fail "Additional dependencies install failed"
+fi
+ok "Done"
 
 # Verify overlay is accessible after all pip installs
-# (pyMC_Repeater may reinstall pymc_core as regular package, overwriting editable install)
 step "Verifying pyMC_core overlay is accessible"
 PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
 if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
-    warn "pyMC_core installed as regular package (editable mode not active)"
-    info "Re-applying pyMC_core overlay to site-packages..."
     SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
-    cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" 2>&1
+    cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
-    ok "pyMC_core overlay re-applied to site-packages"
+    ok "Re-applied overlay to site-packages"
 else
-    ok "pyMC_core editable install working (imports from source)"
+    ok "Editable install active"
 fi
 
 # Also verify pyMC_Repeater overlay
 step "Verifying pyMC_Repeater overlay is accessible"
 REPEATER_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import repeater.config; print(repeater.config.__file__)" 2>/dev/null || echo "")
 if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
-    warn "pyMC_Repeater installed as regular package (editable mode not active)"
-    info "Re-applying pyMC_Repeater overlay to site-packages..."
     SITE_REPEATER_DIR=$(dirname "$REPEATER_IMPORT_PATH")
-    cp -rv "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" 2>&1 | tail -5
+    cp -r "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" >> "${LOG_FILE}" 2>&1
     chown -R ${PI_USER}:${PI_USER} "${SITE_REPEATER_DIR}"
-    ok "pyMC_Repeater overlay re-applied to site-packages"
+    ok "Re-applied overlay to site-packages"
 else
-    ok "pyMC_Repeater editable install working (imports from source)"
+    ok "Editable install active"
 fi
 
-# Clean Python bytecode caches to ensure updated overlay files are loaded
+# Clean Python bytecode caches
 step "Cleaning Python bytecode caches"
-find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-rm -f /tmp/pymc_spectral_results.json 2>/dev/null
-ok "Python caches cleaned"
+find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+rm -f /tmp/pymc_spectral_results.json 2>/dev/null || true
+ok "Cleaned"
 
 
 # =============================================================================
@@ -551,21 +559,18 @@ phase "Install Configuration Files"
 
 step "Installing wm1303_ui.json"
 if [ ! -f "${CONFIG_DIR}/wm1303_ui.json" ]; then
-    cp -v "${SCRIPT_DIR}/config/wm1303_ui.json" "${CONFIG_DIR}/wm1303_ui.json" 2>&1
-    ok "wm1303_ui.json installed (template)"
+    cp "${SCRIPT_DIR}/config/wm1303_ui.json" "${CONFIG_DIR}/wm1303_ui.json" >> "${LOG_FILE}" 2>&1
+    ok "Installed from template"
 else
-    info "wm1303_ui.json already exists, preserving current configuration"
-    ok "Existing wm1303_ui.json preserved"
+    ok "Existing config preserved"
 fi
 
 step "Installing config.yaml"
 if [ ! -f "${CONFIG_DIR}/config.yaml" ]; then
-    cp -v "${SCRIPT_DIR}/config/config.yaml.template" "${CONFIG_DIR}/config.yaml" 2>&1
-    ok "config.yaml installed from template"
-    info "Edit ${CONFIG_DIR}/config.yaml to customize your setup"
+    cp "${SCRIPT_DIR}/config/config.yaml.template" "${CONFIG_DIR}/config.yaml" >> "${LOG_FILE}" 2>&1
+    ok "Installed from template"
 else
-    info "config.yaml already exists, preserving current configuration"
-    ok "Existing config.yaml preserved"
+    ok "Existing config preserved"
 fi
 
 step "Generating mesh identity key"
@@ -577,34 +582,37 @@ with open('${CONFIG_DIR}/config.yaml') as f:
 cfg.setdefault('repeater', {})['identity_key'] = secrets.token_bytes(32)
 with open('${CONFIG_DIR}/config.yaml', 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-print('Identity key generated')
-"
-    ok "Unique mesh identity key generated"
+" >> "${LOG_FILE}" 2>&1
+    ok "Identity key generated"
 else
-    info "identity_key already exists in config.yaml"
-    ok "Existing identity key preserved"
+    ok "Existing key preserved"
 fi
 
-step "Installing global_conf.json (HAL configuration)"
+step "Installing global_conf.json"
 if [ ! -f "${PKTFWD_DIR}/global_conf.json" ]; then
-    cp -v "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" 2>&1
-    ok "global_conf.json installed"
+    cp "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" >> "${LOG_FILE}" 2>&1
+    ok "Installed"
 else
-    info "global_conf.json already exists, preserving current configuration"
-    ok "Existing global_conf.json preserved"
+    ok "Existing config preserved"
 fi
 
 step "Setting configuration file ownership"
 chown -R ${PI_USER}:${PI_USER} "${CONFIG_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${PKTFWD_DIR}"
-ok "Configuration ownership set"
+ok "Done"
+
+step "Installing version file"
+cp "${SCRIPT_DIR}/VERSION" "${CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1
+chown ${PI_USER}:${PI_USER} "${CONFIG_DIR}/version"
+ok "v$(cat ${SCRIPT_DIR}/VERSION)"
+
 
 # =============================================================================
 # Phase 9: Generate GPIO Reset Scripts
 # =============================================================================
 phase "Generate GPIO Reset Scripts"
 
-step "Reading GPIO pin configuration from wm1303_ui.json"
+step "Reading GPIO pin configuration"
 UI_JSON="${CONFIG_DIR}/wm1303_ui.json"
 if [ -f "${UI_JSON}" ] && command -v jq &>/dev/null; then
     GPIO_RESET=$(jq -r '.gpio_pins.sx1302_reset // 17' "${UI_JSON}")
@@ -613,16 +621,13 @@ if [ -f "${UI_JSON}" ] && command -v jq &>/dev/null; then
     GPIO_AD5338R=$(jq -r '.gpio_pins.ad5338r_reset // 13' "${UI_JSON}")
     GPIO_BASE=$(jq -r '.gpio_pins.gpio_base_offset // 512' "${UI_JSON}")
 else
-    warn "Cannot read GPIO config, using defaults"
     GPIO_RESET=17
     GPIO_POWER=18
     GPIO_SX1261=5
     GPIO_AD5338R=13
     GPIO_BASE=512
 fi
-
-info "GPIO pins: reset=BCM${GPIO_RESET}, power=BCM${GPIO_POWER}, sx1261=BCM${GPIO_SX1261}, ad5338r=BCM${GPIO_AD5338R}"
-info "GPIO base offset: ${GPIO_BASE}"
+ok "GPIO: reset=BCM${GPIO_RESET}, power=BCM${GPIO_POWER}, sx1261=BCM${GPIO_SX1261}"
 
 SX1302_RESET_PIN=$((GPIO_BASE + GPIO_RESET))
 SX1302_POWER_PIN=$((GPIO_BASE + GPIO_POWER))
@@ -697,7 +702,7 @@ exit 0
 RESET_EOF
 chmod 755 "${PKTFWD_DIR}/reset_lgw.sh"
 chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/reset_lgw.sh"
-ok "reset_lgw.sh generated"
+ok "Generated"
 
 step "Generating power_cycle_lgw.sh"
 cat > "${PKTFWD_DIR}/power_cycle_lgw.sh" << POWER_EOF
@@ -742,7 +747,7 @@ echo "Power cycle complete"
 POWER_EOF
 chmod 755 "${PKTFWD_DIR}/power_cycle_lgw.sh"
 chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/power_cycle_lgw.sh"
-ok "power_cycle_lgw.sh generated"
+ok "Generated"
 
 # =============================================================================
 # Phase 10: Install Systemd Service
@@ -751,19 +756,19 @@ phase "Install Systemd Service"
 
 step "Stopping existing service (if running)"
 systemctl stop pymc-repeater.service 2>/dev/null || true
-ok "Existing service stopped (or was not running)"
+ok "Done"
 
 step "Installing systemd service file"
-cp -v "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service 2>&1
-ok "Service file installed"
+cp "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service >> "${LOG_FILE}" 2>&1
+ok "Installed"
 
 step "Reloading systemd daemon"
-systemctl daemon-reload
-ok "Systemd daemon reloaded"
+systemctl daemon-reload >> "${LOG_FILE}" 2>&1
+ok "Reloaded"
 
 step "Enabling service for auto-start"
-systemctl enable pymc-repeater.service 2>&1
-ok "Service enabled for auto-start on boot"
+systemctl enable pymc-repeater.service >> "${LOG_FILE}" 2>&1
+ok "Enabled"
 
 # =============================================================================
 # Phase 11: NTP Time Synchronization
@@ -778,26 +783,20 @@ if command -v timedatectl &>/dev/null; then
     if [ "$NTP_STATUS" = "yes" ]; then
         ok "NTP is synchronized"
     elif [ "$TIMESYNCD" = "yes" ]; then
-        info "NTP service is active but not yet synchronized"
-        ok "NTP client is running"
+        ok "NTP client running (not yet synced)"
     else
-        warn "NTP synchronization not active"
-        info "Enabling systemd-timesyncd..."
-        systemctl enable systemd-timesyncd 2>/dev/null || true
-        systemctl start systemd-timesyncd 2>/dev/null || true
+        systemctl enable systemd-timesyncd >> "${LOG_FILE}" 2>&1 || true
+        systemctl start systemd-timesyncd >> "${LOG_FILE}" 2>&1 || true
         ok "NTP client enabled"
     fi
 
-    step "Current system time"
-    info "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    info "System time: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 else
-    warn "timedatectl not available, checking ntpd..."
     if systemctl is-active --quiet ntp 2>/dev/null; then
         ok "NTP daemon is running"
     else
-        info "Starting NTP daemon..."
-        systemctl enable ntp 2>/dev/null || true
-        systemctl start ntp 2>/dev/null || true
+        systemctl enable ntp >> "${LOG_FILE}" 2>&1 || true
+        systemctl start ntp >> "${LOG_FILE}" 2>&1 || true
         ok "NTP daemon started"
     fi
 fi
@@ -809,23 +808,19 @@ phase "Start and Verify Service"
 
 if [ "$REBOOT_REQUIRED" = true ]; then
     step "SPI devices not yet available (reboot required)"
-    info "Service is installed and enabled for auto-start on boot."
-    info "After reboot, SPI devices will be available and the service will start automatically."
     ok "Service will start automatically after reboot"
 else
     step "Starting pymc-repeater service"
-    systemctl start pymc-repeater.service 2>&1
+    systemctl start pymc-repeater.service >> "${LOG_FILE}" 2>&1
     sleep 5
-    ok "Service start command issued"
+    ok "Started"
 
     step "Checking service status"
     if systemctl is-active --quiet pymc-repeater.service; then
         ok "pymc-repeater service is RUNNING"
-        info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -5)"
     else
         warn "Service may not have started correctly"
-        info "Check logs with: journalctl -u pymc-repeater -f"
-        info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -10)"
+        info "Check logs: journalctl -u pymc-repeater -f"
     fi
 
     step "Checking web interface availability"
@@ -835,10 +830,10 @@ else
         if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
             ok "Web interface responding on port ${WEB_PORT}"
         else
-            info "Web interface not yet responding (may need a few more seconds)"
+            ok "Web interface not yet responding (may need a few more seconds)"
         fi
     else
-        info "curl not available, skipping web interface check"
+        ok "curl not available, skipping check"
     fi
 fi
 
@@ -858,6 +853,7 @@ echo -e "  Service control:  ${CYAN}sudo systemctl {start|stop|restart} pymc-rep
 echo -e "  Service logs:     ${CYAN}journalctl -u pymc-repeater -f${NC}"
 echo -e "  Web interface:    ${CYAN}http://<this-pi-ip>:8000/wm1303.html${NC}"
 echo -e "  Repeater UI:      ${CYAN}http://<this-pi-ip>:8000/${NC}"
+echo -e "  Full log:         ${CYAN}${LOG_FILE}${NC}"
 echo ""
 
 if [ "$REBOOT_REQUIRED" = true ]; then
