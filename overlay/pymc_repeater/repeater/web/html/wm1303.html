@@ -1901,20 +1901,33 @@ async function loadSignalData() {
 
 async function loadSignalQuality() {
   try {
-    var d = await api('GET', '/api/wm1303/signal_quality?hours=' + sigHours);
+    var [d, liveData] = await Promise.all([
+      api('GET', '/api/wm1303/signal_quality?hours=' + sigHours),
+      api('GET', '/api/wm1303/channels/live').catch(function() { return { channels: [] }; })
+    ]);
     if (d.error) { console.warn('signal_quality error:', d.error); }
-    renderChannelActivity(d.channels || [], d.noise_floor);
+    var liveChannels = liveData.channels || [];
+    renderChannelActivity(d.channels || [], d.noise_floor, liveChannels);
     renderRssiChart(d.channels || [], d.noise_floor);
     renderSnrChart(d.channels || []);
-    // Update noise floor card
+    // Update noise floor card: prefer signal-quality API current, fallback to channels/live average
     var nfEl = document.getElementById('specNoiseFloor');
-    if (nfEl && d.noise_floor && d.noise_floor.current !== null) {
-      nfEl.textContent = d.noise_floor.current + ' dBm';
-      nfEl.style.color = d.noise_floor.current < -100 ? '#22c55e' : d.noise_floor.current < -85 ? '#f59e0b' : '#ef4444';
+    if (nfEl) {
+      var globalNf = (d.noise_floor && d.noise_floor.current !== null) ? d.noise_floor.current : null;
+      if (globalNf === null && liveChannels.length > 0) {
+        var nfVals = liveChannels.filter(function(c) { return c.noise_floor && c.noise_floor !== -120; }).map(function(c) { return c.noise_floor; });
+        if (nfVals.length > 0) {
+          globalNf = Math.round(nfVals.reduce(function(a, b) { return a + b; }, 0) / nfVals.length * 10) / 10;
+        }
+      }
+      if (globalNf !== null) {
+        nfEl.textContent = globalNf + ' dBm';
+        nfEl.style.color = globalNf < -100 ? '#22c55e' : globalNf < -85 ? '#f59e0b' : '#ef4444';
+      }
     }
   } catch(e) {
     console.error('loadSignalQuality error:', e);
-    renderChannelActivity([], null);
+    renderChannelActivity([], null, []);
     renderRssiChart([], null);
     renderSnrChart([]);
   }
@@ -1932,12 +1945,20 @@ async function loadNoiseFloor() {
   }
 }
 
-function renderChannelActivity(channels, noiseFloor) {
+function renderChannelActivity(channels, noiseFloor, liveChannels) {
   var el = document.getElementById('specChannelActivity');
   if (!el) return;
   if (!channels || channels.length === 0) {
     el.innerHTML = '<div style="text-align:center;color:var(--txm);padding:12px;font-size:13px">No channel data available</div>';
     return;
+  }
+  // Build noise floor map from live channel data
+  var liveNfMap = {};
+  if (liveChannels && liveChannels.length > 0) {
+    liveChannels.forEach(function(lc) {
+      if (lc.friendly_name) liveNfMap[lc.friendly_name] = lc.noise_floor;
+      if (lc.name) liveNfMap[lc.name] = lc.noise_floor;
+    });
   }
   var html = '';
   channels.forEach(function(ch, i) {
@@ -1959,7 +1980,10 @@ function renderChannelActivity(channels, noiseFloor) {
     html += '<div style="font-size:11px;color:var(--txm);display:grid;grid-template-columns:1fr 1fr;gap:4px">';
     html += '<span>' + freqMhz + ' MHz, SF' + sf + '</span>';
     html += '<span>RSSI: ' + avgRssi + '</span>';
-    html += '<span>Route: ' + ch.route_id + '</span>';
+    var chNf = liveNfMap[ch.friendly_name] || liveNfMap[ch.name] || null;
+    var nfStr = chNf !== null && chNf !== undefined ? chNf.toFixed(1) + ' dBm' : '—';
+    var nfColor = chNf !== null ? (chNf < -100 ? '#22c55e' : chNf < -85 ? '#f59e0b' : '#ef4444') : 'inherit';
+    html += '<span style="color:' + nfColor + '">NF: ' + nfStr + '</span>';
     html += '<span>SNR: ' + avgSnr + '</span>';
     html += '</div>';
     html += '</div>';

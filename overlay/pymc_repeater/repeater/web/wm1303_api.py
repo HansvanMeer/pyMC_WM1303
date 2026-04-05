@@ -2072,7 +2072,7 @@ class WM1303API:
                         },
                         "timeseries": timeseries
                     })
-                # Noise floor from noise_floor table (this part works fine)
+                # Noise floor from noise_floor_history table (aggregated across channels)
                 nf_rows = conn.execute("""
                     SELECT
                         CAST((timestamp / 600) AS INTEGER) * 600 as bucket_ts,
@@ -2080,7 +2080,7 @@ class WM1303API:
                         MIN(noise_floor_dbm) as min_nf,
                         MAX(noise_floor_dbm) as max_nf,
                         COUNT(*) as cnt
-                    FROM noise_floor
+                    FROM noise_floor_history
                     WHERE timestamp > ?
                     GROUP BY bucket_ts
                     ORDER BY bucket_ts
@@ -2093,15 +2093,23 @@ class WM1303API:
                         "min_nf": round(row["min_nf"], 1) if row["min_nf"] else None,
                         "max_nf": round(row["max_nf"], 1) if row["max_nf"] else None
                     })
-                current_nf = conn.execute(
-                    "SELECT noise_floor_dbm FROM noise_floor ORDER BY timestamp DESC LIMIT 1"
-                ).fetchone()
+                # Get current noise floor: latest average across all channels
+                current_nf = conn.execute("""
+                    SELECT AVG(nfh.noise_floor_dbm) as avg_nf
+                    FROM noise_floor_history nfh
+                    INNER JOIN (
+                        SELECT channel_id, MAX(timestamp) as max_ts
+                        FROM noise_floor_history
+                        GROUP BY channel_id
+                    ) latest ON nfh.channel_id = latest.channel_id
+                               AND nfh.timestamp = latest.max_ts
+                """).fetchone()
                 return {
                     "hours": h,
                     "bucket_minutes": 10,
                     "channels": result_channels,
                     "noise_floor": {
-                        "current": round(current_nf["noise_floor_dbm"], 1) if current_nf else None,
+                        "current": round(current_nf["avg_nf"], 1) if current_nf and current_nf["avg_nf"] else None,
                         "timeseries": noise_floor_ts
                     }
                 }
@@ -2459,7 +2467,7 @@ class WM1303API:
                         MIN(noise_floor_dbm) as min_nf,
                         MAX(noise_floor_dbm) as max_nf,
                         COUNT(*) as sample_count
-                    FROM noise_floor
+                    FROM noise_floor_history
                     WHERE timestamp > ?
                     GROUP BY bucket_ts
                     ORDER BY bucket_ts
@@ -2479,7 +2487,7 @@ class WM1303API:
                         AVG(noise_floor_dbm) as avg_nf,
                         MIN(noise_floor_dbm) as min_nf,
                         MAX(noise_floor_dbm) as max_nf
-                    FROM noise_floor
+                    FROM noise_floor_history
                     WHERE timestamp > ?
                 """, (cutoff,)).fetchone()
                 return _j({
