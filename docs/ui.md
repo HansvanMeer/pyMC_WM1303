@@ -111,8 +111,6 @@ The spectrum data comes from the SX1261 spectral scan (updated via NoiseFloorMon
 
 ![Spectrum View](../screenshots/spectrum-1.jpg)
 
-![Spectrum Waterfall](../screenshots/spectrum-2.jpg)
-
 ### 5. Adv. Config Tab
 
 Advanced configuration options for fine-tuning system behavior:
