@@ -363,10 +363,13 @@ if [ ! -d "${OVERLAY_DIR}" ]; then
     fail "Overlay directory not found at ${OVERLAY_DIR}"
 fi
 
-step "Applying HAL overlay (loragw_hal.c, loragw_sx1302.c, loragw_sx1302.h, lora_pkt_fwd.c, Makefiles)"
+step "Applying HAL overlay (loragw_hal.c, loragw_sx1302.c/h, loragw_sx1261.c/h, sx1261_defs.h, lora_pkt_fwd.c, Makefiles)"
 cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_hal.c"     "${HAL_DIR}/libloragw/src/" 2>&1
 cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1302.c"  "${HAL_DIR}/libloragw/src/" 2>&1
+cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1261.c"  "${HAL_DIR}/libloragw/src/" 2>&1
 cp -v "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1302.h"  "${HAL_DIR}/libloragw/inc/" 2>&1
+cp -v "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1261.h"  "${HAL_DIR}/libloragw/inc/" 2>&1
+cp -v "${OVERLAY_DIR}/hal/libloragw/inc/sx1261_defs.h"    "${HAL_DIR}/libloragw/inc/" 2>&1
 cp -v "${OVERLAY_DIR}/hal/libloragw/Makefile"             "${HAL_DIR}/libloragw/" 2>&1
 cp -v "${OVERLAY_DIR}/hal/packet_forwarder/src/lora_pkt_fwd.c" "${HAL_DIR}/packet_forwarder/src/" 2>&1
 cp -v "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwarder/" 2>&1

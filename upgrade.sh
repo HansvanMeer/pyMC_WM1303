@@ -29,6 +29,11 @@ NC='\033[0m'
 phase_num=0
 step_count=0
 
+# Log file for verbose output
+LOG_FILE="/tmp/wm1303_upgrade.log"
+rm -f "${LOG_FILE}"
+touch "${LOG_FILE}"
+
 phase() {
     phase_num=$((phase_num + 1))
     step_count=0
@@ -39,24 +44,35 @@ phase() {
 
 step() {
     step_count=$((step_count + 1))
-    echo -e "\n${CYAN}  [${phase_num}.${step_count}]${NC} $1"
+    echo -ne "  ${CYAN}[${phase_num}.${step_count}]${NC} $1 ... "
 }
 
 ok() {
-    echo -e "  ${GREEN}✓${NC} $1"
+    echo -e "${GREEN}✓${NC} $1"
 }
 
 warn() {
-    echo -e "  ${YELLOW}⚠${NC} $1"
+    echo -e "${YELLOW}⚠${NC} $1"
 }
 
 fail() {
-    echo -e "  ${RED}✗${NC} $1"
+    echo -e "${RED}✗${NC} $1"
+    echo -e "  ${RED}See ${LOG_FILE} for details${NC}"
     exit 1
 }
 
 info() {
     echo -e "  ${CYAN}ℹ${NC} $1"
+}
+
+# Run a command silently, logging output, showing errors on failure
+run_quiet() {
+    if ! "$@" >> "${LOG_FILE}" 2>&1; then
+        echo -e "${RED}✗ FAILED${NC}"
+        echo -e "  ${RED}Command: $*${NC}"
+        tail -20 "${LOG_FILE}" | sed 's/^/  /' >&2
+        return 1
+    fi
 }
 
 # ---------------------------------------------------------------------------
@@ -124,6 +140,7 @@ fi
 
 info "Installation directory: ${INSTALL_BASE}"
 info "Overlay directory: ${OVERLAY_DIR}"
+info "Log file: ${LOG_FILE}"
 
 # =============================================================================
 # Phase 1: Pre-upgrade Backup
@@ -135,25 +152,17 @@ UPGRADE_BACKUP="${BACKUP_DIR}/pre-upgrade-${TIMESTAMP}"
 
 step "Creating pre-upgrade backup"
 mkdir -p "${UPGRADE_BACKUP}"
-
-# Backup configs
 if [ -d "${CONFIG_DIR}" ]; then
-    cp -a "${CONFIG_DIR}" "${UPGRADE_BACKUP}/pymc_repeater_config/"
-    ok "Configuration backed up"
+    cp -a "${CONFIG_DIR}" "${UPGRADE_BACKUP}/pymc_repeater_config/" >> "${LOG_FILE}" 2>&1
 fi
-
 if [ -d "${PKTFWD_DIR}" ]; then
-    cp -a "${PKTFWD_DIR}" "${UPGRADE_BACKUP}/wm1303_pf/"
-    ok "Packet forwarder directory backed up"
+    cp -a "${PKTFWD_DIR}" "${UPGRADE_BACKUP}/wm1303_pf/" >> "${LOG_FILE}" 2>&1
 fi
-
-# Backup current binary
 if [ -f "${PKTFWD_DIR}/lora_pkt_fwd" ]; then
-    cp "${PKTFWD_DIR}/lora_pkt_fwd" "${UPGRADE_BACKUP}/lora_pkt_fwd.bak"
-    ok "Packet forwarder binary backed up"
+    cp "${PKTFWD_DIR}/lora_pkt_fwd" "${UPGRADE_BACKUP}/lora_pkt_fwd.bak" >> "${LOG_FILE}" 2>&1
 fi
+ok "Backup created"
 
-# Save current git commit hashes for reference
 step "Recording current version info"
 {
     echo "Upgrade timestamp: ${TIMESTAMP}"
@@ -168,7 +177,7 @@ step "Recording current version info"
         echo "pyMC_Repeater: $(cd ${REPO_DIR}/pyMC_Repeater && git rev-parse HEAD) ($(cd ${REPO_DIR}/pyMC_Repeater && git branch --show-current))"
     fi
 } > "${UPGRADE_BACKUP}/version_info.txt"
-ok "Version info saved to ${UPGRADE_BACKUP}/version_info.txt"
+ok "Version info saved"
 
 chown -R ${PI_USER}:${PI_USER} "${BACKUP_DIR}"
 
@@ -181,10 +190,10 @@ step "Stopping pymc-repeater service"
 SERVICE_WAS_RUNNING=false
 if systemctl is-active --quiet pymc-repeater.service 2>/dev/null; then
     SERVICE_WAS_RUNNING=true
-    systemctl stop pymc-repeater.service
+    systemctl stop pymc-repeater.service >> "${LOG_FILE}" 2>&1
     ok "Service stopped"
 else
-    info "Service was not running"
+    ok "Service was not running"
 fi
 
 # =============================================================================
@@ -215,19 +224,19 @@ update_repo() {
     local before=$(git rev-parse HEAD)
 
     # Discard local changes (overlay will be re-applied)
-    sudo -u ${PI_USER} git checkout -- . 2>&1 || true
-    sudo -u ${PI_USER} git clean -fd 2>&1 | tail -1 || true
-    sudo -u ${PI_USER} git fetch --all 2>&1 | tail -1
-    sudo -u ${PI_USER} git checkout "${branch}" 2>&1 | tail -1
-    sudo -u ${PI_USER} git pull origin "${branch}" 2>&1 | tail -2
+    sudo -u ${PI_USER} git checkout -- . >> "${LOG_FILE}" 2>&1 || true
+    sudo -u ${PI_USER} git clean -fd >> "${LOG_FILE}" 2>&1 || true
+    sudo -u ${PI_USER} git fetch --all >> "${LOG_FILE}" 2>&1
+    sudo -u ${PI_USER} git checkout "${branch}" >> "${LOG_FILE}" 2>&1
+    sudo -u ${PI_USER} git pull origin "${branch}" >> "${LOG_FILE}" 2>&1
 
     local after=$(git rev-parse HEAD)
 
     if [ "$before" != "$after" ]; then
-        ok "${name} updated: ${before:0:8} → ${after:0:8}"
+        ok "Updated: ${before:0:8} → ${after:0:8}"
         return 0  # updated
     else
-        info "${name} already up to date (${after:0:8})"
+        ok "Already up to date (${after:0:8})"
         return 1  # no update
     fi
 }
@@ -253,19 +262,22 @@ fi
 phase "Re-apply Overlay Modifications"
 
 step "Applying HAL overlay"
-cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_hal.c"     "${HAL_DIR}/libloragw/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1302.c"  "${HAL_DIR}/libloragw/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1302.h"  "${HAL_DIR}/libloragw/inc/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/libloragw/Makefile"             "${HAL_DIR}/libloragw/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/packet_forwarder/src/lora_pkt_fwd.c" "${HAL_DIR}/packet_forwarder/src/" 2>&1
-cp -v "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwarder/" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_hal.c"     "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1302.c"  "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/src/loragw_sx1261.c"  "${HAL_DIR}/libloragw/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1302.h"  "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/loragw_sx1261.h"  "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/inc/sx1261_defs.h"    "${HAL_DIR}/libloragw/inc/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/libloragw/Makefile"             "${HAL_DIR}/libloragw/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/packet_forwarder/src/lora_pkt_fwd.c" "${HAL_DIR}/packet_forwarder/src/" >> "${LOG_FILE}" 2>&1
+cp "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwarder/" >> "${LOG_FILE}" 2>&1
 ok "HAL overlay applied"
 
 step "Applying pyMC_core overlay"
 CORE_HW_DIR="${REPO_DIR}/pyMC_core/src/pymc_core/hardware"
 for f in __init__.py wm1303_backend.py sx1302_hal.py tx_queue.py sx1261_driver.py signal_utils.py virtual_radio.py; do
     if [ -f "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" "${CORE_HW_DIR}/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" "${CORE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
 done
 ok "pyMC_core overlay applied"
@@ -276,29 +288,28 @@ RPT_DIR="${REPO_DIR}/pyMC_Repeater"
 # repeater/ level files
 for f in bridge_engine.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
 # repeater/web/ level files
 for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
 # repeater/web/html/ files
 if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" ]; then
-    cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" "${RPT_DIR}/repeater/web/html/" 2>&1
+    cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" "${RPT_DIR}/repeater/web/html/" >> "${LOG_FILE}" 2>&1
 fi
 
 # repeater/data_acquisition/ files
 for f in sqlite_handler.py storage_collector.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" ]; then
-        cp -v "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" 2>&1
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" >> "${LOG_FILE}" 2>&1
     fi
 done
-
 
 ok "pyMC_Repeater overlay applied"
 
@@ -313,43 +324,51 @@ phase "Rebuild HAL & Packet Forwarder"
 if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ]; then
     step "Cleaning previous build artifacts"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make clean 2>&1 || true
-    ok "Build artifacts cleaned"
+    sudo -u ${PI_USER} make clean >> "${LOG_FILE}" 2>&1 || true
+    ok "Cleaned"
 
-    step "Building libtools (tinymt32, parson, base64)"
+    step "Building libtools"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C libtools -j$(nproc) 2>&1 | tail -5
-    ok "libtools built"
+    if ! sudo -u ${PI_USER} make -C libtools -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "libtools build failed"
+    fi
+    ok "Built"
 
     step "Building libloragw"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C libloragw -j$(nproc) 2>&1 | tail -5
-    ok "libloragw built"
+    if ! sudo -u ${PI_USER} make -C libloragw -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "libloragw build failed"
+    fi
+    ok "Built"
 
     step "Building lora_pkt_fwd"
     cd "${HAL_DIR}"
-    sudo -u ${PI_USER} make -C packet_forwarder -j$(nproc) 2>&1 | tail -5
-    ok "lora_pkt_fwd built"
+    if ! sudo -u ${PI_USER} make -C packet_forwarder -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "packet_forwarder build failed"
+    fi
+    ok "Built"
 
     step "Installing packet forwarder binary"
-    cp -v "${HAL_DIR}/packet_forwarder/lora_pkt_fwd" "${PKTFWD_DIR}/" 2>&1
+    cp "${HAL_DIR}/packet_forwarder/lora_pkt_fwd" "${PKTFWD_DIR}/" >> "${LOG_FILE}" 2>&1
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/lora_pkt_fwd"
     chmod 755 "${PKTFWD_DIR}/lora_pkt_fwd"
-    ok "Packet forwarder installed"
+    ok "Installed"
 
     step "Building spectral_scan utility"
-    sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) 2>&1 | tail -5
-    ok "spectral_scan built"
+    if ! sudo -u ${PI_USER} make -C util_spectral_scan -j$(nproc) >> "${LOG_FILE}" 2>&1; then
+        fail "spectral_scan build failed"
+    fi
+    ok "Built"
 
     step "Installing spectral_scan binary"
-    cp -v "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" 2>&1
+    cp "${HAL_DIR}/util_spectral_scan/spectral_scan" "${PKTFWD_DIR}/" >> "${LOG_FILE}" 2>&1
     chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/spectral_scan"
     chmod 755 "${PKTFWD_DIR}/spectral_scan"
-    ok "spectral_scan installed"
+    ok "Installed"
 
 else
     step "Skipping HAL rebuild (no changes detected)"
-    info "Use --rebuild to force a rebuild"
+    ok "Use --rebuild to force"
 fi
 
 # =============================================================================
@@ -360,57 +379,56 @@ phase "Update Python Packages"
 if [ "$CORE_UPDATED" = true ] || [ "$FORCE_REBUILD" = true ]; then
     step "Reinstalling pyMC_core"
     cd "${REPO_DIR}/pyMC_core"
-    sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
-    ok "pyMC_core reinstalled"
+    if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . >> "${LOG_FILE}" 2>&1; then
+        fail "pyMC_core install failed"
+    fi
+    ok "Reinstalled"
 else
     step "Skipping pyMC_core reinstall (no changes)"
+    ok "Skipped"
 fi
 
 if [ "$REPEATER_UPDATED" = true ] || [ "$FORCE_REBUILD" = true ]; then
     step "Reinstalling pyMC_Repeater"
     cd "${REPO_DIR}/pyMC_Repeater"
-    sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . 2>&1 | tail -3
-    ok "pyMC_Repeater reinstalled"
+    if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . >> "${LOG_FILE}" 2>&1; then
+        fail "pyMC_Repeater install failed"
+    fi
+    ok "Reinstalled"
 else
     step "Skipping pyMC_Repeater reinstall (no changes)"
+    ok "Skipped"
 fi
 
 # Verify overlays are accessible after all pip installs
-# (pip may reinstall packages as regular, overwriting editable installs)
-if [ "$CORE_UPDATED" = true ] || [ "$REPEATER_UPDATED" = true ] || [ "$FORCE_REBUILD" = true ]; then
-    step "Verifying pyMC_core overlay is accessible"
-    PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
-    if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
-        warn "pyMC_core installed as regular package (editable mode not active)"
-        info "Re-applying pyMC_core overlay to site-packages..."
-        SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
-        cp -v "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" 2>&1
-        chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
-        ok "pyMC_core overlay re-applied to site-packages"
-    else
-        ok "pyMC_core editable install working (imports from source)"
-    fi
-
-    step "Verifying pyMC_Repeater overlay is accessible"
-    REPEATER_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import repeater.config; print(repeater.config.__file__)" 2>/dev/null || echo "")
-    if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
-        warn "pyMC_Repeater installed as regular package (editable mode not active)"
-        info "Re-applying pyMC_Repeater overlay to site-packages..."
-        SITE_REPEATER_DIR=$(dirname "$REPEATER_IMPORT_PATH")
-        cp -rv "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" 2>&1 | tail -5
-        chown -R ${PI_USER}:${PI_USER} "${SITE_REPEATER_DIR}"
-        ok "pyMC_Repeater overlay re-applied to site-packages"
-    else
-        ok "pyMC_Repeater editable install working (imports from source)"
-    fi
+step "Verifying pyMC_core overlay is accessible"
+PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
+if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
+    SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
+    cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
+    chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
+    ok "Re-applied overlay to site-packages"
+else
+    ok "Editable install active"
 fi
 
-# Clean Python bytecode caches to ensure updated overlay files are loaded
+step "Verifying pyMC_Repeater overlay is accessible"
+REPEATER_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import repeater.config; print(repeater.config.__file__)" 2>/dev/null || echo "")
+if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
+    SITE_REPEATER_DIR=$(dirname "$REPEATER_IMPORT_PATH")
+    cp -r "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" >> "${LOG_FILE}" 2>&1
+    chown -R ${PI_USER}:${PI_USER} "${SITE_REPEATER_DIR}"
+    ok "Re-applied overlay to site-packages"
+else
+    ok "Editable install active"
+fi
+
+# Clean Python bytecode caches
 step "Cleaning Python bytecode caches"
-find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
-rm -f /tmp/pymc_spectral_results.json 2>/dev/null
-ok "Python caches cleaned"
+find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+rm -f /tmp/pymc_spectral_results.json 2>/dev/null || true
+ok "Caches cleaned"
 
 
 # =============================================================================
@@ -422,20 +440,19 @@ if [ "$FORCE_CONFIG" = true ]; then
     warn "--force-config: overwriting existing configuration files!"
 
     step "Updating wm1303_ui.json"
-    cp -v "${SCRIPT_DIR}/config/wm1303_ui.json" "${CONFIG_DIR}/wm1303_ui.json" 2>&1
-    ok "wm1303_ui.json updated"
+    cp "${SCRIPT_DIR}/config/wm1303_ui.json" "${CONFIG_DIR}/wm1303_ui.json" >> "${LOG_FILE}" 2>&1
+    ok "Updated"
 
     step "Updating config.yaml"
-    cp -v "${SCRIPT_DIR}/config/config.yaml.template" "${CONFIG_DIR}/config.yaml" 2>&1
-    ok "config.yaml updated"
+    cp "${SCRIPT_DIR}/config/config.yaml.template" "${CONFIG_DIR}/config.yaml" >> "${LOG_FILE}" 2>&1
+    ok "Updated"
 
     step "Updating global_conf.json"
-    cp -v "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" 2>&1
-    ok "global_conf.json updated"
+    cp "${SCRIPT_DIR}/config/global_conf.json" "${PKTFWD_DIR}/global_conf.json" >> "${LOG_FILE}" 2>&1
+    ok "Updated"
 else
     step "Preserving existing configuration files"
-    info "Use --force-config to overwrite configs with templates"
-    ok "Configuration preserved"
+    ok "Use --force-config to overwrite"
 fi
 
 step "Ensuring mesh identity key exists"
@@ -447,17 +464,16 @@ with open('${CONFIG_DIR}/config.yaml') as f:
 cfg.setdefault('repeater', {})['identity_key'] = secrets.token_bytes(32)
 with open('${CONFIG_DIR}/config.yaml', 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-print('Identity key generated')
-"
-    ok "Unique mesh identity key generated"
+" >> "${LOG_FILE}" 2>&1
+    ok "Identity key generated"
 else
-    ok "Existing identity key preserved"
+    ok "Existing key preserved"
 fi
 
 step "Updating systemd service file"
-cp -v "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service 2>&1
-systemctl daemon-reload
-ok "Service file updated and daemon reloaded"
+cp "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service >> "${LOG_FILE}" 2>&1
+systemctl daemon-reload >> "${LOG_FILE}" 2>&1
+ok "Service file updated"
 
 step "Regenerating GPIO reset scripts"
 # Read GPIO config from wm1303_ui.json
@@ -595,9 +611,76 @@ chmod 755 "${PKTFWD_DIR}/power_cycle_lgw.sh"
 chown ${PI_USER}:${PI_USER} "${PKTFWD_DIR}/power_cycle_lgw.sh"
 ok "power_cycle_lgw.sh regenerated"
 
-
 chown -R ${PI_USER}:${PI_USER} "${CONFIG_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${PKTFWD_DIR}"
+
+
+# =============================================================================
+# Phase 7b: Database Cleanup
+# =============================================================================
+phase "Database Cleanup"
+
+DB_PATH="${DATA_DIR}/repeater.db"
+if [ -f "${DB_PATH}" ]; then
+    step "Cleaning bogus TX echo data (avg_rssi > -50 dBm)"
+    BOGUS_COUNT=$(${VENV_DIR}/bin/python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('${DB_PATH}')
+    cur = conn.cursor()
+    cur.execute('''CREATE TABLE IF NOT EXISTS channel_stats_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id TEXT, timestamp REAL, avg_rssi REAL, avg_snr REAL,
+        pkt_count INTEGER, noise_floor_dbm REAL
+    )''')
+    count = cur.execute('SELECT COUNT(*) FROM channel_stats_history WHERE avg_rssi > -50').fetchone()[0]
+    if count > 0:
+        cur.execute('UPDATE channel_stats_history SET avg_rssi = NULL, avg_snr = NULL WHERE avg_rssi > -50')
+        conn.commit()
+    print(count)
+    conn.close()
+except Exception as e:
+    print(0)
+" 2>/dev/null || echo "0")
+    if [ "${BOGUS_COUNT}" -gt 0 ]; then
+        ok "Cleaned ${BOGUS_COUNT} rows with bogus RSSI values"
+    else
+        ok "No bogus TX echo data found"
+    fi
+
+    step "Cleaning old channel_id formats from stats history"
+    OLD_FORMAT_COUNT=$(${VENV_DIR}/bin/python3 -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('${DB_PATH}')
+    cur = conn.cursor()
+    total = 0
+    for table in ['channel_stats_history', 'noise_floor_history']:
+        try:
+            cur.execute(f'''CREATE TABLE IF NOT EXISTS {table} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT, timestamp REAL
+            )''')
+            count = cur.execute(f'SELECT COUNT(*) FROM {table} WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"').fetchone()[0]
+            if count > 0:
+                cur.execute(f'DELETE FROM {table} WHERE channel_id NOT LIKE \"channel_%\" AND channel_id NOT LIKE \"inactive_%\"')
+                total += count
+        except Exception:
+            pass
+    conn.commit()
+    print(total)
+    conn.close()
+except Exception as e:
+    print(0)
+" 2>/dev/null || echo "0")
+    if [ "${OLD_FORMAT_COUNT}" -gt 0 ]; then
+        ok "Removed ${OLD_FORMAT_COUNT} rows with old channel_id formats"
+    else
+        ok "No old format channel IDs found"
+    fi
+else
+    info "Database not found at ${DB_PATH}, skipping cleanup"
+fi
 
 # =============================================================================
 # Phase 8: Restart and Verify Service
@@ -605,18 +688,16 @@ chown -R ${PI_USER}:${PI_USER} "${PKTFWD_DIR}"
 phase "Restart and Verify Service"
 
 step "Starting pymc-repeater service"
-systemctl start pymc-repeater.service 2>&1
+systemctl start pymc-repeater.service >> "${LOG_FILE}" 2>&1
 sleep 3
 ok "Service start command issued"
 
 step "Checking service status"
 if systemctl is-active --quiet pymc-repeater.service; then
     ok "pymc-repeater service is RUNNING"
-    info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -5)"
 else
     warn "Service may not have started correctly"
     info "Check logs with: journalctl -u pymc-repeater -f"
-    info "$(systemctl status pymc-repeater.service --no-pager -l 2>&1 | head -10)"
 fi
 
 step "Checking web interface availability"
@@ -626,7 +707,7 @@ if command -v curl &>/dev/null; then
     if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
         ok "Web interface responding on port ${WEB_PORT}"
     else
-        info "Web interface not yet responding (may need a few more seconds)"
+        ok "Web interface not yet responding (may need a few more seconds)"
     fi
 fi
 
@@ -645,6 +726,7 @@ echo -e "  HAL updated:      ${CYAN}${HAL_UPDATED}${NC}"
 echo -e "  pyMC_core updated: ${CYAN}${CORE_UPDATED}${NC}"
 echo -e "  pyMC_Repeater updated: ${CYAN}${REPEATER_UPDATED}${NC}"
 echo -e "  HAL rebuilt:      ${CYAN}$( [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] && echo 'yes' || echo 'no')${NC}"
+echo -e "  Full log:         ${CYAN}${LOG_FILE}${NC}"
 echo ""
 echo -e "  ${BOLD}Service control:${NC}"
 echo -e "  Service control:  ${CYAN}sudo systemctl {start|stop|restart} pymc-repeater${NC}"
