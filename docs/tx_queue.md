@@ -390,7 +390,7 @@ The watchdog ensures the system self-recovers from radio lockups, which can occu
 1. Check `pending` value via `/api/wm1303/tx_queues`
 2. If pending > 10: restart service (`sudo systemctl restart pymc-repeater`)
 3. Verify TTL and max queue size are correctly configured
-4. Check if TX hold is stuck (noise floor monitor issue)
+4. Check if batch window hold is stuck (bridge engine issue)
 
 ### Packets Never Transmitted
 
@@ -398,7 +398,7 @@ The watchdog ensures the system self-recovers from radio lockups, which can occu
 
 **Possible causes:**
 - LBT blocking all transmissions (check `lbt_blocked` counter)
-- TX hold stuck (check journal for noise floor monitor errors)
+- Batch window hold stuck (check journal for bridge engine errors)
 - Packet forwarder not running (check `systemctl status pymc-repeater`)
 - SPI bus error (check `dmesg | grep spi`)
 
@@ -406,7 +406,7 @@ The watchdog ensures the system self-recovers from radio lockups, which can occu
 
 **Symptoms:** Many packets are dropped due to TTL expiration.
 
-**Cause:** Packets are waiting too long in the queue before being processed. This can happen during extended TX holds or when LBT/CAD blocks are frequent.
+**Cause:** Packets are waiting too long in the queue before being processed. This can happen when LBT/CAD blocks are frequent or batch window holds accumulate.
 
 **Solutions:**
 1. Increase TTL if appropriate (in `wm1303_ui.json` → `adv_config.tx_packet_ttl_seconds`)

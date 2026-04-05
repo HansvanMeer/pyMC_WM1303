@@ -59,7 +59,7 @@ The WM1303 is a LoRa concentrator module based on the Semtech SX1302/SX1303 base
             ┌──────────┴───────────┐
             │       SX1261         │
             │  Companion Chip      │
-            │  (Spectral scan/LBT) │
+            │  (Spectral/LBT/CAD)  │
             └──────────────────────┘
 ```
 
@@ -346,8 +346,8 @@ The SX1261 companion chip serves as an independent RF spectrum analyzer, operati
 
 | Function | Description | Usage |
 |----------|-------------|-------|
-| **Spectral Scan** | Sweeps 863-870 MHz band measuring RSSI at each frequency step | Noise floor monitoring (every 30s) |
-| **CAD (Channel Activity Detection)** | Detects LoRa preambles on specific frequencies | Pre-TX activity check (software implementation) |
+| **Spectral Scan** | Sweeps frequency band measuring RSSI at each frequency step (dynamic range based on RF chain center freq) | Noise floor monitoring (every 30s) |
+| **CAD (Channel Activity Detection)** | Hardware CAD with preamble correlation via SX1261 opcodes, plus software spectral analysis | Pre-TX activity check (HW + SW implementation) |
 | **RSSI Measurement** | Point measurements at specific frequencies | LBT (Listen Before Talk) per-channel checks |
 
 ### Spectral Scan Configuration
@@ -375,13 +375,34 @@ Note: HAL-level LBT is explicitly disabled (`lbt.enable: false`). The software L
 
 ### How Spectral Scan Data Is Used
 
-1. **NoiseFloorMonitor** triggers a scan every 30 seconds
-2. During the scan, a 4-second TX hold pauses all transmissions
+1. **NoiseFloorMonitor** triggers a scan harvest every 30 seconds
+2. The monitor waits for a TX-free window using retry logic (0% TX overhead)
 3. The SX1261 sweeps the band via spidev0.1
 4. Results are written to `/tmp/pymc_spectral_results.json`
 5. Per-channel frequency matching extracts RSSI values for each channel
 6. Values feed into rolling buffers (20 samples) for noise floor averaging
 7. The Spectrum tab in the UI visualizes the scan results
+
+### Hardware CAD Capabilities
+
+In addition to spectral scanning, the SX1261 supports **hardware Channel Activity Detection (CAD)** with preamble correlation. This provides more accurate LoRa signal detection than software-only spectral analysis.
+
+**HAL-level implementation:**
+
+- **Register definitions** — CAD opcodes and configuration registers are defined in `sx1261_defs.h` in the HAL overlay
+- **CAD scan functions** — `loragw_sx1261.h` and `loragw_sx1261.c` implement the hardware CAD scan with preamble correlation support
+- **Integration with spectral sweep** — CAD execution is triggered after each spectral sweep cycle in the packet forwarder (`lora_pkt_fwd.c`)
+- **Result reporting** — CAD results are written into the `spectral_results` JSON file alongside RSSI data, for backend consumption
+- **Per-channel configuration** — CAD can be configured with per-channel frequency and spreading factor parameters
+
+**HW vs SW CAD comparison:**
+
+| Method | Detection Technique | Accuracy | Speed |
+|--------|-------------------|----------|-------|
+| Hardware CAD | SX1261 preamble correlation (register-level) | Higher — detects actual LoRa preambles | Fast — hardware-accelerated |
+| Software CAD | Spectral histogram analysis of RSSI data | Lower — energy pattern matching only | Slower — post-processing of scan data |
+
+The backend tracks both HW and SW CAD results with per-channel counters (`cad_hw_clear`, `cad_hw_detected`, `cad_sw_clear`, `cad_sw_detected`, `cad_last_source`). The TX queue scheduler reads the `cad_result` source field and increments the appropriate HW/SW counter. See [LBT & CAD](lbt_cad.md) for the full CAD integration details.
 
 ---
 

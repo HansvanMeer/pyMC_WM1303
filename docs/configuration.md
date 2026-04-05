@@ -14,6 +14,7 @@ The WM1303 system uses several configuration files that work together:
 | `pymc-repeater.service` | `/etc/systemd/system/` | Systemd service unit |
 | `reset_lgw.sh` | `/home/pi/wm1303_pf/` | GPIO reset script |
 | `power_cycle_lgw.sh` | `/home/pi/wm1303_pf/` | GPIO power cycle script |
+| `VERSION` | Repository root + `/etc/pymc_repeater/version` | Semantic version file (MAJOR.MINOR.PATCH) |
 
 During installation, template files from the `config/` directory in the repository are copied to their target locations. Existing configuration files are **preserved** during upgrades unless `--force-config` is specified. See [Installation & Upgrade](installation.md) for details.
 
@@ -359,14 +360,14 @@ RF chain configuration. See [Radio Configuration](radio.md) for detailed RF chai
 |-----|------|-------------------|-------------|
 | `enable` | boolean | `true` | Enable this RF chain |
 | `type` | string | `SX1250` | Radio chip type |
-| `freq` | integer | `869387250` | Center frequency in Hz |
+| `freq` | integer | `869525000` | Center frequency in Hz (default: 869.525 MHz) |
 | `rssi_offset` | float | `-215.4` | RSSI calibration offset |
 | `tx_enable` | boolean | `true` (radio_0 only) | Enable TX capability. Only radio_0 has PA connection |
 | `tx_freq_min` | integer | `863000000` | Minimum TX frequency in Hz |
 | `tx_freq_max` | integer | `870000000` | Maximum TX frequency in Hz |
 | `tx_gain_lut` | array | 16 entries | TX power lookup table mapping rf_power to PA/pwr_idx |
 
-Radio_1 is configured identically to radio_0 for center frequency but with `tx_enable: false`.
+Radio_1 is **disabled** (`enable: false`) — no IF channels reference it. It retains the same center frequency setting as radio_0 but with `tx_enable: false`.
 
 ### TX Gain Lookup Table
 
@@ -389,16 +390,22 @@ IF (Intermediate Frequency) chain configuration. Each IF channel demodulates at 
 | `radio` | integer | Parent RF chain (0 or 1) |
 | `if` | integer | IF offset in Hz from RF chain center frequency |
 
-Default configuration (3 active channels):
+Default configuration (2 active channels):
 
 | IF Channel | Enabled | Radio | IF Offset | Resulting Frequency |
 |-----------|---------|-------|-----------|--------------------|
-| chan_multiSF_0 | true | 0 | +73,750 Hz | 869,461,000 Hz (ch-a) |
-| chan_multiSF_1 | true | 0 | +200,750 Hz | 869,588,000 Hz (ch-b) |
-| chan_multiSF_2 | true | 0 | -87,250 Hz | 869,300,000 Hz (ch-d) |
+| chan_multiSF_0 | true | 0 | 0 Hz | 869,525,000 Hz |
+| chan_multiSF_1 | true | 0 | +100,000 Hz | 869,625,000 Hz |
+| chan_multiSF_2 | false | 0 | 0 | — (disabled) |
 | chan_multiSF_3-7 | false | 0 | 0 | — (disabled) |
 
 The SX1302 supports up to 8 multi-SF demodulators plus 1 LoRa service channel and 1 FSK channel. For MeshCore operation, using fewer channels (max 4) provides better stability.
+
+**IF range validation:**
+- The IF range limit is **±730 kHz** (matching the SX1302 HAL demodulator bandwidth), corrected from the earlier ±490 kHz limit
+- Center frequency is calculated from **active channels only** — inactive channels are excluded from the center frequency calculation
+- Channels whose computed IF offset exceeds ±730 kHz are **gracefully force-disabled** by the backend instead of crashing the service
+- The API returns warnings when channels are force-disabled due to IF range violations
 
 See [Radio Configuration](radio.md) for the full IF chain architecture.
 
@@ -596,6 +603,27 @@ ls -la /etc/pymc_repeater/config.yaml
 ```
 
 ---
+
+## VERSION File
+
+The system tracks its software version via a `VERSION` file using semantic versioning (`MAJOR.MINOR.PATCH`).
+
+| Location | Description |
+|----------|-------------|
+| `VERSION` (repository root) | Source of truth for the current version |
+| `/etc/pymc_repeater/version` | Deployed copy, written during `install.sh` and `upgrade.sh` |
+
+**Versioning rules:**
+- **MAJOR** — Breaking changes, incompatible upgrades, major architecture changes
+- **MINOR** — New features, significant improvements, new UI sections
+- **PATCH** — Bug fixes, small improvements, UI tweaks
+
+The version is exposed via:
+- **REST API:** `GET /api/wm1303/version` returns `{"version": "<value>"}`
+- **UI header:** The WM1303 Manager displays the version dynamically (loaded from `/api/wm1303/status`)
+
+Both `install.sh` and `upgrade.sh` copy the `VERSION` file to `/etc/pymc_repeater/version` as part of deployment.
+
 
 ## Related Documentation
 

@@ -554,7 +554,13 @@ fi
 step "Cleaning Python bytecode caches"
 find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-rm -f /tmp/pymc_spectral_results.json 2>/dev/null || true
+# Pre-create runtime /tmp files with correct ownership to prevent permission issues
+for tmpf in /tmp/pymc_spectral_results.json /tmp/pymc_wm1303_bridge_conf.json /tmp/pymc_cad_config.json; do
+    touch "$tmpf" 2>/dev/null || true
+    chown ${PI_USER}:${PI_USER} "$tmpf" 2>/dev/null || true
+    chmod 664 "$tmpf" 2>/dev/null || true
+done
+log "Pre-created runtime /tmp files with correct ownership"
 ok "Cleaned"
 
 

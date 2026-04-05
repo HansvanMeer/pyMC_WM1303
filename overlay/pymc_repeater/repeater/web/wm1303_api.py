@@ -61,6 +61,23 @@ _GLOBAL_CONF = Path("/home/pi/wm1303_pf/global_conf.json")
 _SPECTRAL_BIN = Path("/home/pi/wm1303_pf/spectral_scan")
 _SPECTRAL_RES = Path("/tmp/pymc_spectral_results.json")
 
+def _safe_write(path: Path, content: str) -> bool:
+    """Write content to path with automatic permission recovery."""
+    try:
+        path.write_text(content)
+        return True
+    except PermissionError:
+        try:
+            subprocess.run(['sudo', 'chown', 'pi:pi', str(path)], timeout=5, check=False)
+            path.write_text(content)
+            return True
+        except OSError as e:
+            logger.warning('_safe_write: permission recovery failed for %s: %s', path, e)
+            return False
+    except OSError as e:
+        logger.warning('_safe_write: failed to write %s: %s', path, e)
+        return False
+
 def _j(obj):
     cherrypy.response.headers["Content-Type"] = "application/json"
     return json.dumps(_sanitize_json(obj)).encode()
@@ -90,7 +107,7 @@ def _load_ui() -> dict:
     return {"channels": [], "bridge": {"rules": []}}
 
 def _save_ui(data: dict):
-    _UI_JSON.write_text(json.dumps(data, indent=2))
+    _safe_write(_UI_JSON, json.dumps(data, indent=2))
 
 
 
@@ -302,7 +319,7 @@ def _toggle_spectral_scan(enable: bool) -> bool:
             done = True
             in_spec = False
         result.append(line)
-    _GLOBAL_CONF.write_text('\n'.join(result))
+    _safe_write(_GLOBAL_CONF, '\n'.join(result))
     return True
 
 
@@ -1753,67 +1770,6 @@ class WM1303API:
             logger.debug("Failed to write spectral cache %s: %s", _SPECTRAL_RES, _e)
         return _j(result)
 
-        # --- Priority 1: Read from spectrum_collector DB (HAL-driven scans) ---
-        if _COLLECTOR_AVAILABLE:
-            try:
-                collector = get_collector()
-                recent = collector.get_spectrum_history(hours=1)
-                if recent:
-                    # Group by frequency, take most recent RSSI per freq
-                    from collections import defaultdict
-                    freq_rssi = defaultdict(list)
-                    for r in recent:
-                        freq_rssi[r["freq_mhz"]].append(r["rssi_dbm"])
-                    # Build scan points from most recent data (average last N samples)
-                    scan_points = []
-                    for freq_mhz in sorted(freq_rssi.keys()):
-                        values = freq_rssi[freq_mhz][-20:]  # last 20 samples
-                        avg_rssi = sum(values) / len(values)
-                        scan_points.append({"freq_mhz": freq_mhz, "rssi_dbm": round(avg_rssi, 1)})
-                    if scan_points:
-                        note = "Real HAL spectral scan (via spectrum_collector, {} points)".format(len(recent))
-                        logger.debug("Spectrum scan: %d points from collector DB", len(scan_points))
-            except Exception as e:
-                logger.debug("Spectrum collector read failed: %s", e)
-
-        # --- Priority 2: Read from cached spectral results file ---
-        if not scan_points and _SPECTRAL_RES.exists():
-            try:
-                cached = json.loads(_SPECTRAL_RES.read_text())
-                if cached.get("scan_points") and True:
-                    scan_points = cached["scan_points"]
-                    note = cached.get("note", "Cached spectral scan")
-                    age = time.time() - cached.get("timestamp", 0)
-                    if age < 300:  # less than 5 min old
-                        note += " (cached {:.0f}s ago)".format(age)
-            except Exception as e:
-                logger.debug("Cached spectral results read failed: %s", e)
-
-        # --- Priority 3: Try Python SX1261 driver (when HAL not managing) ---
-        if not scan_points:
-            sx = self._get_sx1261()
-            if sx and getattr(sx, '_initialized', False):
-                try:
-                    results = sx.get_rssi_scan(863000000, 870000000, 200000)
-                    scan_points = [{"freq_mhz": round(r["freq_hz"]/1e6, 3), "rssi_dbm": r["rssi_dbm"]} for r in results]
-                    note = "Real SX1261 RSSI measurement (Python driver)"
-                except Exception as e:
-                    logger.debug("SX1261 Python driver scan failed: %s", e)
-                    scan_points = []
-
-        # --- Fallback: Simulated data ---
-        if not scan_points:
-            for freq_hz in range(863000000, 870200000, 200000):
-                freq_mhz = round(freq_hz / 1e6, 3)
-                near = any(abs(ch["frequency_hz"] - freq_hz) < 150000 for ch in channels)
-                rssi = -120.0 + random.uniform(0, 4)
-                if near: rssi = -120.0 + random.uniform(10, 30)
-                scan_points.append({"freq_mhz": freq_mhz, "rssi_dbm": round(rssi, 1)})
-            note = ""
-
-        result = {"status": "ok", "timestamp": time.time(), "scan_points": scan_points, "channels": channels, "note": note}
-        _SPECTRAL_RES.write_text(json.dumps(result))
-        return _j(result)
 
     # -- logs --------------------------------------------------------------
     def _logs(self):
@@ -2840,9 +2796,12 @@ class WM1303API:
             logger.info("adv_config: saved UI JSON")
 
             if cfg_changed:
-                with open(cfg_path, "w") as f:
-                    yaml.dump(cfg, f, default_flow_style=False)
-                logger.info("adv_config: saved config.yaml")
+                try:
+                    with open(cfg_path, "w") as f:
+                        yaml.dump(cfg, f, default_flow_style=False)
+                    logger.info("adv_config: saved config.yaml")
+                except OSError as e:
+                    logger.warning("adv_config: could not write config.yaml: %s", e)
 
             restarted = False
             try:

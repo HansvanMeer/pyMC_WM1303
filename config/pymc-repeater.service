@@ -17,6 +17,7 @@ Environment="PATH=/opt/pymc_repeater/venv/bin:/usr/local/sbin:/usr/local/bin:/us
 
 # Start command - use venv python with proper path
 ExecStartPre=-/usr/bin/sudo /bin/systemctl stop lora_pkt_fwd.service
+ExecStartPre=/bin/bash -c 'for f in /tmp/pymc_spectral_results.json /tmp/pymc_wm1303_bridge_conf.json /tmp/pymc_cad_config.json; do touch "$f" && chown pi:pi "$f" && chmod 664 "$f"; done 2>/dev/null || true'
 ExecStart=/opt/pymc_repeater/venv/bin/python3 -m repeater.main --config /etc/pymc_repeater/config.yaml
 
 # Restart on failure

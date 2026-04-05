@@ -642,8 +642,14 @@ class WM1303Backend:
         a copy of bridge_conf.json after generation.
         """
         conf = _generate_bridge_conf(self.channels)
-        BRIDGE_CONF.write_text(json.dumps(conf, indent=2))
-        Path('/tmp/pymc_wm1303_bridge_conf.json').write_text(json.dumps(conf, indent=2))
+        try:
+            BRIDGE_CONF.write_text(json.dumps(conf, indent=2))
+        except OSError as e:
+            logger.warning('WM1303Backend: failed to write bridge_conf.json: %s', e)
+        try:
+            Path('/tmp/pymc_wm1303_bridge_conf.json').write_text(json.dumps(conf, indent=2))
+        except OSError as e:
+            logger.warning('WM1303Backend: failed to write /tmp bridge conf: %s', e)
         logger.info('WM1303Backend: wrote bridge_conf.json for %d channels '
                     '(fixed IF chain mapping, RF0-TX architecture)', len(self.channels))
 

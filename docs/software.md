@@ -24,20 +24,24 @@ The central backend component (~112 KB, largest file in the system). It manages 
 | Function | Description |
 |----------|-------------|
 | Packet forwarder management | Start/stop/restart `lora_pkt_fwd` process |
-| UDP protocol handling | Parse PUSH_DATA (RX), send PULL_RESP (TX), handle TX_ACK |
-| Channel dispatch | Map received packets to channels via frequency matching |
+| UDP protocol handling | Parse PUSH_DATA (RX), send PULL_RESP (TX), handle TX_ACK. Auto-recovery via `_recreate_socket()` with retry on OSError |
+| Channel dispatch | Map received packets to channels via frequency + spreading factor matching |
 | Channel sourcing (`get_radios()`) | Read channel definitions primarily from `wm1303_ui.json` (SSOT); fall back to `config.yaml` only when no active SSOT channels exist |
-| Configuration sync | Generate `global_conf.json` and `bridge_conf.json` from SSOT |
-| NoiseFloorMonitor | Periodic noise floor measurement via SX1261 spectral scan |
+| Configuration sync | Generate `global_conf.json` and `bridge_conf.json` from SSOT. `_sync_config_yaml_channels()` syncs active channels to `config.yaml` on every save |
+| NoiseFloorMonitor | Periodic noise floor measurement via SX1261 spectral scan, with 3rd fallback using RX packets (RSSI−SNR). Per-channel noise floor stats from `_channel_noise_floors` dict with direct `channel_id` → UI name mapping |
 | RX Watchdog | 3-mode detection of RX failures with auto-recovery |
 | Statistics | Track per-channel RX/TX counts, RSSI, SNR, timing |
 | Database logging | Store channel stats history in SQLite for metrics/charts |
 | Self-echo detection | Discard own TX packets heard back on RX |
+| SSOT enforcement | `_channels_live_get()`, `_get_ui_channel_id_map()`, and `_tx_queues_get()` all read from `wm1303_ui.json` (SSOT) instead of `config.yaml` |
+| Version reporting | VERSION file with semantic versioning; exposed via `/api/wm1303/version` endpoint |
 
 **RF0-TX Architecture:**
 
+The TX path uses an **async-native** design built on `asyncio.Lock` and `asyncio.sleep`. Earlier versions used `threading` with `run_in_executor` calls, which could cause zombie-thread deadlocks under sustained load. The refactor eliminates all thread-based TX operations, resulting in a fully cooperative async pipeline:
+
 ```python
-"""RF0-TX Architecture (proper hardware TX path):
+"""RF0-TX Architecture (async-native, no threading):
   - SX1250_0 (RF0): RX + TX via SKY66420 FEM (PA + LNA + RF Switch)
   - SX1250_1 (RF1): RX only (no PA, SAW filter path)
   - IF chains 0-2 on RF0 for RX
@@ -45,6 +49,7 @@ The central backend component (~112 KB, largest file in the system). It manages 
   - Direct TX: no stop/start cycle needed (RF0 has proper FEM for TX/RX switching)
   - Self-echo detection discards own TX heard back on RX
   - Per-channel TX queues serialize transmissions
+  - All TX locks and delays are asyncio-native (no run_in_executor)
 """
 ```
 
@@ -346,6 +351,8 @@ The system uses SQLite (`/var/lib/pymc_repeater/repeater.db`) for persistent dat
 | `noise_floor` | Noise floor measurements from the SX1261 spectral scan (timestamp + dBm) |
 | `crc_errors` | CRC error event log with timestamps and counts |
 | `dedup_events` | Deduplication events for the dedup chart |
+| `noise_floor_history` | Per-channel noise floor history — powers the `signal_quality` API and noise floor trend charts |
+| `cad_events` | CAD event log with HW/SW breakdown — `hw_clear`, `hw_detected`, `sw_clear`, `sw_detected`, `skipped` counts per minute per channel |
 | `transport_keys` | Transport encryption key storage |
 | `api_tokens` | API authentication token storage |
 
@@ -377,5 +384,75 @@ The JWT token is used for:
 During installation, the JWT secret from the pyMC_Repeater setup is linked into the WM1303 configuration to enable seamless authentication between components.
 
 ---
+
+## Async TX Refactor
+
+The TX path was refactored from a `threading`-based design to a fully **async-native** architecture using `asyncio.Lock` and `asyncio.sleep`. The previous implementation used `run_in_executor` to bridge blocking thread operations into the async event loop, which under sustained TX load could leave zombie threads and cause deadlocks.
+
+Key changes:
+- All TX locking uses `asyncio.Lock` (no `threading.Lock`)
+- All TX delays use `asyncio.sleep` (no `time.sleep` in executor)
+- No `run_in_executor` calls remain in the TX pipeline
+- The `GlobalTXScheduler` round-robin loop is a native coroutine
+- UDP socket `sendto()` for PULL_RESP is non-blocking within the async context
+
+This eliminates an entire class of concurrency bugs and improves TX latency predictability.
+
+## UDP Socket Auto-Recovery
+
+The UDP socket used for packet forwarder communication (`PUSH_DATA` / `PULL_RESP`) now includes automatic recovery via `_recreate_socket()`:
+
+1. If any UDP `sendto()` or `recvfrom()` raises `OSError` (e.g., network interface reset, buffer overflow), the error is caught
+2. The existing socket is closed
+3. A new UDP socket is created and bound to the same port
+4. A configurable retry delay prevents tight reconnection loops
+5. Normal operation resumes transparently
+
+This prevents the service from entering a permanent failure state when transient network errors occur.
+
+## SSOT Consolidation
+
+Several internal methods were refactored to read exclusively from `wm1303_ui.json` (the Single Source of Truth) instead of `config.yaml`:
+
+| Method | Change |
+|--------|--------|
+| `_channels_live_get()` | Now reads channel definitions from SSOT instead of config.yaml |
+| `_get_ui_channel_id_map()` | Builds channel ID → UI name mapping from SSOT |
+| `_tx_queues_get()` | Reads channel config (frequency, SF, BW) from SSOT for TX queue initialization |
+| `_sync_config_yaml_channels()` | New method — syncs active SSOT channels back to config.yaml on every save, keeping config.yaml as a readable fallback |
+
+Additionally, stale overlay duplicates were removed:
+- Old `wm1303_api.py` overlay (superseded by the current version)
+- Old `wm1303.html` overlay (superseded by the current version)
+
+This ensures a single code path for channel configuration, eliminating subtle bugs caused by config.yaml and SSOT divergence.
+
+## Noise Floor Pipeline
+
+The noise floor measurement system was enhanced with multiple estimation sources and per-channel granularity:
+
+**Three-tier estimation:**
+
+1. **Primary** — SX1261 spectral scan (direct RSSI measurement at channel frequency)
+2. **Secondary** — SX1261 RSSI point measurement (single-frequency read)
+3. **Tertiary (new)** — RX packet estimation using `RSSI − SNR` from received packets. When no spectral scan or RSSI data is available, recent RX packets provide a noise floor approximation
+
+**Per-channel improvements:**
+
+- Noise floor stats stored in `_channel_noise_floors` dictionary, keyed by internal channel ID
+- Direct `channel_id` → UI name mapping fixes noise floor attribution for channels on the same frequency but different spreading factors
+- The `signal_quality` API now reads from the `noise_floor_history` database table instead of in-memory buffers, providing persistent historical data
+- Per-channel noise floor values are exposed in the status API and WebSocket push events
+
+## Version Tracking
+
+The system includes semantic versioning via a `VERSION` file:
+
+- **VERSION file** at the repository root (e.g., `0.10.5`)
+- Copied to `/etc/pymc_repeater/version` during install/upgrade
+- Exposed via the `/api/wm1303/version` REST endpoint
+- Displayed in the WM1303 Manager UI header
+- Format: `MAJOR.MINOR.PATCH` following semantic versioning conventions
+
 
 *See also: [TX Queue & Scheduling](tx_queue.md) | [WM1303 API](api.md) | [WM1303 Manager UI](ui.md)*

@@ -88,6 +88,19 @@ Returns comprehensive system status including radio state, channel statistics, a
         "crc_bad": 31
     }
 }
+}
+```
+
+#### GET /api/wm1303/version
+
+Returns the current software version from the VERSION file (`/etc/pymc_repeater/version`).
+
+**Response:**
+
+```json
+{
+    "version": "0.10.5"
+}
 ```
 
 ### Channels
@@ -145,6 +158,24 @@ Update channel configuration. Changes are saved to the SSOT and take effect with
 ```
 
 **Response:** `{"ok": true}`
+
+The response may include a `warnings` array when channel configuration issues are detected:
+
+```json
+{
+    "ok": true,
+    "warnings": [
+        "Channel 'Channel B' IF offset 850000 Hz exceeds ±730 kHz limit — channel force-disabled",
+        "Channel 'Channel D' is out of IF range — channel force-disabled"
+    ]
+}
+```
+
+**IF range validation rules:**
+- Center frequency is calculated from **active channels only** (inactive channels are excluded from the calculation)
+- IF range limit is **±730 kHz** (matching SX1302 HAL demodulator bandwidth), corrected from the earlier ±490 kHz limit
+- Channels whose IF offset exceeds the limit are **gracefully force-disabled** instead of crashing the service
+- Warnings are returned in the API response to inform the user which channels were affected
 
 #### GET /api/wm1303/channels/live
 
@@ -436,9 +467,43 @@ CAD (Channel Activity Detection) event history per channel.
 
 **Query parameters:** `hours` (default: 24)
 
+#### GET /api/wm1303/cad_stats
+
+Returns CAD statistics with HW/SW breakdown per channel. The `cad_events` database table stores separate columns for hardware and software CAD results. A periodic recorder writes HW/SW delta stats per minute.
+
+**Query parameters:** `hours` (default: 24)
+
+**Response:**
+
+```json
+{
+    "channels": {
+        "ch-1": {
+            "summary": {
+                "hw_clear": 1200,
+                "hw_detected": 15,
+                "sw_clear": 1180,
+                "sw_detected": 35,
+                "skipped": 3
+            },
+            "buckets": [
+                {
+                    "timestamp": "2026-04-03T14:00:00",
+                    "hw_clear": 60,
+                    "hw_detected": 1,
+                    "sw_clear": 59,
+                    "sw_detected": 2,
+                    "skipped": 0
+                }
+            ]
+        }
+    }
+}
+```
+
 #### GET /api/wm1303/signal_quality
 
-Per-channel RSSI and SNR history from channel_stats_history.
+Per-channel RSSI, SNR, and noise floor history. Now reads noise floor data from the `noise_floor_history` database table (instead of in-memory buffers), providing persistent historical data across service restarts.
 
 **Query parameters:** `hours` (default: 24)
 

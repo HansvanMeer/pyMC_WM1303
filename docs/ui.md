@@ -34,7 +34,7 @@ Overview of the entire system:
 
 | Section | Content |
 |---------|----------|
-| Version header | Software version (e.g., "v0.9.315") |
+| Version header | Software version (e.g., "v0.10.5"), dynamically loaded from `/api/wm1303/status` |
 | Service status | Running/stopped, uptime, CPU usage |
 | Radio summary | Total RX/TX across all channels |
 | Channel status cards | Per-channel live status with signal indicators |
@@ -48,7 +48,7 @@ Overview of the entire system:
 - Channel name and frequency
 - RX count, last RSSI, average RSSI
 - TX count, last TX power
-- Noise floor (color-coded: green < -110, yellow < -90, red >= -90 dBm)
+- Noise floor (color-coded: green < -110, yellow < -90, red >= -90 dBm). Per-channel noise floor sourced from `_channel_noise_floors` dict; global noise floor computed from `signal_quality` API
 - Active/inactive indicator
 
 ### 2. Channels Tab
@@ -72,10 +72,12 @@ Detailed channel configuration and monitoring:
 
 Per-channel toggles for:
 - LBT enable/disable
-- CAD enable/disable
+- CAD enable/disable — **CAD toggle is disabled (greyed out) when LBT is not active** for that channel. CAD depends on LBT being enabled to function correctly.
 - LBT RSSI target threshold
 
 Changes take effect within 5 seconds (auto-reload via cache TTL) without service restart.
+
+**Channel matching:** Channel identification now requires both **frequency and spreading factor** equality. This fixes duplicate data display that occurred when two channels shared the same frequency but used different spreading factors.
 
 ### 3. Bridge Tab
 
@@ -174,7 +176,10 @@ The UI includes several interactive charts built with Chart.js:
 ### CAD Activity Chart
 
 - Channel Activity Detection events per channel
-- Clear/detected/timeout counts over time
+- **5 datasets per channel**: HW Clear, SW Clear, HW Detected, SW Detected, Skipped
+- Stat cards display **HW/SW badge** with per-source breakdown
+- Data sourced from `cad_events` database table with HW/SW columns
+- Periodic recorder writes HW/SW delta stats per minute per channel
 - Correlation with TX queue behavior
 
 ### Dedup Chart
