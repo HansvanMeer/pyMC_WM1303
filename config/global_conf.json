@@ -14,7 +14,7 @@
     "radio_0": {
       "enable": true,
       "type": "SX1250",
-      "freq": 869387250,
+      "freq": 869525000,
       "rssi_offset": -215.4,
       "rssi_tcomp": {
         "coeff_a": 0,
@@ -110,9 +110,9 @@
       ]
     },
     "radio_1": {
-      "enable": true,
+      "enable": false,
       "type": "SX1250",
-      "freq": 869387250,
+      "freq": 869525000,
       "rssi_offset": -215.4,
       "rssi_tcomp": {
         "coeff_a": 0,
@@ -126,22 +126,22 @@
     "chan_multiSF_0": {
       "enable": true,
       "radio": 0,
-      "if": 73750
+      "if": 0
     },
     "chan_multiSF_1": {
       "enable": true,
       "radio": 0,
-      "if": 200750
+      "if": 100000
     },
     "chan_multiSF_2": {
-      "enable": true,
+      "enable": false,
       "radio": 0,
-      "if": -87250
+      "if": 0
     },
     "chan_multiSF_3": {
       "enable": false,
       "radio": 0,
-      "if": -187250
+      "if": 0
     },
     "chan_multiSF_4": {
       "enable": false,
