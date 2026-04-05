@@ -76,9 +76,10 @@ The system uses an **overlay approach**: unmodified forks of the upstream reposi
 ### 1. Prepare Raspberry Pi
 
 1. Flash **Raspberry Pi OS Lite** (64-bit preferred, Bookworm or newer) onto your SD card using [Raspberry Pi Imager](https://www.raspberrypi.com/software/)
-2. Boot the SenseCAP M1 or Raspberry Pi and connect via SSH
-3. Ensure the WM1303 Pi HAT is properly seated on the GPIO header
-4. Verify internet connectivity (`ping google.com`)
+2. Ensure the default **`pi`** user exists — the install script uses `/home/pi/` as the base directory
+3. Boot the SenseCAP M1 or Raspberry Pi and connect via SSH
+4. Ensure the WM1303 Pi HAT is properly seated on the GPIO header
+5. Verify internet connectivity (`ping google.com`)
 
 > 💡 **Note:** SPI and I2C are enabled automatically by the install script — no manual configuration needed.
 
