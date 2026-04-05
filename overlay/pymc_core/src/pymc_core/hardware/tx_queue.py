@@ -94,7 +94,12 @@ class ChannelTXQueue:
             "cad_detected": 0,
             "cad_timeout": 0,
             "cad_skipped": 0,
+            "cad_hw_clear": 0,
+            "cad_hw_detected": 0,
+            "cad_sw_clear": 0,
+            "cad_sw_detected": 0,
             "cad_last_result": None,
+            "cad_last_source": None,
             # LBT RSSI noise floor stats (rolling buffer)
             "noise_floor_lbt_avg": None,
             "noise_floor_lbt_min": None,
@@ -361,6 +366,7 @@ class GlobalTXScheduler:
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._packets_scheduled = 0
+        self._round_index = 0  # Rotating start index for fair round-robin
 
     async def start(self):
         """Start the scheduler loop."""
@@ -385,14 +391,23 @@ class GlobalTXScheduler:
                    self._packets_scheduled)
 
     async def _scheduler_loop(self):
-        """Round-robin poll all TX queues, send one packet at a time."""
+        """Round-robin poll all TX queues, send one packet at a time.
+
+        Uses a rotating start index so each channel gets equal priority
+        over time. Each round starts from the next channel in sequence:
+        Round 1: a → b → c, Round 2: b → c → a, Round 3: c → a → b, etc.
+        """
         queue_list = list(self._queues.items())  # [(channel_id, ChannelTXQueue), ...]
+        n_queues = len(queue_list)
         logger.info("GlobalTXScheduler: scheduler loop running with %d queues",
-                   len(queue_list))
+                   n_queues)
 
         while self._running:
             sent_any = False
-            for channel_id, queue in queue_list:
+            # Rotate start position for fair scheduling
+            start = self._round_index % n_queues
+            rotated = queue_list[start:] + queue_list[:start]
+            for channel_id, queue in rotated:
                 try:
                     request = queue.dequeue_nowait()
                 except asyncio.QueueEmpty:
@@ -425,7 +440,7 @@ class GlobalTXScheduler:
                 # When LBT is ENABLED: 4 attempts with 2s/3s/4s delays, force-send on failure
                 lbt_tx_blocked = False
                 if self._lbt_check:
-                    lbt_result = self._lbt_check(channel_id, queue.freq_hz)
+                    lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
                     if not lbt_result.get("lbt_enabled", False):
                         # LBT disabled on this channel - send immediately
                         queue.stats["lbt_skipped"] += 1
@@ -443,7 +458,7 @@ class GlobalTXScheduler:
                                            lbt_result.get("rssi", 0),
                                            lbt_result.get("threshold", 0))
                                 await asyncio.sleep(delay)
-                                lbt_result = self._lbt_check(channel_id, queue.freq_hz)
+                                lbt_result = self._lbt_check(channel_id, queue.freq_hz, queue.sf)
 
                             # Record LBT RSSI in rolling buffer (Task 2)
                             _lbt_rssi = lbt_result.get("rssi")
@@ -456,11 +471,21 @@ class GlobalTXScheduler:
                                 # Track CAD stats from enhanced LBT result
                                 _cad = lbt_result.get('cad_result')
                                 if _cad is not None:
+                                    _src = _cad.get('source', 'unknown')
                                     if _cad.get('detected', False):
                                         queue.stats["cad_detected"] += 1
+                                        if 'hardware' in _src:
+                                            queue.stats["cad_hw_detected"] += 1
+                                        else:
+                                            queue.stats["cad_sw_detected"] += 1
                                     else:
                                         queue.stats["cad_clear"] += 1
+                                        if 'hardware' in _src:
+                                            queue.stats["cad_hw_clear"] += 1
+                                        else:
+                                            queue.stats["cad_sw_clear"] += 1
                                     queue.stats["cad_last_result"] = _cad.get('reason', 'unknown')
+                                    queue.stats["cad_last_source"] = _src
                                 else:
                                     queue.stats["cad_skipped"] += 1
                                 queue.stats["lbt_last_threshold"] = lbt_result.get("threshold")
@@ -477,9 +502,15 @@ class GlobalTXScheduler:
                             # Track CAD stats for blocked case
                             _cad = lbt_result.get('cad_result')
                             if _cad is not None:
+                                _src = _cad.get('source', 'unknown')
                                 if _cad.get('detected', False):
                                     queue.stats["cad_detected"] += 1
+                                    if 'hardware' in _src:
+                                        queue.stats["cad_hw_detected"] += 1
+                                    else:
+                                        queue.stats["cad_sw_detected"] += 1
                                 queue.stats["cad_last_result"] = _cad.get('reason', 'unknown')
+                                queue.stats["cad_last_source"] = _src
                             queue.stats["lbt_last_blocked_at"] = time.time()
                             queue.stats["lbt_last_threshold"] = lbt_result.get("threshold")
                             logger.warning("GlobalTXScheduler: LBT BLOCKED on %s after %d "
@@ -563,7 +594,10 @@ class GlobalTXScheduler:
                 # 50ms inter-packet gap for radio to settle
                 await asyncio.sleep(0.002)
 
-            if not sent_any:
+            if sent_any:
+                # Rotate start position for next round
+                self._round_index += 1
+            else:
                 # No packets in any queue - brief sleep to avoid busy-wait
                 await asyncio.sleep(0.01)  # 10ms poll interval
 
@@ -574,11 +608,9 @@ class GlobalTXScheduler:
         return {
             "running": self._running,
             "packets_scheduled": self._packets_scheduled,
+            "round_index": self._round_index,
             "queues": list(self._queues.keys()),
         }
-
-
-# ======================================================================
 # Legacy TXQueue compatibility (deprecated)
 # ======================================================================
 
