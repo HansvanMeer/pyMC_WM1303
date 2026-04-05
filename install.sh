@@ -326,7 +326,13 @@ clone_or_update_repo() {
     local branch="$3"
     local name="$(basename "$target_dir")"
 
+    # Fix git 'dubious ownership' error (CVE-2022-24765)
+    git config --global --add safe.directory "${target_dir}" 2>/dev/null
+    sudo -u ${PI_USER} git config --global --add safe.directory "${target_dir}" 2>/dev/null
+
     if [ -d "${target_dir}/.git" ]; then
+        # Ensure proper ownership before git operations
+        chown -R ${PI_USER}:${PI_USER} "${target_dir}"
         cd "${target_dir}"
         sudo -u ${PI_USER} git fetch --all >> "${LOG_FILE}" 2>&1
         sudo -u ${PI_USER} git checkout "${branch}" >> "${LOG_FILE}" 2>&1

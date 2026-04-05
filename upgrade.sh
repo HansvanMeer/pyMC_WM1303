@@ -220,6 +220,12 @@ update_repo() {
         return 1
     fi
 
+    # Fix git 'dubious ownership' error (CVE-2022-24765)
+    git config --global --add safe.directory "${target_dir}" 2>/dev/null
+    sudo -u ${PI_USER} git config --global --add safe.directory "${target_dir}" 2>/dev/null
+    # Ensure proper ownership before git operations
+    chown -R ${PI_USER}:${PI_USER} "${target_dir}"
+
     cd "${target_dir}"
     local before=$(git rev-parse HEAD)
 
