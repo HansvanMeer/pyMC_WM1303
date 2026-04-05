@@ -14,9 +14,10 @@ This project integrates the Semtech SX1302/SX1303-based WM1303 LoRa concentrator
 
 - **Multi-channel LoRa gateway** — Up to 4 simultaneous receive channels across 2 RF chains
 - **MeshCore mesh repeater** — Bridge packets between channels, forward across the mesh network
-- **Web-based management UI** — Real-time monitoring, channel configuration, spectrum analysis
+- **Web-based management UI** — Real-time monitoring, channel configuration, spectrum analysis, noise floor tracking
 - **REST API** — Full programmatic control of all gateway functions
 - **Automated installation** — Single-script setup from bare Raspberry Pi OS
+- **Version tracking** — Semantic versioning displayed in UI, tracked across installs and upgrades
 
 The system uses an **overlay approach**: unmodified forks of the upstream repositories are cloned during installation, then WM1303-specific modifications are applied on top. This keeps the forks clean while allowing custom hardware integration.
 
@@ -25,7 +26,10 @@ The system uses an **overlay approach**: unmodified forks of the upstream reposi
 ### Radio & Hardware
 - Dual RF chain support (RF0 + RF1) with independent frequency and spreading factor configuration
 - Up to 8 IF demodulators (4 per RF chain) for multi-SF reception
-- SX1261 companion chip integration for spectral scanning, noise floor monitoring, and Listen Before Talk (LBT)
+- SX1261 companion chip integration for spectral scanning and noise floor monitoring
+- Dynamic spectral scan range — automatically follows RF chain center frequency (±800 kHz)
+- No TX hold overhead — spectral scan runs opportunistically without pausing TX/RX
+- Software LBT/CAD (Listen Before Talk / Channel Activity Detection) per channel
 - GPIO-based hardware control (power, reset, SX1261, AD5338R) with configurable pin mapping
 - Automatic AGC management with debounce protection
 - FEM (Front-End Module) LNA/PA register management
@@ -33,20 +37,21 @@ The system uses an **overlay approach**: unmodified forks of the upstream reposi
 ### Software
 - Bridge engine with configurable rules (Single Source of Truth) for inter-channel packet forwarding
 - Global TX scheduler with round-robin queuing, batch windows, and echo prevention
-- Software LBT/CAD (Listen Before Talk / Channel Activity Detection) per channel
 - RX watchdog with 3 automatic detection modes and packet forwarder recovery
 - Packet deduplication with configurable TTL
-- SQLite database for metrics, signal quality history, and dashboard data
+- SQLite database for metrics, signal quality history, noise floor history, and dashboard data
+- TX echo detection — automatically filters unrealistic RSSI values (> -50 dBm)
 - JWT-based authentication for API and web interface
 - Systemd service with security hardening and auto-restart
+- Semantic version tracking via `/etc/pymc_repeater/version` and REST API
 
 ### Management Interface
 - **WM1303 Manager** — Single-page web application for real-time gateway management
 - **Channels tab** — Per-channel status, statistics, and configuration
-- **Spectrum tab** — Real-time spectral scan visualization with waterfall display
+- **Spectrum tab** — Real-time spectral scan visualization, noise floor per channel, channel activity monitor with per-channel noise floor values
 - **Bridge tab** — Visual bridge rule configuration between channels
-- **Signal Quality** — RSSI/SNR charts with historical data
-- **LBT/CAD charts** — Listen Before Talk decision visualization
+- **Signal Quality** — RSSI/SNR charts with per-channel historical data, TX echo filtering
+- **Noise Floor** — Global noise floor indicator, per-channel noise floor cards, historical graph with distinct line styles per channel
 - **Advanced Config** — GPIO pins, IF chains, RF chain parameters
 
 ## Hardware Requirements
@@ -56,13 +61,17 @@ The system uses an **overlay approach**: unmodified forks of the upstream reposi
 | **Single Board Computer** | SenseCAP M1 or Raspberry Pi 3B+/4/5 |
 | **LoRa Module** | WM1303 LoRaWAN Gateway Module (SX1302/SX1303 + SX1261 + dual SX1250) |
 | **HAT/Interface** | SenseCAP M1 Pi HAT or compatible SPI interface |
-| **OS** | Raspberry Pi OS Lite (Bookworm or newer) |
-| **SPI** | Must be enabled in `/boot/firmware/config.txt` |
+| **OS** | Raspberry Pi OS Lite (64-bit preferred, Bookworm or newer) |
+| **SPI / I2C** | Enabled automatically by install script |
 | **Internet** | Required during installation for package downloads |
 
 ## Quick Start
 
-### 1. Install
+### 1. Prepare Raspberry Pi
+
+Install **Raspberry Pi OS Lite** (64-bit preferred) on your SenseCAP M1 or Raspberry Pi.
+
+### 2. Install
 
 **One-line installer** (recommended):
 
@@ -77,20 +86,22 @@ git clone https://github.com/HansvanMeer/pyMC_WM1303.git
 cd pyMC_WM1303
 sudo bash install.sh
 ```
-
 The installation script handles everything:
 - System package updates and build tool installation
-- SPI configuration verification
+- SPI and I2C configuration verification
 - Repository cloning (HAL, pyMC_core, pyMC_Repeater)
 - Overlay application (WM1303-specific modifications)
 - HAL and packet forwarder compilation
 - Python virtual environment setup
 - Configuration file deployment
+- Version tracking deployment
 - GPIO reset script generation
 - Systemd service installation and startup
 - NTP synchronization verification
 
-### 2. Setup Wizard
+Verbose output is written to `/tmp/wm1303_install.log`. The console shows step summaries with ✓/✗ status indicators.
+
+### 3. Setup Wizard
 
 After installation, open the pyMC Repeater web interface:
 
@@ -102,7 +113,7 @@ The setup wizard will guide you through the initial configuration. When prompted
 
 > ⚠️ **Important:** The pyMC Repeater dashboard has a **Configure → Radio Settings** page. These radio settings are **NOT used** when running with the WM1303 concentrator. All radio configuration is managed exclusively through the **WM1303 Manager** interface (see next steps). You can safely ignore the Radio Settings page.
 
-### 3. Configure Channels
+### 4. Configure Channels
 
 Once the setup wizard is complete, open the **WM1303 Manager**:
 
@@ -115,7 +126,7 @@ Navigate to the **Channels** tab to configure your RF chains and channel assignm
 ![WM1303 Manager — Channels: RF Chain Configuration](screenshots/channels-1.jpg)
 
 In the upper section you configure the **RF Chain** settings:
-- **RF Center Frequency** — Set the center frequency for your RF chain (e.g., `869.5245 MHz` for EU868). Both SX1250 radios share this center frequency.
+- **RF Center Frequency** — Set the center frequency for your RF chain (e.g., `869.5245 MHz` for EU868). Both SX1250 radios share this center frequency. Manual changes are preserved across restarts.
 - The **Analog Bandwidth Coverage** visualization shows you exactly which frequencies your IF chains cover.
 
 Scroll down to configure the **IF Chains** and **Channel Definitions**:
@@ -139,7 +150,7 @@ In the lower section:
 
 Click **Save & Restart** after making changes to apply the new channel configuration.
 
-### 4. Configure Bridge Rules
+### 5. Configure Bridge Rules
 
 Navigate to the **Bridge Rules** tab to define how packets are forwarded between channels:
 
@@ -158,7 +169,7 @@ Bridge rules define the **forwarding paths** between your channels and the MeshC
 
 Click **Save & Restart** to activate the bridge rules.
 
-### 5. Verify Operation
+### 6. Verify Operation
 
 Go back to the **Status** tab to verify everything is running:
 - Both services (`lora_pkt_fwd` and `pymc-repeater`) should show **RUNNING**
@@ -189,11 +200,15 @@ Options:
 - `--skip-pull` — Skip pulling from fork repositories
 
 The upgrade script:
-- Automatically backs up your configuration before making changes
+- Automatically backs up your configuration and databases before making changes
 - Smart-merges config files (adds missing keys without overwriting your settings)
-- Runs database schema migrations
+- Runs database schema migrations (creates missing tables, adds new columns)
+- Cleans up legacy data (old channel ID formats, TX echo entries)
 - Detects HAL overlay changes via checksums and rebuilds only when needed
-- Preserves all your channel settings, bridge rules, and database history
+- Preserves all your channel settings, bridge rules, and metric history
+- Backwards compatible with all previous installed versions
+
+Verbose output is written to `/tmp/wm1303_upgrade.log`. The console shows step summaries with ✓/✗ status indicators.
 
 ## WM1303 Manager UI
 
@@ -204,8 +219,8 @@ Hardware overview, service health, packet activity charts, and active channel su
 
 ![Status Dashboard](screenshots/status.jpg)
 
-### Spectrum
-SX1261-based spectral scanning, per-channel signal quality (RSSI/SNR), channel activity monitoring, and frequency spectrum visualization.
+### Spectrum & Signal Quality
+SX1261-based spectral scanning with dynamic frequency range, per-channel noise floor monitoring (global indicator + per-channel cards + historical graph), signal quality (RSSI/SNR) charts, and channel activity monitoring.
 
 ![Spectrum & Signal Quality](screenshots/spectrum-1.jpg)
 
