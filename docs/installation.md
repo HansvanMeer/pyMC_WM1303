@@ -92,6 +92,8 @@ curl -sSL https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/bootstr
 
 This bootstrap script automatically installs git, clones the repository to `/home/pi/pyMC_WM1303`, and runs the full installation.
 
+> **Note:** If an existing WM1303 installation is detected (i.e., the pymc-repeater service is already installed), `bootstrap.sh` automatically runs `upgrade.sh` instead of a fresh install. This makes it safe to re-run the bootstrap on an already-configured system.
+
 ### Manual Install
 
 Alternatively, clone and install manually:
@@ -189,7 +191,7 @@ All directories are owned by the `pi` user.
 
 ### Phase 4: Clone Repositories
 
-Clones the three fork repositories. If already present, pulls the latest changes.
+Clones the three fork repositories. If already present, pulls the latest changes. A `git config --global --add safe.directory` fix is applied to each repository path to prevent git ownership errors when running as root (CVE-2022-24765).
 
 | Repository | Branch | Target |
 |------------|--------|--------|
@@ -355,12 +357,12 @@ The `upgrade.sh` script updates an existing installation with the latest code fr
 ### Command-Line Options
 
 ```bash
-sudo bash upgrade.sh [--rebuild] [--force-config] [--skip-pull]
+sudo bash upgrade.sh [--force-rebuild] [--force-config] [--skip-pull]
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--rebuild` | Force rebuild of HAL and packet forwarder (even if no changes detected) |
+| `--force-rebuild` | Force rebuild of HAL and packet forwarder (even if no changes detected). `--rebuild` is accepted as a backward-compatible alias. |
 | `--force-config` | Overwrite existing config files with templates (use with caution) |
 | `--skip-pull` | Skip pulling from remote repositories (use local overlay only) |
 
@@ -385,6 +387,7 @@ Gracefully stops the running service to prevent conflicts during the update.
 
 Pulls the latest changes from all three fork repositories:
 
+- Applies `git config --global --add safe.directory` fix for each repository (CVE-2022-24765)
 - Discards local changes (overlay will be re-applied)
 - Fetches all remote branches
 - Checks out the configured branch
@@ -398,10 +401,10 @@ Re-applies all overlay files from the `overlay/` directory. This ensures the WM1
 #### Phase 5: Rebuild HAL & Packet Forwarder
 
 Rebuilds the C code if:
-- The HAL repository was updated, OR
-- `--rebuild` flag was specified
+- The HAL overlay source checksums differ from the last build, OR
+- `--force-rebuild` flag was specified
 
-Otherwise skips the build (overlay changes to Python files do not require recompilation).
+Otherwise skips the build. This checksum-based detection means HAL is only recompiled when source files actually change, not on every upgrade. Overlay changes to Python files do not require recompilation.
 
 #### Phase 6: Update Python Packages
 
@@ -409,14 +412,24 @@ Reinstalls Python packages in editable mode if their repositories were updated.
 
 #### Phase 7: Update Configuration Files
 
-By default, existing configuration files are **preserved**. If `--force-config` is specified:
-- `wm1303_ui.json` is overwritten with the template
-- `config.yaml` is overwritten with the template
-- `global_conf.json` is overwritten with the template
+The upgrade performs a **smart configuration merge**:
+- New default keys are added to existing config files without overwriting user-customized values
+- Existing channel settings, bridge rules, and identity keys are fully preserved
+- `wm1303_ui.json`, `config.yaml`, and `global_conf.json` are all merged non-destructively
+
+If `--force-config` is specified, existing config files are overwritten with templates (a backup is created first in Phase 1).
 
 The systemd service file and GPIO reset scripts are always updated.
 
-#### Phase 8: Restart and Verify Service
+#### Phase 8: Database Schema Migration
+
+Automatically migrates the SQLite database schema:
+- Creates any missing tables (`channel_stats_history`, `noise_floor_history`, `packets`, `adverts`, `crc_errors`, `dedup_events`, etc.)
+- Adds new columns to existing tables without losing data
+- Skips migration gracefully if the database does not yet exist
+- All existing metric data, packet history, and statistics are preserved
+
+#### Phase 9: Restart and Verify Service
 
 Restarts the service and performs the same health checks as during installation.
 
@@ -429,7 +442,7 @@ git pull
 sudo bash upgrade.sh
 
 # Force rebuild after HAL changes
-sudo bash upgrade.sh --rebuild
+sudo bash upgrade.sh --force-rebuild
 
 # Reset all config to defaults (backup created automatically)
 sudo bash upgrade.sh --force-config
@@ -437,6 +450,16 @@ sudo bash upgrade.sh --force-config
 # Apply only local overlay changes (no git pull)
 sudo bash upgrade.sh --skip-pull
 ```
+
+### One-Line Remote Upgrade
+
+For systems where `~/pyMC_WM1303` may not be present or up to date, use the one-line upgrade bootstrap:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/upgrade_bootstrap.sh | sudo bash
+```
+
+This script clones the repository to a temporary directory, runs `upgrade.sh`, and cleans up afterward. It does not require the main repository to be cloned on the Pi.
 
 ---
 

@@ -837,7 +837,8 @@ else
 
     step "Checking web interface availability"
     sleep 5
-    WEB_PORT=$(grep -oP 'port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null || echo "8000")
+    WEB_PORT=$(grep -oP '^\s*port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null | head -1)
+    WEB_PORT=${WEB_PORT:-8000}
     if command -v curl &>/dev/null; then
         if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
             ok "Web interface responding on port ${WEB_PORT}"

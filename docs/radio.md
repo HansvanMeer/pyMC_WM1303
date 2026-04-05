@@ -12,7 +12,7 @@ The SX1302/SX1303 baseband processor connects to two independent SX1250 radio tr
 - **Capabilities:** TX and RX
 - **FEM connection:** Connected to SKY66420 (PA + LNA + RF switch)
 - **TX enable:** Yes — all transmissions go through RF0
-- **Typical center frequency:** 869.387 MHz (EU868 band)
+- **Typical center frequency:** 869.525 MHz (EU868 g3 band)
 
 ### RF Chain 1 (RF1)
 
@@ -20,7 +20,7 @@ The SX1302/SX1303 baseband processor connects to two independent SX1250 radio tr
 - **Capabilities:** RX only
 - **FEM connection:** SAW filter path only (no PA)
 - **TX enable:** No
-- **Typical center frequency:** Same as RF0 (shared for narrow-band operation) or offset for wider coverage
+- **Default state:** Disabled (`enable: false`) — no IF channels reference it in the default configuration
 
 ### Important: TX Always Uses RF0
 
@@ -32,7 +32,7 @@ Regardless of which channel a packet needs to be transmitted on, **all TX goes t
 "radio_0": {
     "enable": true,
     "type": "SX1250",
-    "freq": 869387250,
+    "freq": 869525000,
     "rssi_offset": -215.4,
     "rssi_tcomp": {
         "coeff_a": 0, "coeff_b": 0,
@@ -44,13 +44,15 @@ Regardless of which channel a packet needs to be transmitted on, **all TX goes t
     "tx_gain_lut": [ ... ]
 },
 "radio_1": {
-    "enable": true,
+    "enable": false,
     "type": "SX1250",
-    "freq": 869387250,
+    "freq": 869525000,
     "rssi_offset": -215.4,
     "tx_enable": false
 }
 ```
+
+> **Note:** `radio_1` is disabled by default because no IF channels reference it. Enable it only if you configure IF channels that need a second RF chain with a different center frequency.
 
 ## IF Chains (Intermediate Frequency Demodulators)
 
@@ -77,10 +79,9 @@ Each IF chain is configured with a **frequency offset** relative to its parent R
 RX frequency = RF chain center freq + IF offset
 ```
 
-For example, with RF0 center at 869,387,250 Hz:
-- IF0 offset = +73,750 Hz → listens at 869,461,000 Hz (Channel A)
-- IF1 offset = +200,750 Hz → listens at 869,588,000 Hz (Channel B)
-- IF2 offset = -87,250 Hz → listens at 869,300,000 Hz (Channel D)
+For example, with RF0 center at 869,525,000 Hz:
+- IF0 offset = 0 Hz → listens at 869,525,000 Hz (Channel A)
+- IF1 offset = +100,000 Hz → listens at 869,625,000 Hz (Channel B)
 
 ### Multi-SF Demodulators
 
@@ -89,10 +90,10 @@ The multi-SF demodulators can simultaneously detect and decode any spreading fac
 ### IF Chain Configuration in global_conf.json
 
 ```json
-"chan_multiSF_0": { "enable": true,  "radio": 0, "if": 73750 },
-"chan_multiSF_1": { "enable": true,  "radio": 0, "if": 200750 },
-"chan_multiSF_2": { "enable": true,  "radio": 0, "if": -87250 },
-"chan_multiSF_3": { "enable": false, "radio": 0, "if": -187250 },
+"chan_multiSF_0": { "enable": true,  "radio": 0, "if": 0 },
+"chan_multiSF_1": { "enable": true,  "radio": 0, "if": 100000 },
+"chan_multiSF_2": { "enable": false, "radio": 0, "if": 0 },
+"chan_multiSF_3": { "enable": false, "radio": 0, "if": 0 },
 "chan_multiSF_4": { "enable": false, "radio": 0, "if": 0 },
 "chan_multiSF_5": { "enable": false, "radio": 0, "if": 0 },
 "chan_multiSF_6": { "enable": false, "radio": 0, "if": 0 },
@@ -164,7 +165,7 @@ The system supports a maximum of **4 simultaneous channels**. While the SX1302 h
 
 1. **TX contention:** The SX1302 is half-duplex — during TX, all RX stops. More channels mean more bridge forwarding, more TX events, and longer RX blind windows.
 
-2. **Frequency spread:** All IF chains share a single RF chain center frequency. The maximum IF offset is limited (~400 kHz), restricting the frequency range that can be covered.
+2. **Frequency spread:** All IF chains share a single RF chain center frequency. The maximum IF offset is ±730 kHz (matching the SX1302 HAL digital bandwidth). The RF chain center frequency is automatically calculated from the center of all **active** channels only — inactive channels do not influence the center frequency. Channels whose IF offset would exceed ±730 kHz are gracefully force-disabled instead of causing a startup error.
 
 3. **Bridge complexity:** With N channels and full bridge rules, the number of TX events per received packet grows as N-1. With 4 channels, a single RX can trigger 3 TX events.
 
@@ -267,6 +268,24 @@ RX ──resumes┘
 | SF11 / BW250k | 11 | ~200 ms | ~40 ms | ~240 ms |
 | SF12 / BW125k | 12 | ~400 ms | ~40 ms | ~440 ms |
 
+### TX Hold (Removed)
+
+In earlier versions, a TX hold window paused transmissions for approximately 4 seconds every 30 seconds to allow uninterrupted spectral scanning and noise floor measurement. This introduced ~13% TX overhead — during the hold window, queued packets could not be transmitted.
+
+**TX hold has been completely removed.** The current implementation achieves 0% TX overhead by using a retry-based approach for spectral scanning (see below). The TX mutex is released during scan retries to preserve maximum RX availability, consistent with the [design principle](../design-principles.promptinclude.md) that RX availability is the top priority.
+
+### Spectral Scan Retry Logic
+
+The SX1261 companion chip performs spectral scans on a separate SPI bus without interrupting SX1302 RX. However, spectral scans cannot run concurrently with TX (both share the RF front-end).
+
+Instead of blocking TX with a hold window, the spectral scan now uses a **retry mechanism**:
+1. The scan checks if a TX operation is in progress
+2. If TX is active, the scan releases the TX mutex and waits briefly before retrying
+3. This repeats until a TX-free window is found
+4. The scan range is dynamically calculated based on the RF chain center frequency and active channel spread
+
+This approach ensures spectral scans always complete without introducing any TX delay or RX blind windows beyond the scan itself.
+
 ## Noise Floor / RSSI / SNR Per Channel
 
 The system maintains per-channel signal quality metrics:
@@ -277,6 +296,7 @@ Determined by the NoiseFloorMonitor using SX1261 spectral scan data:
 - Updated every 30 seconds
 - Rolling buffer of 20 samples per channel
 - Frequency matching: channel frequency ± BW/2
+- **TX echo filtering:** RSSI values > -50 dBm are filtered at the storage level to prevent the device's own TX transmissions from contaminating noise floor measurements. This ensures noise floor data reflects actual ambient RF conditions.
 - Typical values: -90 to -120 dBm depending on environment
 
 ### RSSI (Received Signal Strength Indicator)
