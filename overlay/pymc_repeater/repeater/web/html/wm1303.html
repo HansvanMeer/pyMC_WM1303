@@ -259,7 +259,7 @@ select.ci option{background:#1e293b}
     <!-- Single row for Channel E -->
     <div class="crow con" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 44px 68px 52px 44px 32px">
       <span class="bdg text-xs" style="background:rgba(239,68,68,0.15);color:#ef4444;white-space:nowrap;text-align:center;padding:6px 4px;text-transform:none;">Channel E</span>
-      <input class="ci" id="che-friendly-name" type="text" value="Channel E" style="width:100%">
+      <input class="ci" id="che-name" type="text" value="Channel E" style="width:100%">
       <input class="ci" id="che-frequency" type="text" lang="en" pattern="[0-9]*[.]?[0-9]*" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" style="width:100%">
       <select class="ci" id="che-bandwidth" style="width:100%">
         <option value="62500">62.5</option>
@@ -921,7 +921,7 @@ function loadTxQueues(){
     var totalRx=0,totalTx=0,totalAirtimeMs=0,totalDutySum=0,activeCh=0;
     for(var i=0;i<chData.length;i++){
       var ch=chData[i];
-      var friendlyName=ch.friendly_name||ch.name||('IF'+i);
+      var friendlyName=ch.name||ch.friendly_name||('Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i]);
       var freqMhz=(ch.frequency||0)/1e6;
       var bwKhz=(ch.bandwidth||125000)/1000;
       var sf=ch.spreading_factor||'?';
@@ -1062,7 +1062,7 @@ function loadTxQueues(){
     for(var ei=0;ei<liveChs.length;ei++){
       var eLive=liveChs[ei];
       if(!eLive.is_sx1261)continue;
-      var eName=eLive.friendly_name||'Channel E';
+      var eName=eLive.name||eLive.friendly_name||'Channel E';
       var eFreq=(eLive.frequency||0)/1e6;
       var eBw=(eLive.bandwidth||125000)/1000;
       var eSf=eLive.spreading_factor||8;
@@ -1213,7 +1213,7 @@ function loadTxQueues(){
     var html='';
     for(var i=0;i<chData.length;i++){
       var ch=chData[i];
-      var friendlyName=ch.friendly_name||ch.name||('IF'+i);
+      var friendlyName=ch.name||ch.friendly_name||('Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i]);
       var freqMhz=(ch.frequency||0)/1e6;
       var bwKhz=(ch.bandwidth||125000)/1000;
       var sf=ch.spreading_factor||'?';
@@ -1394,7 +1394,7 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
       var lPct = pct(mhz - halfBw);
       var rPct = pct(mhz + halfBw);
       var wPct = rPct - lPct;
-      var friendlyName = ch.friendly_name||ch.name||('Ch '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[ci]);
+      var friendlyName = ch.name||ch.friendly_name||('Ch '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[ci]);
       // Colored block for channel bandwidth
       html += '<div style="position:absolute;left:'+lPct+'%;width:'+wPct+'%;top:24px;height:32px;background:'+chCol+'22;border:1.5px solid '+chCol+'66;border-radius:3px" title="'+esc(friendlyName)+': '+mhz.toFixed(3)+' MHz \u00B1 '+(halfBw*1000).toFixed(1)+' kHz"></div>';
       // Center line
@@ -1409,7 +1409,7 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
     var eBwMhz = (cheData.bandwidth || 125000) / 1e6;
     var eHalfBw = eBwMhz / 2;
     var eCol = '#ef4444'; // red for Channel E
-    var eName = cheData.friendly_name || 'Channel E';
+    var eName = cheData.name || cheData.friendly_name || 'Channel E';
     var eLPct = pct(eMhz - eHalfBw);
     var eRPct = pct(eMhz + eHalfBw);
     var eWPct = eRPct - eLPct;
@@ -1445,7 +1445,7 @@ function renderRfIfChainMap(rf0f, rf1f){
 
   var typeLabel={multi_sf:'Multi-SF',lora_std:'LoRa Std',fsk:'FSK'};
   // Build bridge channel mapping from chData (source of truth)
-  var bridgeFreqs = chData ? chData.map(function(ch){return {name:ch.friendly_name||ch.name,mhz:ch.frequency/1e6};}) : [];
+  var bridgeFreqs = chData ? chData.map(function(ch){return {name:ch.name||ch.friendly_name,mhz:ch.frequency/1e6};}) : [];
 
   // Match bridge channel by frequency proximity
   function matchBridge(mhz, ifIdx){
@@ -1501,7 +1501,7 @@ async function loadCh(){
     ifChainData=sd.channels||[];
     rfCenterData={rf0:sd.radio_0_freq_mhz,rf1:sd.radio_1_freq_mhz};
   }catch(e){ifChainData=[];}
-  chData.forEach(function(c,i){if(c.lbt_enabled===undefined)c.lbt_enabled=false;if(c.cad_enabled===undefined)c.cad_enabled=false;if(!c.lbt_enabled)c.cad_enabled=false;if(!c.friendly_name)c.friendly_name='IF'+i;});
+  chData.forEach(function(c,i){if(c.lbt_enabled===undefined)c.lbt_enabled=false;if(c.cad_enabled===undefined)c.cad_enabled=false;if(!c.lbt_enabled)c.cad_enabled=false;if(!c.friendly_name)c.friendly_name='Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i];});
   renderCh();
   renderIfChains();
 }
@@ -1531,7 +1531,7 @@ function renderCh(){
     <button class="btn ber ic" onclick="chData.splice(${i},1);renderCh()" title="Delete"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg></button>
   </div>`).join('');
 }
-function addCh(){var _fn='IF'+chData.length;chData.push({name:'ch-new',friendly_name:_fn,frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:14,lbt_rssi_target:-80,lbt_enabled:false,cad_enabled:false,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
+function addCh(){var _fn='Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[chData.length];chData.push({name:'ch-new',friendly_name:_fn,frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:14,lbt_rssi_target:-80,lbt_enabled:false,cad_enabled:false,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
 // -- Channel E load/save --
 let cheData={};
 async function loadChE(){
@@ -1539,7 +1539,7 @@ async function loadChE(){
     var d=await api('GET','/api/wm1303/channel_e');
     cheData=d;
     G('che-enable').checked=!!d.enable;
-    G('che-friendly-name').value=d.friendly_name||'Channel E';
+    G('che-name').value=d.name||d.friendly_name||'Channel E';
     G('che-frequency').value=(d.frequency/1e6).toFixed(3);
     G('che-bandwidth').value=String(d.bandwidth||125000);
     G('che-sf').value=String(d.spreading_factor||8);
@@ -1558,7 +1558,7 @@ async function loadChE(){
 async function saveChE(restart){
   var body={
     enable:G('che-enable').checked,
-    friendly_name:G('che-friendly-name').value||'Channel E',
+    name:G('che-name').value||'Channel E',
     frequency:Math.round(parseFloat(G('che-frequency').value.replace(/,/g,'.'))*1e6),
     bandwidth:parseInt(G('che-bandwidth').value),
     spreading_factor:parseInt(G('che-sf').value),
@@ -1604,7 +1604,7 @@ function renderIfChains(doFetch){
   }
   const typeLabel={multi_sf:'Multi-SF',lora_std:'LoRa Std',fsk:'FSK'};
   const typeClr={multi_sf:'var(--acc)',lora_std:'#f59e0b',fsk:'#10b981'};
-  const bridgeFreqs=chData.map(ch=>({name:ch.friendly_name||ch.name,mhz:ch.frequency/1e6}));
+  const bridgeFreqs=chData.map(ch=>({name:ch.name||ch.friendly_name,mhz:ch.frequency/1e6}));
   function matchBridge(mhz){
     let best=null,bd=0.4;
     for(const b of bridgeFreqs){const d=Math.abs(b.mhz-mhz);if(d<bd){bd=d;best=b;}}
@@ -1663,8 +1663,8 @@ function setPktType(i,t,checked){if(!bRules[i].packet_types)bRules[i].packet_typ
 function renderBr(){
   const l=G('rules-list');
   if(!bRules.length){l.innerHTML='<div class="text-center py-8" style="color:var(--txm)">No rules. Add a forwarding rule.</div>';return;}
-  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name)+'">'+esc(ch.friendly_name||ch.name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
-  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.friendly_name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
+  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name)+'">'+esc(ch.name||ch.friendly_name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
+  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.name||cheData.friendly_name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
   const nO='<option value="">Select endpoint...</option>'+chOpts+cheOpt+'<option value="repeater">&#128251; Repeater</option>';
   // FILTER_DROPDOWN_REMOVED
   l.innerHTML=bRules.map((r,i)=>{
@@ -2196,7 +2196,7 @@ function renderChannelActivity(channels, noiseFloor, liveChannels) {
   var liveNfMap = {};
   if (liveChannels && liveChannels.length > 0) {
     liveChannels.forEach(function(lc) {
-      if (lc.friendly_name) liveNfMap[lc.friendly_name] = lc.noise_floor;
+      if (lc.name||lc.friendly_name) { liveNfMap[lc.name||lc.friendly_name] = lc.noise_floor; if(lc.friendly_name) liveNfMap[lc.friendly_name] = lc.noise_floor; if(lc.name) liveNfMap[lc.name] = lc.noise_floor; }
       if (lc.name) liveNfMap[lc.name] = lc.noise_floor;
     });
   }
@@ -2214,13 +2214,13 @@ function renderChannelActivity(channels, noiseFloor, liveChannels) {
     var statusText = !isActive ? 'Inactive' : pktCount > 0 ? pktCount + ' pkts' : 'No packets';
     html += '<div style="background:' + color + '18;border:1px solid ' + color + '50;border-radius:10px;padding:14px;box-sizing:border-box;overflow:hidden">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-    html += '<span style="font-weight:600;font-size:13px;color:' + color + '">' + (ch.friendly_name || ch.name) + '</span>';
+    html += '<span style="font-weight:600;font-size:13px;color:' + color + '">' + (ch.name || ch.friendly_name) + '</span>';
     html += '<span style="font-size:12px">' + statusIcon + ' ' + statusText + '</span>';
     html += '</div>';
     html += '<div style="font-size:11px;color:var(--txm);display:grid;grid-template-columns:1fr 1fr;gap:4px">';
     html += '<span>' + freqMhz + ' MHz, SF' + sf + '</span>';
     html += '<span>RSSI: ' + avgRssi + '</span>';
-    var chNf = liveNfMap[ch.friendly_name] || liveNfMap[ch.name] || null;
+    var chNf = liveNfMap[ch.name] || liveNfMap[ch.friendly_name] || null;
     var nfStr = chNf !== null && chNf !== undefined ? chNf.toFixed(1) + ' dBm' : '—';
     var nfColor = chNf !== null ? (chNf < -100 ? '#22c55e' : chNf < -85 ? '#f59e0b' : '#ef4444') : 'inherit';
     html += '<span style="color:' + nfColor + '">NF: ' + nfStr + '</span>';
@@ -2246,7 +2246,7 @@ function renderRssiChart(channels, noiseFloor) {
     if (pts.length === 0) return;
     totalPts += pts.length;
     datasets.push({
-      label: (ch.friendly_name || ch.name) + ' RSSI',
+      label: (ch.name || ch.friendly_name) + ' RSSI',
       data: pts,
       borderColor: color,
       backgroundColor: 'transparent',
@@ -2289,7 +2289,7 @@ function renderSnrChart(channels) {
     if (pts.length === 0) return;
     totalPts += pts.length;
     datasets.push({
-      label: (ch.friendly_name || ch.name) + ' SNR',
+      label: (ch.name || ch.friendly_name) + ' SNR',
       data: pts,
       borderColor: color,
       backgroundColor: 'transparent',
@@ -2349,9 +2349,7 @@ function renderNfChart(data, stats) {
       // Multiple channels: render per-channel lines
       chKeys.forEach(function(chId, idx) {
         var color = getChColor(idx);
-        var label = chId;
-        var m = chId.match(/^channel_([a-z])$/);
-        if (m) { var _idx = m[1].charCodeAt(0) - 97; label = 'IF' + _idx; }
+        var label = formatChannelName(chId);
         var pts = byChannel[chId].map(function(pt) {
           return { x: new Date(pt.timestamp * 1000), y: pt.noise_floor_dbm || pt.avg_nf };
         });
@@ -2413,9 +2411,29 @@ async function loadPerChannelNF() {
 }
 
 function formatChannelName(chId) {
-  if (chId === 'channel_e') return 'Channel E';
+  // Resolve channel_id (channel_a, channel_b, ...) to friendly name from UI config
+  var _abc = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  if (chId === 'channel_e') {
+    try { if (typeof cheData !== 'undefined' && cheData && (cheData.name || cheData.friendly_name)) return cheData.name || cheData.friendly_name; } catch(e) {}
+    return 'Channel E';
+  }
   var m = chId.match(/^channel_([a-z])$/);
-  if (m) { var idx = m[1].charCodeAt(0) - 97; return 'IF' + idx; }
+  if (m) {
+    var slotIdx = m[1].charCodeAt(0) - 97; // 0=a, 1=b, 2=c, 3=d
+    // Map slot back to UI channel: active channels are assigned a/b/c/d by index
+    try {
+      if (typeof chData !== 'undefined' && chData) {
+        var aidx = 0;
+        for (var i = 0; i < chData.length; i++) {
+          if (chData[i].active !== false) {
+            if (aidx === slotIdx) return chData[i].name || chData[i].friendly_name || ('Channel ' + _abc[i]);
+            aidx++;
+          }
+        }
+      }
+    } catch(e) {}
+    return 'Channel ' + _abc[slotIdx];
+  }
   return chId;
 }
 
@@ -2592,7 +2610,7 @@ function renderNfCards(channels) {
     var chFriendly = {};
     try {
       if (typeof chData !== 'undefined' && chData) {
-        chData.forEach(function(c) { chFriendly[c.name] = c.friendly_name || c.name; });
+        chData.forEach(function(c) { chFriendly[c.name] = c.name || c.friendly_name; });
       }
     } catch(e) {}
 
@@ -2726,7 +2744,7 @@ function renderNfCards(channels) {
     var chFriendly = {};
     try {
       if (typeof chData !== 'undefined' && chData) {
-        chData.forEach(function(c) { chFriendly[c.name] = c.friendly_name || c.name; });
+        chData.forEach(function(c) { chFriendly[c.name] = c.name || c.friendly_name; });
       }
     } catch(e) {}
 
@@ -2875,7 +2893,7 @@ function renderLbtHistChart(channels) {
     // Clear TX events (green dots with channel-colored border)
     if (clearPts.length > 0) {
       datasets.push({
-        label: (ch.friendly_name || ch.name) + ' TX Clear',
+        label: (ch.name || ch.friendly_name) + ' TX Clear',
         data: clearPts,
         backgroundColor: '#22c55e',
         borderColor: color,
@@ -2888,7 +2906,7 @@ function renderLbtHistChart(channels) {
     // Busy TX events (red dots with channel-colored border)
     if (busyPts.length > 0) {
       datasets.push({
-        label: (ch.friendly_name || ch.name) + ' TX Busy',
+        label: (ch.name || ch.friendly_name) + ' TX Busy',
         data: busyPts,
         backgroundColor: '#ef4444',
         borderColor: color,
@@ -2905,7 +2923,7 @@ function renderLbtHistChart(channels) {
       var minTime = allPts[0].x;
       var maxTime = allPts[allPts.length - 1].x;
       datasets.push({
-        label: (ch.friendly_name || ch.name) + ' LBT Threshold (' + ch.lbt_threshold_dbm + ' dBm)',
+        label: (ch.name || ch.friendly_name) + ' LBT Threshold (' + ch.lbt_threshold_dbm + ' dBm)',
         data: [{ x: minTime, y: ch.lbt_threshold_dbm }, { x: maxTime, y: ch.lbt_threshold_dbm }],
         borderColor: color,
         borderWidth: 1.5,
@@ -2916,7 +2934,7 @@ function renderLbtHistChart(channels) {
         fill: false
       });
     }
-    legendHtml += '<span style="color:' + color + '">&#9679; ' + (ch.friendly_name || ch.name) + '</span> ';
+    legendHtml += '<span style="color:' + color + '">&#9679; ' + (ch.name || ch.friendly_name) + '</span> ';
   });
 
   // Add legend summary

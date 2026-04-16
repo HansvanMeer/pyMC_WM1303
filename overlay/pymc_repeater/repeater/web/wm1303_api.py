@@ -164,7 +164,7 @@ def _sync_config_yaml_channels(channels: list) -> None:
                 'tx_power': int(ch.get('tx_power', 14)),
                 'tx_enable': ch.get('tx_enabled', True),
                 'description': 'MeshCore {} (SF{})'.format(
-                    ch.get('friendly_name', 'Channel ' + chr(65 + active_idx)),
+                    ch.get('name', ch.get('friendly_name', 'Channel ' + chr(65 + active_idx))),
                     ch.get('spreading_factor', 7)),
             }
             active_idx += 1
@@ -515,7 +515,7 @@ class WM1303API:
             freq_to_name = {}
             for ch in ui_channels:
                 ch_freq = int(ch.get("frequency", 0))
-                friendly = ch.get("friendly_name", ch.get("name", "Unknown"))
+                friendly = ch.get("name", ch.get("friendly_name", "Unknown"))
                 freq_to_name[ch_freq] = friendly
 
             result = []
@@ -878,7 +878,7 @@ class WM1303API:
                 bw = int(ch.get('bandwidth', 125000))
                 max_if = (RF_RX_BW // 2) - (bw // 2) - 7500
                 if f and abs(f - center) > max_if:
-                    ch_name = ch.get('friendly_name', ch.get('name', '?'))
+                    ch_name = ch.get('name', ch.get('friendly_name', '?'))
                     delta_khz = abs(f - center) / 1000
                     max_khz = max_if / 1000
                     warnings.append(
@@ -1112,7 +1112,7 @@ class WM1303API:
             _che_total_airtime_ms = ch_e_st.get("total_tx_airtime_ms", 0)
             _che_duty = round((_che_total_airtime_ms / 1000.0 / uptime_seconds) * 100, 3) if uptime_seconds > 0 else 0
             channels_live.append({
-                "name": "channel_e",
+                "name": _che_ui.get("name", _che_ui.get("friendly_name", "Channel E")),
                 "friendly_name": _che_ui.get("friendly_name", "Channel E"),
                 "frequency": _che_freq,
                 "bandwidth": int(_che_ui.get("bandwidth", 62500)),
@@ -1942,7 +1942,7 @@ class WM1303API:
             freq_mhz = c.get("frequency", 0) / 1e6
             ch_defs.append({
                 "name": c.get("name", ""),
-                "friendly_name": c.get("friendly_name", c.get("name", "")),
+                "friendly_name": c.get("name", c.get("friendly_name", "")),
                 "freq_mhz": round(freq_mhz, 4),
                 "lbt_threshold": c.get("lbt_rssi_target", -80)
             })
@@ -1988,7 +1988,8 @@ class WM1303API:
         bucket_s = 600
         ui_chs = _load_ui().get("channels", [])
         ch_colors = {"channel_a": "#3b82f6", "channel_b": "#8b5cf6",
-                     "channel_c": "#10b981", "channel_d": "#f59e0b"}
+                     "channel_c": "#10b981", "channel_d": "#f59e0b",
+                     "channel_e": "#f97316"}
         ch_letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
         result_channels = []
         try:
@@ -2038,7 +2039,7 @@ class WM1303API:
                             })
                             prev_last = last
                     result_channels.append({
-                        "name": ch_cfg.get("friendly_name", f"Channel {letter}"),
+                        "name": ch_cfg.get("name", ch_cfg.get("friendly_name", f"Channel {letter}")),
                         "friendly_name": ch_cfg.get("friendly_name", f"Channel {letter}"),
                         "channel_id": ch_id,
                         "freq_mhz": round(ch_cfg.get("frequency", 0) / 1e6, 4),
@@ -2046,6 +2047,55 @@ class WM1303API:
                         "color": ch_colors.get(ch_id, "#999"),
                         "active": ch_cfg.get("active", False),
                         "timeseries": timeseries
+                    })
+                # --- Channel E (SX1261) ---
+                _che_cfg = _load_ui().get("channel_e", {})
+                if _che_cfg.get("enabled", False):
+                    che_rows = conn.execute(
+                        "SELECT timestamp, tx_count, lbt_blocked, lbt_passed, "
+                        "lbt_last_rssi, lbt_threshold, noise_floor_dbm "
+                        "FROM channel_stats_history "
+                        "WHERE channel_id = ? AND timestamp > ? ORDER BY timestamp",
+                        ("channel_e", cutoff)
+                    ).fetchall()
+                    che_ts = []
+                    if len(che_rows) >= 2:
+                        che_buckets = {}
+                        for row in che_rows:
+                            bk = int(row["timestamp"] / bucket_s) * bucket_s
+                            if bk not in che_buckets:
+                                che_buckets[bk] = []
+                            che_buckets[bk].append(row)
+                        prev_last = None
+                        for bk_ts in sorted(che_buckets.keys()):
+                            bk_rows = che_buckets[bk_ts]
+                            first = prev_last if prev_last else bk_rows[0]
+                            last = bk_rows[-1]
+                            tx_delta = max(0, (last["tx_count"] or 0) - (first["tx_count"] or 0))
+                            blocked_delta = max(0, (last["lbt_blocked"] or 0) - (first["lbt_blocked"] or 0))
+                            passed_delta = max(0, (last["lbt_passed"] or 0) - (first["lbt_passed"] or 0))
+                            nf_vals = [r["noise_floor_dbm"] for r in bk_rows if r["noise_floor_dbm"] is not None]
+                            if not nf_vals:
+                                nf_vals = [r["lbt_last_rssi"] for r in bk_rows if r["lbt_last_rssi"] is not None]
+                            avg_nf = round(sum(nf_vals)/len(nf_vals), 1) if nf_vals else None
+                            che_ts.append({
+                                "timestamp": bk_ts,
+                                "noise_floor_dbm": avg_nf,
+                                "tx_count_delta": tx_delta,
+                                "lbt_blocked_delta": blocked_delta,
+                                "lbt_passed_delta": passed_delta,
+                                "lbt_clear": blocked_delta == 0
+                            })
+                            prev_last = last
+                    result_channels.append({
+                        "name": _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E")),
+                        "friendly_name": _che_cfg.get("friendly_name", "Channel E"),
+                        "channel_id": "channel_e",
+                        "freq_mhz": round(_che_cfg.get("frequency", 0) / 1e6, 4),
+                        "lbt_threshold_dbm": _che_cfg.get("lbt_rssi_target", -80),
+                        "color": "#f97316",
+                        "active": True,
+                        "timeseries": che_ts
                     })
             return {"hours": h, "channels": result_channels}
         except Exception as e:
@@ -2076,7 +2126,8 @@ class WM1303API:
         bucket_s = 600  # 10-minute buckets
         ui_chs = _load_ui().get("channels", [])
         ch_colors = {"channel_a": "#3b82f6", "channel_b": "#8b5cf6",
-                     "channel_c": "#10b981", "channel_d": "#f59e0b"}
+                     "channel_c": "#10b981", "channel_d": "#f59e0b",
+                     "channel_e": "#f97316"}
         ch_letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
         result_channels = []
         try:
@@ -2133,7 +2184,7 @@ class WM1303API:
                     if len(rows) >= 2:
                         total_rx = max(0, (rows[-1]["rx_count"] or 0) - (rows[0]["rx_count"] or 0))
                     result_channels.append({
-                        "name": ch_cfg.get("friendly_name", f"Channel {letter}"),
+                        "name": ch_cfg.get("name", ch_cfg.get("friendly_name", f"Channel {letter}")),
                         "friendly_name": ch_cfg.get("friendly_name", f"Channel {letter}"),
                         "channel_id": ch_id,
                         "freq_mhz": round(ch_cfg.get("frequency", 0) / 1e6, 4),
@@ -2150,6 +2201,71 @@ class WM1303API:
                             "max_snr": round(max(all_snr), 1) if all_snr else None,
                         },
                         "timeseries": timeseries
+                    })
+                # --- Channel E (SX1261) ---
+                _che_cfg = _load_ui().get("channel_e", {})
+                if _che_cfg.get("enabled", False):
+                    che_rows = conn.execute(
+                        "SELECT timestamp, rx_count, avg_rssi, avg_snr, noise_floor_dbm "
+                        "FROM channel_stats_history "
+                        "WHERE channel_id = ? AND timestamp > ? ORDER BY timestamp",
+                        ("channel_e", cutoff)
+                    ).fetchall()
+                    che_ts = []
+                    if len(che_rows) >= 2:
+                        che_buckets = {}
+                        for row in che_rows:
+                            bk = int(row["timestamp"] / bucket_s) * bucket_s
+                            if bk not in che_buckets:
+                                che_buckets[bk] = []
+                            che_buckets[bk].append(row)
+                        sorted_bks = sorted(che_buckets.keys())
+                        prev_last = None
+                        for bk_ts in sorted_bks:
+                            bk_rows = che_buckets[bk_ts]
+                            first = prev_last if prev_last else bk_rows[0]
+                            last = bk_rows[-1]
+                            rx_delta = max(0, (last["rx_count"] or 0) - (first["rx_count"] or 0))
+                            rssi_vals = [r["avg_rssi"] for r in bk_rows if r["avg_rssi"] is not None]
+                            snr_vals = [r["avg_snr"] for r in bk_rows if r["avg_snr"] is not None]
+                            try:
+                                nf_vals = [r["noise_floor_dbm"] for r in bk_rows if r["noise_floor_dbm"] is not None]
+                            except (IndexError, KeyError):
+                                nf_vals = []
+                            avg_rssi = round(sum(rssi_vals) / len(rssi_vals), 1) if rssi_vals else None
+                            avg_snr = round(sum(snr_vals) / len(snr_vals), 1) if snr_vals else None
+                            avg_nf = round(sum(nf_vals) / len(nf_vals), 1) if nf_vals else None
+                            che_ts.append({
+                                "timestamp": bk_ts,
+                                "pkt_count": rx_delta,
+                                "avg_rssi": avg_rssi,
+                                "avg_snr": avg_snr,
+                                "noise_floor_dbm": avg_nf
+                            })
+                            prev_last = last
+                    che_all_rssi = [r["avg_rssi"] for r in che_rows if r["avg_rssi"] is not None]
+                    che_all_snr = [r["avg_snr"] for r in che_rows if r["avg_snr"] is not None]
+                    che_total_rx = 0
+                    if len(che_rows) >= 2:
+                        che_total_rx = max(0, (che_rows[-1]["rx_count"] or 0) - (che_rows[0]["rx_count"] or 0))
+                    result_channels.append({
+                        "name": _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E")),
+                        "friendly_name": _che_cfg.get("friendly_name", "Channel E"),
+                        "channel_id": "channel_e",
+                        "freq_mhz": round(_che_cfg.get("frequency", 0) / 1e6, 4),
+                        "spreading_factor": _che_cfg.get("spreading_factor", 0),
+                        "active": True,
+                        "color": "#f97316",
+                        "stats": {
+                            "pkt_count": che_total_rx,
+                            "avg_rssi": round(sum(che_all_rssi)/len(che_all_rssi), 1) if che_all_rssi else None,
+                            "min_rssi": round(min(che_all_rssi), 1) if che_all_rssi else None,
+                            "max_rssi": round(max(che_all_rssi), 1) if che_all_rssi else None,
+                            "avg_snr": round(sum(che_all_snr)/len(che_all_snr), 1) if che_all_snr else None,
+                            "min_snr": round(min(che_all_snr), 1) if che_all_snr else None,
+                            "max_snr": round(max(che_all_snr), 1) if che_all_snr else None,
+                        },
+                        "timeseries": che_ts
                     })
                 # Noise floor from noise_floor_history table - individual per-channel data points
                 nf_rows = conn.execute("""
@@ -2317,14 +2433,15 @@ class WM1303API:
                 _bk = _get_backend()
                 if _bk and hasattr(_bk, 'get_channel_noise_floors'):
                     live_nf = _bk.get_channel_noise_floors()
-                    # Build reverse map: 'Channel A' -> 'channel_a', etc.
+                    # Build reverse map: friendly_name -> 'channel_a', etc.
                     _CHID = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
                     _label_to_dbid = {}
                     try:
                         ui_chs = _load_ui().get("channels", [])
                         _aidx = 0
                         for _idx, _ch in enumerate(ui_chs):
-                            _label = "Channel " + chr(65 + _idx)
+                            _abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                            _label = _ch.get("name", _ch.get("friendly_name", "Channel " + (_abc[_idx] if _idx < len(_abc) else str(_idx + 1))))
                             _label_to_dbid[_label] = _CHID[_aidx] if _ch.get("active", False) and _aidx < len(_CHID) else None
                             _label_to_dbid[_ch.get("name", "")] = _label_to_dbid[_label]
                             if _ch.get("active", False) and _aidx < len(_CHID):
@@ -2357,6 +2474,10 @@ class WM1303API:
                 if ch_cfg.get("active", False) and aidx < len(_CHID):
                     active_ch_ids.add(_CHID[aidx])
                     aidx += 1
+            # Include Channel E (SX1261) if enabled
+            _che_cfg = _load_ui().get("channel_e", {})
+            if _che_cfg.get("enabled", False):
+                active_ch_ids.add("channel_e")
             # Also accept old-style friendly names for backward compatibility with existing DB rows
             active_ch_names = set()
             for ch_cfg in ui_chs:
@@ -2368,20 +2489,25 @@ class WM1303API:
         except Exception:
             pass
 
-        # Convert channel IDs to 'Channel A', 'Channel B', etc.
+        # Convert channel IDs to friendly names
         try:
             ui_cfg = _load_ui()
             _CHID = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
+            _abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             id_to_label = {}
             name_to_label = {}
             aidx = 0
             for idx, ch_cfg in enumerate(ui_cfg.get("channels", [])):
                 ch_name = ch_cfg.get("name", "")
-                label = "Channel " + chr(65 + idx)  # A, B, C, D
+                label = ch_cfg.get("name", ch_cfg.get("friendly_name", "Channel " + (_abc[idx] if idx < len(_abc) else str(idx + 1))))
                 name_to_label[ch_name] = label
                 if ch_cfg.get("active", False) and aidx < len(_CHID):
                     id_to_label[_CHID[aidx]] = label
                     aidx += 1
+            # Map Channel E to its friendly name or 'Channel E'
+            _che_cfg = ui_cfg.get("channel_e", {})
+            if _che_cfg.get("enabled", False):
+                id_to_label["channel_e"] = _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E"))
             converted = {}
             for k, v in result_channels.items():
                 new_key = id_to_label.get(k, name_to_label.get(k, k))
@@ -2687,7 +2813,7 @@ class WM1303API:
                         timeseries.append({"t": bk_ts, "rx": rx_delta, "tx": tx_delta})
                     result_channels.append({
                         "id": ch_id,
-                        "label": ch_cfg.get("friendly_name", f"Channel {letter}"),
+                        "label": ch_cfg.get("name", ch_cfg.get("friendly_name", f"Channel {letter}")),
                         "color": ch_colors[idx % len(ch_colors)],
                         "data": timeseries
                     })
@@ -2712,7 +2838,7 @@ class WM1303API:
                         che_ts.append({"t": bk_ts, "rx": sum(bk["rx"]), "tx": sum(bk["tx"])})
                     result_channels.append({
                         "id": "channel_e",
-                        "label": _che_cfg.get("friendly_name", "Channel E"),
+                        "label": _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E")),
                         "color": "#f97316",
                         "data": che_ts
                     })
@@ -2730,7 +2856,8 @@ class WM1303API:
         bucket_s = 600  # 10-minute buckets
         ui_chs = _load_ui().get("channels", [])
         ch_colors = {"channel_a": "#3b82f6", "channel_b": "#8b5cf6",
-                     "channel_c": "#10b981", "channel_d": "#f59e0b"}
+                     "channel_c": "#10b981", "channel_d": "#f59e0b",
+                     "channel_e": "#f97316"}
         ch_letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
         result_channels = []
         try:
@@ -2779,10 +2906,55 @@ class WM1303API:
                                     "tx_bytes": bytes_delta
                                 })
                     result_channels.append({
-                        "name": ch_cfg.get("friendly_name", f"Channel {letter}"),
+                        "name": ch_cfg.get("name", ch_cfg.get("friendly_name", f"Channel {letter}")),
                         "channel_id": ch_id,
                         "color": ch_colors.get(ch_id, "#999"),
                         "timeseries": timeseries
+                    })
+                # --- Channel E (SX1261) ---
+                _che_cfg = _load_ui().get("channel_e", {})
+                if _che_cfg.get("enabled", False):
+                    che_rows = conn.execute(
+                        "SELECT timestamp, tx_count, tx_failed, lbt_blocked, "
+                        "tx_airtime_ms, tx_bytes FROM channel_stats_history "
+                        "WHERE channel_id = ? AND timestamp > ? ORDER BY timestamp",
+                        ("channel_e", cutoff)
+                    ).fetchall()
+                    che_ts = []
+                    if len(che_rows) >= 2:
+                        che_buckets = {}
+                        for row in che_rows:
+                            bk = int(row["timestamp"] / bucket_s) * bucket_s
+                            if bk not in che_buckets:
+                                che_buckets[bk] = []
+                            che_buckets[bk].append(row)
+                        for bk_ts in sorted(che_buckets.keys()):
+                            bk_rows = che_buckets[bk_ts]
+                            if len(bk_rows) >= 2:
+                                first, last = bk_rows[0], bk_rows[-1]
+                            elif bk_ts in che_buckets and len(che_buckets) > 1:
+                                first = last = bk_rows[0]
+                            else:
+                                continue
+                            tx_delta = max(0, (last["tx_count"] or 0) - (first["tx_count"] or 0))
+                            fail_delta = max(0, (last["tx_failed"] or 0) - (first["tx_failed"] or 0))
+                            lbt_delta = max(0, (last["lbt_blocked"] or 0) - (first["lbt_blocked"] or 0))
+                            air_delta = max(0, (last["tx_airtime_ms"] or 0) - (first["tx_airtime_ms"] or 0))
+                            bytes_delta = max(0, (last["tx_bytes"] or 0) - (first["tx_bytes"] or 0))
+                            if tx_delta > 0 or fail_delta > 0 or lbt_delta > 0:
+                                che_ts.append({
+                                    "timestamp": bk_ts,
+                                    "tx_sent": tx_delta,
+                                    "tx_failed": fail_delta,
+                                    "lbt_blocked": lbt_delta,
+                                    "airtime_ms": round(air_delta, 1),
+                                    "tx_bytes": bytes_delta
+                                })
+                    result_channels.append({
+                        "name": _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E")),
+                        "channel_id": "channel_e",
+                        "color": "#f97316",
+                        "timeseries": che_ts
                     })
             return _j({"hours": h, "bucket_minutes": 10, "channels": result_channels})
         except Exception as e:
@@ -2985,6 +3157,7 @@ class WM1303API:
                 "spreading_factor": che.get("spreading_factor", 8),
                 "coding_rate": cr_str,
                 "boosted_rx": che.get("boosted_rx", False),
+                "name": che.get("name", che.get("friendly_name", "Channel E")),
                 "friendly_name": che.get("friendly_name", "Channel E"),
                 "preamble_length": che.get("preamble_length", 17),
                 "lbt_enabled": che.get("lbt_enabled", False),
@@ -3033,7 +3206,7 @@ class WM1303API:
             _P("/home/pi/wm1303_pf/bridge_conf.json").write_text(json.dumps(gc, indent=2))
             ui = _load_ui()
             che_ui = ui.setdefault("channel_e", {})
-            for key in ["friendly_name", "boosted_rx", "preamble_length", "cad_enabled", "tx_power", "lbt_enabled", "lbt_threshold"]:
+            for key in ["name", "friendly_name", "boosted_rx", "preamble_length", "cad_enabled", "tx_power", "lbt_enabled", "lbt_threshold"]:
                 if key in body:
                     che_ui[key] = body[key]
             che_ui["enabled"] = lora_rx["enable"]
