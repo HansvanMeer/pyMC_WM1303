@@ -1,4 +1,4 @@
-# Release Notes — v2.0.0
+# Release Notes — v2.0.0 — Sub-125 kHz Bandwidth Support (62.5 kHz)
 
 **Release date:** 2026-04-16  
 **Type:** Major release
