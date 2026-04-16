@@ -248,11 +248,14 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
                 'enable': True, 'radio': 0, 'if': if_offset
             }
 
-    # Ensure slots 0-3 exist (disabled if not set), and 4-7 always disabled
+    # Ensure all 8 chan_multiSF slots exist; unused slots are DISABLED
+    # to prevent the concentrator from receiving duplicate packets on
+    # the center frequency (if=0).  Only channels explicitly defined
+    # in the UI channel list are enabled.
     for i in range(8):
         key = f'chan_multiSF_{i}'
         if key not in chan_configs:
-            chan_configs[key] = {'enable': True, 'radio': 0, 'if': 0}
+            chan_configs[key] = {'enable': False, 'radio': 0, 'if': 0}
 
     # --- Channel E config from wm1303_ui.json ---
     _che_lora_rx = {'enable': True, 'freq_hz': 869618000, 'bandwidth': 62500, 'spreading_factor': 8, 'coding_rate': 1}
@@ -2378,7 +2381,18 @@ class WM1303Backend:
         # --- Channel E (channel_e) RX injection ---
         if not matched and hasattr(self, "_channel_e_rx_callback") and self._channel_e_rx_callback is not None:
             _channel_e_freq = self._load_channel_e_cache()
-            if _channel_e_freq and abs(freq_hz - _channel_e_freq) <= 100000:
+            _channel_e_bw = int(getattr(self, '_channel_e_config_cache', {}).get('bandwidth', 62500))
+            # Tight frequency match (10 kHz) + bandwidth guard:
+            # Only accept packets whose RX bandwidth matches the configured
+            # Channel E bandwidth.  This prevents the SX1302 concentrator
+            # (BW125) packets from being mis-labelled as Channel E (BW62.5).
+            # Note: HAL reports BW62.5 as 'BW62' → _parse_datr returns 62000,
+            # but config uses 62500.  Use 10% tolerance for the BW check.
+            _bw_match = (rx_bw is not None
+                         and abs(rx_bw - _channel_e_bw) <= _channel_e_bw * 0.10)
+            if (_channel_e_freq
+                    and abs(freq_hz - _channel_e_freq) <= 10000
+                    and _bw_match):
                 try:
                     self._channel_e_rx_callback(payload, rssi=int(rssi), snr=snr)
                     self._update_rx_stats("channel_e", freq_hz, rssi, snr)

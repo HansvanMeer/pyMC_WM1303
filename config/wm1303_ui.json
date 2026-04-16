@@ -49,6 +49,7 @@
   },
   "channel_e": {
     "friendly_name": "EU-Narrow",
+    "name": "EU-Narrow",
     "boosted_rx": true,
     "preamble_length": 17,
     "cad_enabled": false,

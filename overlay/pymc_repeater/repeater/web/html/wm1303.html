@@ -268,10 +268,7 @@ select.ci option{background:#1e293b}
       <input class="ci" id="che-name" type="text" value="Channel E" style="width:100%">
       <input class="ci" id="che-frequency" type="text" lang="en" pattern="[0-9]*[.]?[0-9]*" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" style="width:100%">
       <select class="ci" id="che-bandwidth" style="width:100%">
-        <option value="62500">62.5</option>
-        <option value="125000" selected>125</option>
-        <option value="250000">250</option>
-        <option value="500000">500</option>
+        <option value="62500" selected>62.5</option>
       </select>
       <select class="ci" id="che-sf" style="width:100%">
         <option value="7">7</option>
@@ -1075,7 +1072,7 @@ function loadTxQueues(){
       if(!eLive.is_sx1261)continue;
       var eName=eLive.name||eLive.friendly_name||'Channel E';
       var eFreq=(eLive.frequency||0)/1e6;
-      var eBw=(eLive.bandwidth||125000)/1000;
+      var eBw=(eLive.bandwidth||62500)/1000;
       var eSf=eLive.spreading_factor||8;
       var eCr=eLive.coding_rate||'4/5';
       var eCol='#ef4444';
@@ -1375,7 +1372,7 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
   var cheActive = (typeof cheData !== 'undefined' && cheData && cheData.enable);
   if(cheActive){
     var eMhz0 = cheData.frequency / 1e6;
-    var eBwMhz0 = (cheData.bandwidth || 125000) / 1e6;
+    var eBwMhz0 = (cheData.bandwidth || 62500) / 1e6;
     freqs.push(eMhz0 - eBwMhz0);
     freqs.push(eMhz0 + eBwMhz0);
   }
@@ -1417,7 +1414,7 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
   // Channel E bandwidth block (if active)
   if(cheActive){
     var eMhz = cheData.frequency / 1e6;
-    var eBwMhz = (cheData.bandwidth || 125000) / 1e6;
+    var eBwMhz = (cheData.bandwidth || 62500) / 1e6;
     var eHalfBw = eBwMhz / 2;
     var eCol = '#ef4444'; // red for Channel E
     var eName = cheData.name || cheData.friendly_name || 'Channel E';
@@ -1552,7 +1549,7 @@ async function loadChE(){
     G('che-enable').checked=!!d.enable;
     G('che-name').value=d.name||d.friendly_name||'Channel E';
     G('che-frequency').value=(d.frequency/1e6).toFixed(3);
-    G('che-bandwidth').value=String(d.bandwidth||125000);
+    G('che-bandwidth').value=String(d.bandwidth||62500);
     G('che-sf').value=String(d.spreading_factor||8);
     G('che-cr').value=d.coding_rate||'4/5';
     G('che-preamble').value=d.preamble_length||17;

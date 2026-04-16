@@ -654,6 +654,12 @@ try:
         if key not in live:
             live[key] = tmpl[key]
             added.append(key)
+        elif isinstance(tmpl[key], dict) and isinstance(live[key], dict):
+            # Deep merge: add missing sub-keys from template
+            for subkey in tmpl[key]:
+                if subkey not in live[key]:
+                    live[key][subkey] = tmpl[key][subkey]
+                    added.append(f"{key}.{subkey}")
     if added:
         with open(live_path, 'w') as f:
             json.dump(live, f, indent=2)
