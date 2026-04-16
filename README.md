@@ -26,7 +26,7 @@ The system uses an **overlay approach**: unmodified forks of the upstream reposi
 ### Radio & Hardware
 - Dual RF chain support (RF0 + RF1) with independent frequency and spreading factor configuration
 - Up to 8 IF demodulators (4 per RF chain) for multi-SF reception
-- SX1261 companion chip integration for spectral scanning, noise floor monitoring, and **hardware CAD** (preamble correlation)
+- SX1261 companion chip integration for spectral scanning, noise floor monitoring, **hardware CAD** (preamble correlation), and **dedicated LoRa RX with sub-125 kHz bandwidth support** (e.g. 62.5 kHz) on 1 channel
 - Dynamic spectral scan range — automatically follows RF chain center frequency (±800 kHz)
 - Spectral scan retry mechanism — waits for TX-free windows, zero TX overhead (0% vs 13% with old TX hold approach)
 - Hardware + Software LBT/CAD (Listen Before Talk / Channel Activity Detection) per channel with HW/SW source tracking
