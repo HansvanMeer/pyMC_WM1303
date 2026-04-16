@@ -126,6 +126,12 @@ select.ci option{background:#1e293b}
         <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">Temperature</div><div id="hw-temp" class="font-semibold text-sm">&mdash;</div></div>
         <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">SPI Path</div><div id="hw-spi" class="font-mono text-xs truncate" style="color:var(--txs)">/dev/spidev0.0</div></div>
       </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+        <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">Pi Model</div><div id="pi-model" class="font-semibold text-xs" style="word-break:break-word">&mdash;</div></div>
+        <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">Memory</div><div id="pi-mem" class="font-semibold text-sm">&mdash;</div></div>
+        <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">CPU</div><div id="pi-cpu" class="font-semibold text-sm">&mdash;</div></div>
+        <div class="sc"><div class="text-xs mb-1" style="color:var(--txm)">Disk</div><div id="pi-disk" class="font-semibold text-sm">&mdash;</div></div>
+      </div>
     </div>
     <div class="gl p-5">
       <div class="stl">Services</div>
@@ -136,12 +142,6 @@ select.ci option{background:#1e293b}
         <div class="flex items-center justify-between"><span class="text-sm" style="color:var(--txs)">Last restart</span><span id="svc-rs" class="text-xs font-mono" style="color:var(--txm)">&mdash;</span></div>
       </div>
     </div>
-  </div>
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-    <div class="gl p-3"><div class="text-xs mb-1" style="color:var(--txm)">Pi Model</div><div id="pi-model" class="font-semibold text-xs" style="word-break:break-word">&mdash;</div></div>
-    <div class="gl p-3"><div class="text-xs mb-1" style="color:var(--txm)">Memory</div><div id="pi-mem" class="font-semibold text-sm">&mdash;</div></div>
-    <div class="gl p-3"><div class="text-xs mb-1" style="color:var(--txm)">CPU</div><div id="pi-cpu" class="font-semibold text-sm">&mdash;</div></div>
-    <div class="gl p-3"><div class="text-xs mb-1" style="color:var(--txm)">Disk</div><div id="pi-disk" class="font-semibold text-sm">&mdash;</div></div>
   </div>
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
     <div class="gl p-4 text-center"><div class="text-3xl font-bold" style="color:#818cf8" id="st-rx">0</div><div class="text-xs mt-1" style="color:var(--txm)">Packets RX</div></div>
@@ -208,7 +208,7 @@ select.ci option{background:#1e293b}
     <div class="mb-4">
       <div class="text-xs font-medium mb-2" style="color:var(--txm)">Analog Bandwidth Coverage</div>
       <div id="rf-bw-diagram" style="position:relative;height:100px;background:var(--bgr);border-radius:8px;overflow:hidden;border:1px solid var(--brd)"></div>
-      <div class="flex justify-between text-xs mt-1" style="color:var(--txm)">
+      <div class="flex justify-between text-xs" style="color:var(--txm);margin-top:0">
         <span id="rf-bw-min">--</span>
         <span id="rf-bw-max">--</span>
       </div>
@@ -236,8 +236,8 @@ select.ci option{background:#1e293b}
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <div><div class="stl mb-0">IF Channel Configuration</div><p class="text-xs mt-1" style="color:var(--txm)">Configure WM1303 IF channels &mdash; Save &amp; restart to apply.</p></div>
       <div class="flex gap-2 flex-wrap">
-        <button class="btn sec sm" onclick="loadCh()"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9H3"/><path d="M3 3v6h6"/></svg>Reload</button>
         <button class="btn sec sm" onclick="addCh()"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add</button>
+        <button class="btn sec sm" onclick="loadCh()"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9H3"/><path d="M3 3v6h6"/></svg>Reload</button>
         <button class="btn pri sm" onclick="saveCh(false)"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Save</button>
         <button class="btn sec sm" onclick="saveCh(true)" title="Save and restart service"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>Save &amp; Restart</button>
       </div>
@@ -251,7 +251,7 @@ select.ci option{background:#1e293b}
   <!-- Channel E Configuration (Channel E / LoRa RX) -->
   <div class="gl p-5 mb-4" id="ch-e-section" style="border-left:4px solid #ef4444">
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-      <div><div class="stl mb-0">SX1261 Channel Configuration</div><p class="text-xs mt-1" style="color:var(--txm)">Configure the SX1261 radio for dedicated LoRa receive &mdash; RX only, no TX on this radio.</p></div>
+      <div><div class="stl mb-0">SX1261 Channel Configuration</div><p class="text-xs mt-1" style="color:var(--txm)">Configure the SX1261 radio for dedicated LoRa receive &mdash; Save &amp; restart to apply.</p></div>
       <div class="flex gap-2">
         <button class="btn sec sm" onclick="loadChE()"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 12a9 9 0 109-9H3"/><path d="M3 3v6h6"/></svg>Reload</button>
         <button class="btn pri sm" onclick="saveChE(false)"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>Save</button>
@@ -316,7 +316,6 @@ select.ci option{background:#1e293b}
     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
       <div><div class="stl mb-0">Channel Status</div><p class="text-xs mt-1" style="color:var(--txm)">Per-channel TX queues &amp; live metrics &mdash; adaptive auto-refresh (3s&ndash;10s)</p></div>
       <div class="flex gap-2 items-center">
-        <span id="tx-arch-badge" class="text-xs px-2 py-1 rounded" style="background:rgba(99,102,241,0.15);color:var(--acc)">Split RX(RF0) / TX(RF1)</span>
         <span id="live-uptime" class="text-xs px-2 py-1 rounded" style="background:rgba(99,102,241,0.15);color:var(--acc)">Uptime: --</span>
         <button class="btn sec sm" onclick="loadTxQueues()">&#8635; Refresh</button>
       </div>

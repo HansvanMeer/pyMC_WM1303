@@ -91,6 +91,7 @@ OVERLAY_DIR="${SCRIPT_DIR}/overlay"
 BACKUP_DIR="/home/pi/backups"
 
 PI_USER="pi"
+REBOOT_REQUIRED=false
 
 # Branch configuration
 HAL_BRANCH="master"
@@ -205,6 +206,97 @@ if systemctl is-active --quiet pymc-repeater.service 2>/dev/null; then
 else
     ok "Service was not running"
 fi
+
+# =============================================================================
+# Phase 2b: System Prerequisites & Backwards Compatibility
+# =============================================================================
+phase "System Prerequisites & Backwards Compatibility"
+
+step "Ensuring required directories exist"
+mkdir -p "${INSTALL_BASE}" "${REPO_DIR}" "${CONFIG_DIR}" "${PKTFWD_DIR}" "${LOG_DIR}" "${DATA_DIR}" "${BACKUP_DIR}"
+chown -R ${PI_USER}:${PI_USER} "${INSTALL_BASE}" "${LOG_DIR}" "${DATA_DIR}" "${CONFIG_DIR}" "${PKTFWD_DIR}" "${BACKUP_DIR}"
+ok "All directories verified"
+
+step "Checking passwordless sudo for ${PI_USER}"
+if [ ! -f /etc/sudoers.d/010_pi-nopasswd ]; then
+    echo "${PI_USER} ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/010_pi-nopasswd
+    chmod 440 /etc/sudoers.d/010_pi-nopasswd
+    ok "Configured"
+else
+    ok "Already configured"
+fi
+
+step "Ensuring ${PI_USER} in hardware access groups"
+usermod -aG spi,i2c,gpio,dialout ${PI_USER} 2>/dev/null || true
+ok "Done"
+
+step "Checking required packages"
+PKGS_NEEDED=""
+for pkg in jq i2c-tools rrdtool; do
+    if ! dpkg -s "$pkg" &>/dev/null; then
+        PKGS_NEEDED="${PKGS_NEEDED} ${pkg}"
+    fi
+done
+if [ -n "${PKGS_NEEDED}" ]; then
+    apt-get install -y ${PKGS_NEEDED} >> "${LOG_FILE}" 2>&1 || warn "Failed to install:${PKGS_NEEDED}"
+    ok "Installed:${PKGS_NEEDED}"
+else
+    ok "All required packages present"
+fi
+
+step "Checking NTP synchronization"
+if command -v timedatectl &>/dev/null; then
+    NTP_STATUS=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "unknown")
+    TIMESYNCD=$(timedatectl show --property=NTP --value 2>/dev/null || echo "unknown")
+    if [ "$NTP_STATUS" = "yes" ]; then
+        ok "NTP is synchronized"
+    elif [ "$TIMESYNCD" = "yes" ]; then
+        ok "NTP client running (not yet synced)"
+    else
+        systemctl enable systemd-timesyncd >> "${LOG_FILE}" 2>&1 || true
+        systemctl start systemd-timesyncd >> "${LOG_FILE}" 2>&1 || true
+        ok "NTP client enabled"
+    fi
+else
+    if systemctl is-active --quiet ntp 2>/dev/null; then
+        ok "NTP daemon is running"
+    else
+        systemctl enable ntp >> "${LOG_FILE}" 2>&1 || true
+        systemctl start ntp >> "${LOG_FILE}" 2>&1 || true
+        ok "NTP daemon started"
+    fi
+fi
+
+step "Checking I2C for WM1303 temperature sensor and AD5338R DAC"
+if [ -e /dev/i2c-1 ]; then
+    ok "I2C device found"
+else
+    modprobe i2c-dev 2>/dev/null || true
+    modprobe i2c-bcm2835 2>/dev/null || true
+    echo "i2c-dev" > /etc/modules-load.d/i2c-dev.conf
+    BOOT_CONFIG="/boot/firmware/config.txt"
+    [ ! -f "$BOOT_CONFIG" ] && BOOT_CONFIG="/boot/config.txt"
+    if [ -f "$BOOT_CONFIG" ]; then
+        if grep -q "^dtparam=i2c_arm=on" "$BOOT_CONFIG"; then
+            warn "I2C enabled but /dev/i2c-1 not present. Reboot required."
+            REBOOT_REQUIRED=true
+        else
+            sed -i '/^#.*dtparam=i2c_arm/d' "$BOOT_CONFIG"
+            if grep -q '^\[' "$BOOT_CONFIG"; then
+                sed -i '0,/^\[/{s/^\[/# enable I2C for WM1303 temperature sensor and AD5338R DAC\ndtparam=i2c_arm=on\n\n[/}' "$BOOT_CONFIG"
+            else
+                echo "# enable I2C for WM1303 temperature sensor and AD5338R DAC" >> "$BOOT_CONFIG"
+                echo "dtparam=i2c_arm=on" >> "$BOOT_CONFIG"
+            fi
+            ok "I2C enabled in config.txt"
+            warn "Reboot required for I2C!"
+            REBOOT_REQUIRED=true
+        fi
+    else
+        warn "Cannot find boot config file. I2C may need manual configuration."
+    fi
+fi
+
 
 # =============================================================================
 # Phase 3: Update Repositories
@@ -487,7 +579,12 @@ fi
 step "Cleaning Python bytecode caches"
 find ${INSTALL_BASE} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find ${VENV_DIR} -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-rm -f /tmp/pymc_spectral_results.json /tmp/pymc_channel_e_bridge_conf.json 2>/dev/null || true
+# Pre-create runtime /tmp files with correct ownership to prevent permission issues
+for tmpf in /tmp/pymc_spectral_results.json /tmp/pymc_wm1303_bridge_conf.json /tmp/pymc_cad_config.json /tmp/pymc_channel_e_bridge_conf.json; do
+    touch "$tmpf" 2>/dev/null || true
+    chown ${PI_USER}:${PI_USER} "$tmpf" 2>/dev/null || true
+    chmod 664 "$tmpf" 2>/dev/null || true
+done
 ok "Caches cleaned"
 
 
@@ -1043,3 +1140,13 @@ echo -e "  sudo systemctl {start|stop|restart} pymc-repeater"
 echo -e "  journalctl -u pymc-repeater -f"
 echo -e "  Web interface:    ${CYAN}http://<this-pi-ip>:${WEB_PORT}/wm1303.html${NC}"
 echo ""
+
+if [ "$REBOOT_REQUIRED" = true ]; then
+    echo -e "  ${BOLD}${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+    echo -e "  ${BOLD}${YELLOW}║  REBOOT RECOMMENDED to apply kernel/hardware changes     ║${NC}"
+    echo -e "  ${BOLD}${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${YELLOW}Some changes (SPI buffer size, I2C) require a reboot to take effect.${NC}"
+    echo -e "  ${YELLOW}Run: sudo reboot${NC}"
+    echo ""
+fi
