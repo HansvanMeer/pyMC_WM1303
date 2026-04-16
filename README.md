@@ -97,13 +97,6 @@ curl -sSL https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/bootstr
 
 > 💡 **Note:** This single command handles both **fresh installations** and **upgrades**. It detects whether pyMC_WM1303 is already installed and runs the appropriate script automatically.
 
-**Or manually**:
-
-```bash
-git clone https://github.com/HansvanMeer/pyMC_WM1303.git
-cd pyMC_WM1303
-sudo bash install.sh
-```
 The installation script handles everything:
 - System package updates and build tool installation
 - SPI and I2C configuration verification
