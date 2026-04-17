@@ -479,7 +479,14 @@ else
     ok "All overlay files match deployed version"
 fi
 
-if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ]; then
+# Check if compiled binary is missing (e.g., after manual clean or first overlay install)
+BINARY_MISSING=false
+if [ ! -f "${PKTFWD_DIR}/lora_pkt_fwd" ] || [ ! -f "${HAL_DIR}/libloragw/libloragw.a" ]; then
+    BINARY_MISSING=true
+    info "HAL binary missing — rebuild required"
+fi
+
+if [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ] || [ "$BINARY_MISSING" = true ]; then
     step "Cleaning previous build artifacts"
     cd "${HAL_DIR}"
     sudo -u ${PI_USER} make clean >> "${LOG_FILE}" 2>&1 || true
@@ -1215,7 +1222,7 @@ echo -e "  HAL updated:      ${CYAN}${HAL_UPDATED}${NC}"
 echo -e "  HAL overlay diff: ${CYAN}${HAL_OVERLAY_CHANGED}${NC}"
 echo -e "  pyMC_core updated: ${CYAN}${CORE_UPDATED}${NC}"
 echo -e "  pyMC_Repeater updated: ${CYAN}${REPEATER_UPDATED}${NC}"
-echo -e "  HAL rebuilt:      ${CYAN}$( [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ] && echo 'yes' || echo 'no')${NC}"
+echo -e "  HAL rebuilt:      ${CYAN}$( [ "$FORCE_REBUILD" = true ] || [ "$HAL_UPDATED" = true ] || [ "$HAL_OVERLAY_CHANGED" = true ] || [ "$BINARY_MISSING" = true ] && echo 'yes' || echo 'no')${NC}"
 echo -e "  Full log:         ${CYAN}${LOG_FILE}${NC}"
 echo ""
 echo -e "  ${BOLD}Service control:${NC}"
