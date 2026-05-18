@@ -966,12 +966,13 @@ class WM1303API:
                 _version = _vf.read_text().strip()
         except Exception:
             pass
-        # Channel counts including Channel E (SX1261)
+        # Channel counts including Channel E (SX1261) and Channel F (chan_Lora_std)
         _ui_data = _load_ui()
         _if_active = sum(1 for ch in _ui_data.get("channels", []) if ch.get("active", False))
         _che_active = 1 if _ui_data.get("channel_e", {}).get("enabled", False) else 0
-        _total_ch = 4 + 1  # 4 hardware IF slots (A-D) + Channel E always exists
-        _active_ch = _if_active + _che_active
+        _chf_active = 1 if _ui_data.get("channel_f", {}).get("enabled", False) else 0
+        _total_ch = 4 + 1 + 1  # 4 hardware IF slots (A-D) + Channel E + Channel F
+        _active_ch = _if_active + _che_active + _chf_active
         _inactive_ch = _total_ch - _active_ch
         # ── Raspberry Pi system info ──────────────────────────
         _pi_info = {}
@@ -2021,6 +2022,48 @@ class WM1303API:
                 "cr": 5,
             }
 
+        # --- Include Channel F (chan_Lora_std on RF0) TX queue if present ---
+        ch_f_stats = tx_stats.get("channel_f", {})
+        if ch_f_stats:
+            _chf_ui = _load_ui().get("channel_f", {})
+            queues["channel_f"] = {
+                "enabled": ch_f_stats.get("enabled", True),
+                "pending": ch_f_stats.get("pending", 0),
+                "total_sent": ch_f_stats.get("total_sent", 0),
+                "total_failed": ch_f_stats.get("total_failed", 0),
+                "last_tx": ch_f_stats.get("last_tx_time"),
+                "avg_tx_time_ms": ch_f_stats.get("avg_tx_time_ms", 0),
+                "freq": ch_f_stats.get("freq_hz", int(_chf_ui.get("frequency", 0))),
+                "sf": ch_f_stats.get("sf", int(_chf_ui.get("spreading_factor", 9))),
+                "bw_khz": ch_f_stats.get("bw_khz", int(_chf_ui.get("bandwidth", 250000)) / 1000),
+                "cr": ch_f_stats.get("cr", 5),
+                "avg_airtime_ms": ch_f_stats.get("avg_airtime_ms", 0),
+                "avg_send_ms": ch_f_stats.get("avg_send_ms", 0),
+                "avg_wait_ms": ch_f_stats.get("avg_wait_ms", 0),
+                "last_airtime_ms": ch_f_stats.get("last_airtime_ms", 0),
+                "last_send_ms": ch_f_stats.get("last_send_ms", 0),
+                "last_wait_ms": ch_f_stats.get("last_wait_ms", 0),
+                "total_airtime_ms": ch_f_stats.get("total_airtime_ms", 0),
+                "total_send_ms": ch_f_stats.get("total_send_ms", 0),
+                # CAD stats
+                "cad_clear": ch_f_stats.get("cad_clear", 0),
+                "cad_detected": ch_f_stats.get("cad_detected", 0),
+            }
+        elif _load_ui().get("channel_f", {}).get("enabled", False):
+            _chf_ui = _load_ui().get("channel_f", {})
+            queues["channel_f"] = {
+                "enabled": True,
+                "pending": 0,
+                "total_sent": 0,
+                "total_failed": 0,
+                "last_tx": None,
+                "avg_tx_time_ms": 0,
+                "freq": int(_chf_ui.get("frequency", 0)),
+                "sf": int(_chf_ui.get("spreading_factor", 9)),
+                "bw_khz": int(_chf_ui.get("bandwidth", 250000)) / 1000,
+                "cr": 5,
+            }
+
         return _j({
             "architecture": "RF1_ONLY",
             "queues": queues,
@@ -2824,6 +2867,10 @@ class WM1303API:
             _che_cfg = _load_ui().get("channel_e", {})
             if _che_cfg.get("enabled", False):
                 active_ch_ids.add("channel_e")
+            # Include Channel F (chan_Lora_std on RF0) if enabled
+            _chf_cfg = _load_ui().get("channel_f", {})
+            if _chf_cfg.get("enabled", False):
+                active_ch_ids.add("channel_f")
             # Also accept old-style friendly names for backward compatibility with existing DB rows
             active_ch_names = set()
             for ch_cfg in ui_chs:
@@ -2854,6 +2901,10 @@ class WM1303API:
             _che_cfg = ui_cfg.get("channel_e", {})
             if _che_cfg.get("enabled", False):
                 id_to_label["channel_e"] = _che_cfg.get("name", _che_cfg.get("friendly_name", "Channel E"))
+            # Map Channel F to its friendly name or 'Channel F'
+            _chf_cfg = ui_cfg.get("channel_f", {})
+            if _chf_cfg.get("enabled", False):
+                id_to_label["channel_f"] = _chf_cfg.get("name", _chf_cfg.get("friendly_name", "Channel F"))
             converted = {}
             for k, v in result_channels.items():
                 new_key = id_to_label.get(k, name_to_label.get(k, k))
@@ -4026,7 +4077,7 @@ class WM1303API:
         """
         try:
             from pymc_core.hardware.region_config import (
-                REGION_PRESETS as _REGIONS,
+                REGIONS as _REGIONS,
                 get_region_summary as _summary,
             )
         except Exception as ex:
@@ -4089,7 +4140,7 @@ class WM1303API:
                 return _j({"status": "error", "reason": "missing 'code' field"})
             # Validate region code against known regions
             try:
-                from pymc_core.hardware.region_config import REGION_PRESETS as _REGIONS
+                from pymc_core.hardware.region_config import REGIONS as _REGIONS
                 if code not in _REGIONS:
                     cherrypy.response.status = 400
                     return _j({

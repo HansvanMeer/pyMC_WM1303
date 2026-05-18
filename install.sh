@@ -512,6 +512,22 @@ clone_or_update_repo "${CORE_REPO}" "${REPO_DIR}/pyMC_core" "${CORE_BRANCH}"
 step "Cloning pyMC_Repeater (dev branch)"
 clone_or_update_repo "${REPEATER_REPO}" "${REPO_DIR}/pyMC_Repeater" "${REPEATER_BRANCH}"
 
+# Sync upstream tags so setuptools-scm computes correct version numbers
+step "Syncing upstream tags for version resolution"
+for _sync_pair in "pyMC_core:https://github.com/rightup/pyMC_core.git" "pyMC_Repeater:https://github.com/rightup/pyMC_Repeater.git"; do
+    _sync_name="${_sync_pair%%:*}"
+    _sync_url="${_sync_pair#*:}"
+    _sync_dir="${REPO_DIR}/${_sync_name}"
+    if [ -d "${_sync_dir}/.git" ]; then
+        cd "${_sync_dir}"
+        if ! git remote get-url upstream >> "${LOG_FILE}" 2>&1; then
+            sudo -u ${PI_USER} git remote add upstream "${_sync_url}" >> "${LOG_FILE}" 2>&1
+        fi
+        sudo -u ${PI_USER} git fetch upstream --tags >> "${LOG_FILE}" 2>&1 || true
+    fi
+done
+ok "Upstream tags synced"
+
 # =============================================================================
 # Phase 5: Apply Overlay Modifications
 # =============================================================================
@@ -565,14 +581,14 @@ step "Applying pyMC_Repeater overlay"
 RPT_DIR="${REPO_DIR}/pyMC_Repeater"
 
 # repeater/ level files
-for f in bridge_engine.py channel_e_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py; do
+for f in bridge_engine.py channel_e_bridge.py channel_f_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
 # repeater/web/ level files
-for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py debug_collector.py packet_trace.py; do
+for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py debug_collector.py packet_trace.py tiered_query.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" >> "${LOG_FILE}" 2>&1
     fi

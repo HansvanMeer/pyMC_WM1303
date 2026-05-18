@@ -1,21 +1,26 @@
 # Release Notes v2.4.9
 
-**Status:** ✅ **RELEASED**
+**Status:** ⚠️ **TEST RELEASE**
 **Release date:** 2026-05-18
 **VERSION file:** `2.4.9`
-**Scope:** Comprehensive changelog covering all work between v2.4.8 and v2.4.9, including multi-region regulatory support, Channel F (`chan_Lora_std`) full equivalence with A–D/E, device-wide sync_word migration, and the new installation wizard.
+
+> ⚠️ **This is a test release.** Many features have been added and modified. Not all changes have been extensively tested. Use with caution in production environments.
+
+**Scope:** Comprehensive changelog covering all work between v2.4.8 and v2.4.9, including multi-region regulatory support, Channel F (`chan_Lora_std`) full equivalence with A–D/E, device-wide sync_word migration, bridge engine independence from A–D channels, JWT authentication hardening, upstream tag sync for version resolution, and the new installation wizard.
 
 ---
 
 ## Summary
 
-v2.4.9 is a **major quality & capability release** focused on three pillars:
+v2.4.9 is a **major quality & capability release** focused on five pillars:
 
 1. **Observability** — A ground-up overhaul of the Packet Tracing UI (stats dashboard, analytics, heatmaps, histograms, playback modal) combined with a new path-hash based echo classifier that replaces the legacy time-based heuristic.
 2. **Metrics correctness & longevity** — A new tiered metrics query system (Hot/Warm/Cool/Cold) gives reliable visibility up to 8 days back, and a critical fix to the retention aggregator stops counter values from being inflated by SUM-over-cumulative-counters.
 3. **Multi-region regulatory support** — Eight regional presets (EU868, US915, AU915, AS923, IN865, JP920, KR920) plus CUSTOM, a new wideband Channel F (`chan_Lora_std`) for BW125/250/500, an 8-preset community catalog, and four new REST endpoints. Resolves Issue #1 (AU915 BW250) and Issue #4 (hardcoded EU868 limits).
+4. **Bridge engine independence** — Channel E and F now work fully independently from Channels A–D. Users can disable all A–D channels and operate exclusively with E and/or F. Three structural fixes ensure the bridge engine, TX queue, and RX callbacks function without any A–D radio.
+5. **Security hardening** — All 14 bare `fetch()` calls in the UI migrated to the `api()` helper with JWT authentication headers, eliminating 401 Unauthorized errors.
 
-In addition, this release brings an upstream overlay refresh (USB/TCP radio support carried in from `pymc_core` dev), a config template overhaul, and many smaller installer/UI fixes.
+In addition, this release brings an upstream overlay refresh (USB/TCP radio support carried in from `pymc_core` dev), a config template overhaul, upstream tag sync for correct version resolution, and many smaller installer/UI fixes.
 
 ---
 
@@ -29,6 +34,9 @@ In addition, this release brings an upstream overlay refresh (USB/TCP radio supp
 - 🌍 **Multi-region support** — 8 regions + CUSTOM, region is a device-wide setting, per-region TX bounds and SX1261 image calibration.
 - 📡 **Channel F (`chan_Lora_std`)** — new wideband single-SF channel supporting BW125/250/500, runs in parallel with Channels A–D, available in every region preset (not AU915-only).
 - 🧰 **8 community presets** — EU/US/AU/AS/IN/JP/KR + Custom, each defining all six channels (A–F) so users can enable any combination after install.
+- 🔗 **Bridge engine independence** — Three structural fixes allow Channel E/F to operate without any A–D channel active: main.py bridge init gate, bridge_engine.py idle-wait, and backend bridge_conf center-frequency fallback.
+- 🔒 **JWT authentication hardening** — 14 bare `fetch()` calls migrated to `api()` helper, eliminating Unauthorized warnings.
+- 🏷️ **Upstream tag sync** — `install.sh` and `upgrade.sh` now automatically sync upstream tags from `rightup/pyMC_core` and `rightup/pyMC_Repeater`, ensuring `setuptools-scm` computes correct version numbers.
 - 🔌 **Upstream overlay refresh** — `pymc_core` and `pymc_repeater` overlays brought up to upstream HEAD (USB/TCP radio support, `resolve_storage_dir()`, sensor config defaults, safer sync_word parsing).
 - 📜 **Config template overhaul** — `config.yaml.template` restructured (231 lines changed) with clear upstream sections and obvious device-specific values.
 
@@ -136,8 +144,12 @@ The Tracing tab in the WM1303 Manager UI was rebuilt in five phases. All changes
   - `_pkt_counts_for(conn, ch_id)`
   - `_build_sq_channel(rows, total_pkts, pkts_per_bucket)`
   - `_agg_channel_tiered(conn, ch_id)`
-- **New endpoints (multi-region — see below):** `/api/wm1303/regions`, `/api/wm1303/region`, `/api/wm1303/presets`.
+- **New endpoints (multi-region):** `/api/wm1303/regions`, `/api/wm1303/region`, `/api/wm1303/presets`.
 - **TX power & sync_word handling** prepared for the new UI dropdowns (16 LUT entries, per-channel sync_word presets).
+- **TX Queues endpoint** — Channel F section added with full stats (avg_airtime, sent, wait, total_airtime) and enabled-but-no-stats fallback.
+- **Noise floor endpoint** — Channel F added to active channel filter set and friendly name conversion map (`channel_f` → label from UI config).
+- **Status endpoint** — Channel F now counted in `active_channels`, `total_channels`, and `inactive_channels`.
+- **Region dropdown import fix** — Corrected `REGION_PRESETS` → `REGIONS as _REGIONS` import to populate the regions dropdown.
 
 ### 🌍 Multi-Region Regulatory Support
 
@@ -162,6 +174,8 @@ The Tracing tab in the WM1303 Manager UI was rebuilt in five phases. All changes
 - Reads `region` field from `wm1303_ui.json` (string code or object with optional CUSTOM bounds).
 - Replaces hardcoded `tx_freq_min: 863000000 / tx_freq_max: 870000000` with region-derived values.
 - Logs the resolved region and bounds on startup.
+- Channel F added to `ch_id_to_ui_name` mapping in `_update_noise_floors_from_rx()` for noise floor data collection.
+- `_generate_bridge_conf()` center frequency calculation includes fallback to Channel E/F frequencies when no A–D channels are active.
 
 **`sx1261_driver.py` integration**
 - Replaces hardcoded image calibration `[0xD7, 0xDB]` (EU868) with region-derived values via `region_config.get_sx1261_calib(...)`.
@@ -177,7 +191,7 @@ The Tracing tab in the WM1303 Manager UI was rebuilt in five phases. All changes
 ### 📡 Channel F — Wideband (`chan_Lora_std`)
 
 - Activates the SX1302's dedicated `chan_Lora_std` slot, which runs in **parallel** with the multi-SF chains (Channels A–D) — no interference, no IF-chain locking required.
-- Supports **BW125 / BW250 / BW500** (full hardware capability of `chan_Lora_std`).
+- Supports **BW125 / BW250 / BW500** and **SF5–SF12** (full hardware capability of `chan_Lora_std`).
 - Disabled by default for backwards compatibility — existing EU users see no change.
 - Available in every region preset (not AU-only).
 - Schema added to `config/wm1303_ui.json` template:
@@ -195,6 +209,38 @@ The Tracing tab in the WM1303 Manager UI was rebuilt in five phases. All changes
   ```
 - Backend dynamically wires `chan_Lora_std.enable / bandwidth / if` based on the UI config.
 - Channels A–D unchanged: stay on `chan_multiSF_0..3` with BW125 multi-SF.
+- **RX Boost toggle removed** from Channel F card — SX1302 `chan_Lora_std` hardware does not support RX Boost.
+- **13-column grid layout** aligned with Channels A–D for visual consistency.
+
+### 🔗 Bridge Engine Independence from Channels A–D
+
+Three interdependent fixes ensure the bridge engine works when all Channels A–D are disabled:
+
+| # | File | Bug | Fix |
+|---|------|-----|-----|
+| 1 | `main.py` | `_init_wm1303_bridge()` did early return when `get_radios()` returned empty | Check if channel_e or channel_f is enabled; proceed with bridge init if either is active |
+| 2 | `bridge_engine.py` | `run()` executed `asyncio.gather(*[])` on empty list → returned immediately → `_running = False` → all `inject_packet()` rejected | Added `asyncio.Event` idle-wait when radios list is empty; `stop()` sets the event |
+| 3 | `wm1303_backend.py` | `_generate_bridge_conf()` raised `ValueError("No channels configured")` when no A–D channels active | Fallback reads center frequency from channel_e/f UI config |
+
+**Impact:** Users can operate with only Channel E and/or Channel F active. All A–D channels may be disabled. This aligns with the RX Priority design principle — no unnecessary RX on unused channels.
+
+### 🔒 JWT Authentication Hardening
+
+`wm1303.html` contained 14 `fetch()` calls without JWT `Authorization` headers, causing `401 Unauthorized` responses and log warnings. All migrated to the existing `api()` helper:
+
+| Endpoint | Method |
+|----------|--------|
+| `/api/wm1303/status` | GET (with AbortController signal preserved) |
+| `/api/wm1303/tx_queues` | GET |
+| `/api/wm1303/channels/live` | GET |
+| `/api/wm1303/channels` (3 locations) | GET |
+| `/api/wm1303/channel_e` (2 locations) | GET |
+| `/api/wm1303/cad_stats` | GET |
+| `/api/wm1303/dedup` | GET |
+| `/api/wm1303/packet_activity` | GET |
+| `/api/wm1303/adv_config` | GET |
+| `/api/wm1303/adv_config` | POST |
+| `/api/wm1303/packet_traces` | GET |
 
 ### 🧰 Community Channel Presets
 
@@ -221,7 +267,20 @@ Every preset defines **all six channels (A–F)** with sensible defaults; users 
   - Gained `resolve_storage_dir()`, sensor config defaults, `pymc_tcp` / `pymc_usb` radio type support.
   - Safer `sync_word` parsing with default `0x12` and integer coercion.
   - WM1303 `elif` branch carefully re-inserted on top of refreshed upstream.
-- **`install.sh`** — now copies `region_config.py` and `presets.json` to the installed locations during install/upgrade.
+
+### 🏷️ Upstream Tag Sync for Version Resolution
+
+The pyMC_Repeater and pyMC_core fork repos were missing upstream tags, causing `setuptools-scm` to compute incorrect version numbers (e.g., `1.0.8.dev278` instead of `1.0.10.dev90`), triggering a misleading "Update Available" banner in the UI.
+
+**Fix:** Both `install.sh` and `upgrade.sh` now include an automatic upstream tag sync step:
+- Adds `upstream` remote pointing to `rightup/pyMC_Repeater` and `rightup/pyMC_core`
+- Fetches upstream tags (non-destructive, tags only)
+- `setuptools-scm` then computes correct version from the nearest reachable tag
+
+| Package | Before tag sync | After tag sync |
+|---------|----------------|----------------|
+| pymc_repeater | 1.0.8.dev278 | 1.0.10.dev90 |
+| pymc_core | 1.0.11 | 1.0.11 (unchanged) |
 
 ### 📜 Config Template Overhaul (committed)
 
@@ -238,6 +297,17 @@ Every preset defines **all six channels (A–F)** with sensible defaults; users 
 
 Prevents an installer failure on fresh systems where the target directory didn't yet exist when `spi_optimize.sh` was copied.
 
+### 📦 Overlay Deployment Script Fixes
+
+Four overlay files were missing from the `install.sh` and `upgrade.sh` copy loops:
+
+| File | install.sh | upgrade.sh |
+|------|-----------|------------|
+| `channel_f_bridge.py` | ✅ Added to repeater loop | ✅ Added to repeater loop |
+| `tiered_query.py` | ✅ Added to web loop | ✅ Added to web loop |
+| `region_config.py` | ✅ (was already present) | ✅ Added to core/hardware loop |
+| `presets.json` | ✅ (was already present) | ✅ Added as explicit copy step |
+
 ---
 
 ## Channel F Backend Equivalence
@@ -251,6 +321,8 @@ Channel F was already wired at config-level in earlier drafts, but in v2.4.9 it 
 - `channel_f` added to endpoint sets (RX sources, TX destinations).
 - `RF_ENDPOINTS` updated so bridge rules can route to/from Channel F.
 - Channel ID handling is channel-agnostic so existing dedup, hop counting, and trace logic apply uniformly.
+- `run()` method uses `asyncio.Event` idle-wait when radios list is empty, keeping `_running = True` so `inject_packet()` works for Channel E/F callbacks.
+- `stop()` sets the event to break the idle-wait cleanly.
 
 ### Packet router (`overlay/pymc_repeater/repeater/packet_router.py`)
 - Verified channel-id-agnostic; no changes required (Channel F flows through existing routing paths).
@@ -260,9 +332,13 @@ Channel F was already wired at config-level in earlier drafts, but in v2.4.9 it 
 
 ### RX classifier (`overlay/pymc_core/.../wm1303_backend.py`)
 - New per-packet classifier matches incoming `chan_Lora_std` packets to `channel_f` based on frequency + BW + SF tuple, with comment noting collision fallback behavior.
+- Channel F added to `ch_id_to_ui_name` mapping for noise floor data collection via RX RSSI estimation.
 
 ### API & dashboards (`overlay/pymc_repeater/repeater/web/wm1303_api.py`)
 - **`_channels_live_get`** — Channel F card with `is_chan_lora_std: True` flag plus full metric set (rx_count, tx_count, rssi/snr histograms, etc.).
+- **`_tx_queues_get`** — Channel F section with full stats (avg_airtime, sent, wait, total_airtime).
+- **`_noise_floor_get`** — Channel F in active channel filter + friendly name conversion.
+- **`/api/wm1303/status`** — Channel F counted in active/total/inactive channels.
 - **Six dashboard endpoints** extended for Channel F:
   - `/api/wm1303/lbt_history`
   - `/api/wm1303/signal_quality`
@@ -271,7 +347,7 @@ Channel F was already wired at config-level in earlier drafts, but in v2.4.9 it 
   - `/api/wm1303/tx_activity`
   - `/api/wm1303/origin_stats`
 - **Color mapping** — `channel_f → #a855f7` (purple/violet) added to all 4 `ch_colors` dicts in API + UI.
-- **Friendly-name resolver** — picks up channel_f friendly name from `wm1303_ui.json` via existing UI-load pattern (no code changes needed).
+- **Friendly-name resolver** — picks up channel_f friendly name from `wm1303_ui.json` via existing UI-load pattern.
 - **Noise floor processing** — channel_f bucket included alongside A–D/E.
 
 ### Packet tracing
@@ -281,8 +357,12 @@ Channel F was already wired at config-level in earlier drafts, but in v2.4.9 it 
 - `metrics_retention.py` channel-id-agnostic; Channel F gets its own bucket in `channel_stats_history` + tiered rollups automatically.
 
 ### UI completion (`overlay/pymc_repeater/repeater/web/html/wm1303.html`)
+- Channel F card in Channels tab with purple/violet badge, 13-column grid aligned with A–D, RX Boost toggle removed.
 - TX queue grid: Channel F card (purple badge "SX1302 RF0", full metrics row).
-- Radio summary aggregator: Channel F automatically included.
+- Radio summary aggregator: Channel F automatically included via unified `_combined` loop.
+- Channel STATUS cards: unified rendering loop for all channels (A–F) — no duplicates.
+- Bandwidth Coverage diagram: Channel F block (purple, dashed border) with frequency and bandwidth.
+- `formatChannelName()`: Channel F → friendly name resolution for chart labels.
 - Trace filter dropdown: Channel F option.
 - Charts: `CAD_CH_COLORS` extended for Channel F line color.
 
@@ -339,14 +419,20 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 ## Completed Items (all v2.4.9 scope items shipped)
 
 - [x] **UI: REGION & REGULATORY block** in Channels tab (right of RF Center Frequency), with live tx_freq_min/max display.
-- [x] **UI: Channel F card** in Channels tab (purple/violet badge, clone of channel_e card pattern).
+- [x] **UI: Channel F card** in Channels tab (purple/violet badge, clone of channel_e card pattern, 13-column grid, RX Boost removed).
 - [x] **UI: BW dropdowns per channel** — A–D: BW125 locked; E: 62.5 / 125 / 250 / 500; F: 125 / 250 / 500.
 - [x] **UI: TX Power dropdown** — all 16 LUT-supported values (12–27 dBm) on every channel.
-- [x] **Sync_word UI** — ⚠️ *Scope changed during implementation*: originally planned as per-channel selector (Private/Public/Custom). After hardware research (SX1302 `lorawan_public` is a board-level flag with hardcoded peak positions for 0x12/0x34 only), this was migrated to **device-wide** placement next to the Region selector, with only Private (0x1424) and Public (0x3444) options. See "Sync Word Architecture Migration" section below.
+- [x] **Sync_word UI** — device-wide placement next to the Region selector, with only Private (0x1424) and Public (0x3444) options.
 - [x] **Installation wizard** in `bootstrap.sh` — interactive region + preset + sync_word selection, with `WM1303_REGION` / `WM1303_PRESET` / `WM1303_SYNC_WORD` env-var overrides and `--non-interactive` flag.
-- [x] **Channel F backend equivalence** — full first-class equivalence with A–D/E across bridge engine, TX queue, RX classifier, dashboard endpoints, color mapping, friendly-name resolver, and metrics buckets. See "Channel F Backend Equivalence" section below.
+- [x] **Channel F backend equivalence** — full first-class equivalence with A–D/E across bridge engine, TX queue, RX classifier, dashboard endpoints, color mapping, friendly-name resolver, and metrics buckets.
+- [x] **Bridge engine independence** — Channel E/F work without any A–D channel active (3 structural fixes).
+- [x] **JWT auth hardening** — 14 bare `fetch()` calls migrated to `api()` helper.
+- [x] **Channel F UI completion** — STATUS cards, Bandwidth Coverage, formatChannelName, noise floor, tx_queues.
+- [x] **Overlay deployment scripts** — all overlay files in install.sh/upgrade.sh copy loops.
+- [x] **Upstream tag sync** — automatic in install.sh and upgrade.sh for correct version resolution.
+- [x] **Region dropdown fix** — REGIONS import corrected.
+- [x] **Deploy + smoke test on pi01** (192.168.101.52) — completed successfully.
 - [ ] **UI ↔ config parameter completeness audit** — deferred to follow-up release.
-- [ ] **Deploy + smoke test on pi01** (192.168.101.52) — performed after this commit lands.
 
 ---
 
@@ -355,19 +441,20 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 ### Modified (working tree → committed in v2.4.9)
 | File | Δ Lines | Notes |
 |------|--------:|-------|
-| `overlay/pymc_repeater/repeater/web/html/wm1303.html` | +1718 | Trace UI overhaul, REGION block, Channel F card, BW dropdowns, TX power 16 LUT, sync_word UI under Region, TX queue grid for Channel F, color mappings |
-| `overlay/pymc_repeater/repeater/web/wm1303_api.py` | +1578 | Tracing/dedup/packet_activity, region/preset/sync_word endpoints, tiered query integration, 6 dashboard endpoints extended for Channel F, channel color dicts |
-| `overlay/pymc_core/src/pymc_core/hardware/wm1303_backend.py` | +477 | Path-based echo classifier, region integration, Channel F full equivalence (TX queue, RX classifier, `chan_Lora_std` config generation), device-wide sync_word read, `lorawan_public` board flag derive |
-| `bootstrap.sh` | +258 | Installation wizard: region + preset + sync_word prompts, env-var overrides (`WM1303_REGION` / `WM1303_PRESET` / `WM1303_SYNC_WORD`), `--non-interactive` flag, jq-based merge into `wm1303_ui.json` |
+| `overlay/pymc_repeater/repeater/web/html/wm1303.html` | +1918 | Trace UI overhaul, REGION block, Channel F card (13-col grid, RX Boost removed), BW dropdowns, TX power 16 LUT, sync_word UI under Region, TX queue grid for Channel F, color mappings, 14 fetch→api JWT fix, unified _combined loop, Bandwidth Coverage, formatChannelName |
+| `overlay/pymc_repeater/repeater/web/wm1303_api.py` | +1639 | Tracing/dedup/packet_activity, region/preset/sync_word endpoints, tiered query integration, 6+3 dashboard endpoints extended for Channel F (tx_queues/noise_floor/status), channel color dicts, REGIONS import fix |
+| `overlay/pymc_core/src/pymc_core/hardware/wm1303_backend.py` | +497 | Path-based echo classifier, region integration, Channel F full equivalence (TX queue, RX classifier, `chan_Lora_std` config generation), device-wide sync_word read, `lorawan_public` board flag derive, bridge_conf E/F fallback, noise floor ch_id mapping |
+| `bootstrap.sh` | +258 | Installation wizard: region + preset + sync_word prompts, env-var overrides, `--non-interactive` flag, jq-based merge |
 | `config/config.yaml.template` | +231 | Overhaul (committed `808bd32`) |
 | `overlay/pymc_repeater/repeater/config.py` | +141 | Upstream refresh (`resolve_storage_dir`, sensors, `pymc_tcp` / `pymc_usb`, safer sync_word parsing) |
 | `config/wm1303_ui.json` | +61 | Top-level `region` and `sync_word`, `channel_f` block, per-channel `sync_word` removed |
 | `overlay/pymc_core/src/pymc_core/hardware/sx1261_driver.py` | +58 | Region-aware image calibration |
-| `overlay/pymc_repeater/repeater/main.py` | +45 | Register local identity with radio backend (`set_local_identity`) |
+| `overlay/pymc_repeater/repeater/main.py` | +60 | Register local identity with radio backend, bridge init independence from A–D |
 | `overlay/pymc_core/src/pymc_core/hardware/__init__.py` | +39 | Merge: WM1303 + Virtual + upstream USB/TCP |
-| `overlay/pymc_repeater/repeater/metrics_retention.py` | +38 | Critical SUM → MAX-MIN fix for cumulative counters; channel-id-agnostic (Channel F gets bucket automatically) |
-| `overlay/pymc_repeater/repeater/bridge_engine.py` | +16 | `channel_f` added to endpoint sets + `RF_ENDPOINTS` |
-| `install.sh` | +11 | Copy `region_config.py` + `presets.json`; mkdir fix for `spi_optimize.sh` (`6c50c1e`) |
+| `overlay/pymc_repeater/repeater/metrics_retention.py` | +38 | Critical SUM → MAX-MIN fix for cumulative counters |
+| `upgrade.sh` | +42 | Upstream tag sync in update_repo(), overlay copy fixes (4 files) |
+| `install.sh` | +31 | Upstream tag sync step, overlay copy fixes (2 files), mkdir fix |
+| `overlay/pymc_repeater/repeater/bridge_engine.py` | +28 | `channel_f` endpoint sets, `RF_ENDPOINTS`, asyncio.Event idle-wait |
 
 ### Added (new files)
 | File | Lines | Purpose |
@@ -376,11 +463,10 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 | `config/presets.json` | 847 | 8-preset community catalog (EU/US/AU/AS/IN/JP/KR/Custom) |
 | `overlay/pymc_core/src/pymc_core/hardware/region_config.py` | 244 | 8 regions + CUSTOM, helpers, sync-word constants |
 | `overlay/pymc_repeater/repeater/channel_f_bridge.py` | (new) | Channel F bridge handler analogous to `channel_e_bridge.py` |
-| `_BACKEND_HANDOVER.md` | (new) | Backend status documentation |
 
 ### Total
-- **12 files modified** (+3777 / −663 lines)
-- **5+ new files** (Channel F bridge, region_config, presets, tiered_query, handover doc + this release notes file)
+- **14 files modified** (+4041 / −942 lines)
+- **4+ new files** (Channel F bridge, region_config, presets, tiered_query + this release notes file)
 
 ---
 
@@ -391,6 +477,7 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 | EU868 users (existing) | None — defaults unchanged | Just upgrade |
 | AU915 / US915 / other non-EU users | Can now operate legally with correct TX bounds and SX1261 calibration | Set region via UI/API or pick a regional preset during install |
 | AU915 users wanting BW250 | Channel F unlocks wideband operation | Enable Channel F (BW250) after upgrade |
+| Users wanting Channel E/F only | Can now disable all A–D channels | Disable A–D via UI, enable E and/or F |
 | Operators relying on long-term metrics | 8 days of usable history with no rollup inflation bug | No action; just verify charts on first 24h after upgrade |
 | Users on legacy time-based echo detection | Replaced with path-hash classification | No action; classification is automatic at startup |
 
@@ -400,26 +487,15 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 
 1. **Region is device-wide**, not per-channel.
 2. **Sync_word is device-wide**, not per-channel. Stored as top-level `sync_word: {value, mode}` in `wm1303_ui.json`. Only Private (0x1424) and Public (0x3444) supported — Custom removed because SX1302 hardware uses hardcoded peak positions (HAL v2.10 `lorawan_public` board-flag).
-3. **Channels A–D** stay on `chan_multiSF_0..3` (BW125 multi-SF only — SX1302 hardware constraint).
-4. **Channel E** uses the SX1261 companion chip (BW62.5 / 125 / 250 / 500 — full chip capability exposed to UI).
-5. **Channel F** uses `chan_Lora_std` (BW125 / 250 / 500), runs in parallel with A–D, available in **every** preset, with first-class equivalence (bridge, TX queue, RX classifier, dashboards, color, friendly-name, metrics).
-6. **RU864 is not supported** (explicitly removed from region list).
-7. **Echo classification is path-hash based**, not time-based; falls back to `unknown_echo` if local identity is not yet registered.
-8. **Metrics rollup uses MAX-MIN for cumulative counters**, AVG for gauges, SUM for already-delta `total_*` aliases at higher tiers.
-9. **Tiered query boundaries:** 7h / 24h / 3d / 8d with small overlap to avoid jitter-induced gaps.
+3. **Channels A–D** stay on `chan_multiSF_0..3` (BW125 multi-SF only — SX1302 hardware constraint). Multi-SF receives **SF5–SF12 simultaneously** (bitmask `LGW_MULTI_SF_EN = 0xFF`).
+4. **Channel E** uses the SX1261 companion chip (BW62.5 / 125 / 250 / 500, **SF5–SF12** single-SF — full chip capability exposed to UI).
+5. **Channel F** uses `chan_Lora_std` (BW125 / 250 / 500, **SF5–SF12** single-SF), runs in parallel with A–D, available in **every** preset, with first-class equivalence (bridge, TX queue, RX classifier, dashboards, color, friendly-name, metrics).
+6. **Bridge engine operates independently** of A–D channels. Channel E/F callbacks work via packet injection even when radios list is empty.
+7. **RU864 is not supported** (explicitly removed from region list).
+8. **Echo classification is path-hash based**, not time-based; falls back to `unknown_echo` if local identity is not yet registered.
+9. **Metrics rollup uses MAX-MIN for cumulative counters**, AVG for gauges, SUM for already-delta `total_*` aliases at higher tiers.
+10. **Tiered query boundaries:** 7h / 24h / 3d / 8d with small overlap to avoid jitter-induced gaps.
+11. **Upstream tags are auto-synced** during install/upgrade for correct setuptools-scm version computation.
+12. **All UI API calls use JWT authentication** via the `api()` helper function.
 
----
 
-## Status of this Release
-
-- ✅ Committed to `main`
-- ✅ Pushed to GitHub (`HansvanMeer/pyMC_WM1303`)
-- ✅ VERSION file bumped: `2.4.8` → `2.4.9`
-- ⬜ No GitHub release created (deferred per user request — release notes published as `release_notes/RELEASE_NOTES_v2.4.9.md` in the repo)
-- ✅ All Python files pass syntax check
-- ✅ All JSON files pass validity check
-- ✅ `install.sh` and `bootstrap.sh` pass bash syntax check
-- ✅ Backend + UI + wizard complete
-- ⬜ Deploy + smoke test on pi01 (192.168.101.52) — scheduled immediately after this commit lands
-
-> Post-release: deploy via `upgrade.sh` on pi01, run validation checklist, evaluate whether to create a GitHub release tag.

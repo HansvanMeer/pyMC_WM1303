@@ -1093,8 +1093,24 @@ class RepeaterDaemon:
 
         radios = backend.get_radios()
         if len(radios) < 1:
-            logger.warning(f"Need >= 1 radio for bridge, got {len(radios)}")
-            return
+            # Channel E / F operate independently of channels A-D.
+            # If at least one of them is enabled we must still start the
+            # BridgeEngine so their RX callbacks get registered.
+            import json as _json_br
+            _has_ef = False
+            try:
+                with open('/etc/pymc_repeater/wm1303_ui.json') as _uif_br:
+                    _ui_br = _json_br.load(_uif_br)
+                _has_ef = (bool(_ui_br.get('channel_e', {}).get('enabled'))
+                           or bool(_ui_br.get('channel_f', {}).get('enabled')))
+            except Exception:
+                pass
+            if not _has_ef:
+                logger.warning(f"Need >= 1 radio for bridge, got {len(radios)}")
+                return
+            logger.info(
+                'WM1303: no A-D channels active but channel_e/f enabled '
+                '— proceeding with bridge init (radios=%d)', len(radios))
 
         dedup_ttl = cfg_bridge.get("dedup_ttl_seconds",
                                     cfg_bridge.get("dedup_ttl", 300.0))

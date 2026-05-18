@@ -356,7 +356,25 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
         # Fallback: use passed-in channels (legacy behavior)
         active_freqs = [int(cfg['frequency']) for cfg in channels.values()]
         if not active_freqs:
-            raise ValueError('No channels configured')
+            # No A-D channels — try channel_e/f frequencies for center calc
+            _ef_freqs = []
+            try:
+                with open(UI_JSON_PATH, 'r') as _ef_fh:
+                    _ui_raw = json.loads(_ef_fh.read())
+                _che = _ui_raw.get('channel_e', {})
+                _chf = _ui_raw.get('channel_f', {})
+                if _che.get('enabled') and _che.get('frequency'):
+                    _ef_freqs.append(int(_che['frequency']))
+                if _chf.get('enabled') and _chf.get('frequency'):
+                    _ef_freqs.append(int(_chf['frequency']))
+            except Exception as _ef_ex:
+                logger.warning('_generate_bridge_conf: channel_e/f freq fallback error: %s', _ef_ex)
+            if _ef_freqs:
+                active_freqs = _ef_freqs
+                logger.info('_generate_bridge_conf: using channel_e/f frequencies '
+                           'for center calc (no A-D channels): %s', active_freqs)
+            else:
+                raise ValueError('No channels configured')
         auto_center = sum(active_freqs) // len(active_freqs)
     else:
         # Compute center from ACTIVE channels only — inactive channels don't
@@ -365,9 +383,25 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
                         for ch in all_ui_channels
                         if ch.get('active', False) and ch.get('frequency', 0)]
         if not active_freqs:
-            # No active channels — fall back to all defined frequencies
-            active_freqs = [int(ch.get('frequency', 0))
-                           for ch in all_ui_channels if ch.get('frequency', 0)]
+            # No active A-D channels — try channel_e/f frequencies
+            try:
+                with open(UI_JSON_PATH, 'r') as _ef_fh2:
+                    _ui_raw2 = json.loads(_ef_fh2.read())
+                _che2 = _ui_raw2.get('channel_e', {})
+                _chf2 = _ui_raw2.get('channel_f', {})
+                if _che2.get('enabled') and _che2.get('frequency'):
+                    active_freqs.append(int(_che2['frequency']))
+                if _chf2.get('enabled') and _chf2.get('frequency'):
+                    active_freqs.append(int(_chf2['frequency']))
+            except Exception as _ef_ex2:
+                logger.warning('_generate_bridge_conf: channel_e/f freq fallback error: %s', _ef_ex2)
+            if not active_freqs:
+                # Still empty — fall back to all defined A-D frequencies
+                active_freqs = [int(ch.get('frequency', 0))
+                               for ch in all_ui_channels if ch.get('frequency', 0)]
+            if active_freqs:
+                logger.info('_generate_bridge_conf: using channel_e/f frequencies '
+                           'for center calc (no active A-D channels): %s', active_freqs)
         if not active_freqs:
             raise ValueError('No channel frequencies found in UI config')
         auto_center = sum(active_freqs) // len(active_freqs)
@@ -2208,6 +2242,11 @@ class WM1303Backend:
             _che_ui_name = self._ch_id_to_ui_name.get('channel_e')
         if _che_ui_name:
             ch_id_to_ui_name['channel_e'] = _che_ui_name
+        # Include Channel F (chan_Lora_std on SX1302 RF0) from pre-built mapping
+        with self._nf_lock:
+            _chf_ui_name = self._ch_id_to_ui_name.get('channel_f')
+        if _chf_ui_name:
+            ch_id_to_ui_name['channel_f'] = _chf_ui_name
 
         with self._rx_nf_lock:
             for ch_id, estimates in self._rx_nf_estimates.items():

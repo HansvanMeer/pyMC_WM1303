@@ -367,7 +367,7 @@ select.ci option{background:#1e293b}
     </div>
     <!-- Column headers matching Channel Configuration -->
     <div class="hidden sm:grid text-xs font-medium px-1 mb-1 gap-1" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 68px 52px 44px 32px;color:var(--txm)">
-      <span>Channel</span><span>Channel Name</span><span>Freq (MHz)</span><span>BW (kHz)</span><span>SF</span><span>CR</span><span>Preamble</span><span>LBT (dBm)</span><span>LBT</span><span>TX (dBm)</span><span>RX Boost</span><span>Active</span>
+      <span>Channel</span><span>Channel Name</span><span>Freq (MHz)</span><span>BW (kHz)</span><span>SF</span><span>CR</span><span>Preamble</span><span>LBT (dBm)</span><span>LBT</span><span>TX (dBm)</span><span></span><span>Active</span><span></span>
     </div>
     <!-- Single row for Channel F -->
     <div class="crow con" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 68px 52px 44px 32px">
@@ -399,8 +399,9 @@ select.ci option{background:#1e293b}
       <input class="ci" id="chf-lbt-rssi" type="number" min="-120" max="0" value="-80" style="width:100%">
       <label class="tgl"><input type="checkbox" id="chf-lbt-enabled"><span class="tsl"></span></label>
       <select class="ci" id="chf-tx-power" style="width:100%"></select>
-      <label class="tgl"><input type="checkbox" id="chf-boosted-rx"><span class="tsl"></span></label>
+      <span></span>
       <label class="tgl"><input type="checkbox" id="chf-enable"><span class="tsl"></span></label>
+      <span></span>
     </div>
     <!-- Sync Word is now device-wide; managed in the REGION & REGULATORY panel -->
     <div class="mt-2 text-xs" style="color:var(--txm)"><span style="color:#a855f7">&#9679;</span> Channel F &mdash; chan_Lora_std on RF0. Runs in parallel with channels A-D. Recommended for AU915/US915 BW250 or wider-band use cases. Sync word is configured device-wide (see REGION &amp; REGULATORY panel).</div>
@@ -884,7 +885,7 @@ function setBdg(id,on){
 async function loadStatus(){
   let badgeSet=false;
   try{
-    const _ctrl=new AbortController();const _tid=setTimeout(()=>_ctrl.abort(),9000);const r_st=await fetch('/api/wm1303/status',{signal:_ctrl.signal});clearTimeout(_tid);if(!r_st.ok)throw new Error('HTTP '+r_st.status);const d=await r_st.json();
+    const _ctrl=new AbortController();const _tid=setTimeout(()=>_ctrl.abort(),9000);const _sth={'Accept':'application/json'};const _stt=jwt();if(_stt)_sth.Authorization='Bearer '+_stt;const r_st=await fetch('/api/wm1303/status',{signal:_ctrl.signal,headers:_sth});clearTimeout(_tid);if(!r_st.ok)throw new Error('HTTP '+r_st.status);const d=await r_st.json();
     const hw=d.hardware||d;
     txt('hw-chip',hw.chip||d.chip||d.model||'SX1302');
     txt('hw-eui',hw.eui||d.eui||'—');
@@ -959,7 +960,7 @@ async function svcCtrl(a){
 }
 let chData=[];
 function normCh(arr){return(arr||[]).map(function(c){if(c.sf!==undefined&&c.spreading_factor===undefined)c.spreading_factor=c.sf;if(c.bw!==undefined&&c.bandwidth===undefined)c.bandwidth=c.bw;if(c.cr!==undefined&&c.coding_rate===undefined)c.coding_rate=c.cr;return c;});}
-const BW=[125000,250000,500000],SF=[7,8,9,10,11,12],CR=['4/5','4/6','4/7','4/8'];
+const BW=[125000,250000,500000],SF=[5,6,7,8,9,10,11,12],CR=['4/5','4/6','4/7','4/8'];
 const mkSel=(a,cur,lb)=>a.map(v=>`<option value="${v}"${cur===v?' selected':''}>${lb?lb(v):v}</option>`).join('');
 // === RF Chain Configuration ===
 let rfChainData = {rf0:{enabled:false,freq_hz:0,freq_mhz:0,type:'SX1250'},rf1:{enabled:false,freq_hz:0,freq_mhz:0,type:'SX1250'}};
@@ -1109,12 +1110,20 @@ function _fmtAirtimeTotal(ms){
 function loadTxQueues(){
   var g=document.getElementById('tx-queue-grid');
   if(!g)return;
-  if(!chData||!chData.length){
+  /* Build combined channel list: A-D from chData + channel_e + channel_f */
+  var _combined = (chData||[]).slice();
+  if(typeof cheData==='object'&&cheData&&cheData.enabled&&cheData.frequency){
+    _combined.push({name:cheData.friendly_name||'Channel E',friendly_name:cheData.friendly_name||'Channel E',frequency:cheData.frequency,bandwidth:cheData.bandwidth||125000,spreading_factor:cheData.spreading_factor||10,coding_rate:cheData.coding_rate||'4/5',active:true,_is_ef:'channel_e'});
+  }
+  if(typeof chfData==='object'&&chfData&&chfData.enabled&&chfData.frequency){
+    _combined.push({name:chfData.friendly_name||'Channel F',friendly_name:chfData.friendly_name||'Channel F',frequency:chfData.frequency,bandwidth:chfData.bandwidth||250000,spreading_factor:chfData.spreading_factor||9,coding_rate:chfData.coding_rate||'4/5',active:true,_is_ef:'channel_f'});
+  }
+  if(!_combined.length){
     g.innerHTML='<div class="text-sm" style="color:var(--txm)">No channels configured</div>';
     return;
   }
-  var p1=fetch('/api/wm1303/tx_queues').then(function(r){return r.json();}).catch(function(){return {queues:{}};});
-  var p2=fetch('/api/wm1303/channels/live').then(function(r){return r.json();}).catch(function(){return {channels:[]};});
+  var p1=api('GET','/api/wm1303/tx_queues').catch(function(){return {queues:{}};});
+  var p2=api('GET','/api/wm1303/channels/live').catch(function(){return {channels:[]};});
   Promise.all([p1,p2]).then(function(results){
     var queues=results[0].queues||{};
     var liveData=results[1];
@@ -1122,19 +1131,20 @@ function loadTxQueues(){
     var colors=['#60a5fa','#a78bfa','#34d399','#fbbf24','#f472b6','#fb923c'];
     var html='';
     var totalRx=0,totalTx=0,totalAirtimeMs=0,totalDutySum=0,activeCh=0;
-    for(var i=0;i<chData.length;i++){
-      var ch=chData[i];
+    for(var i=0;i<_combined.length;i++){
+      var ch=_combined[i];
       var friendlyName=ch.name||ch.friendly_name||('Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i]);
       var freqMhz=(ch.frequency||0)/1e6;
       var bwKhz=(ch.bandwidth||125000)/1000;
       var sf=ch.spreading_factor||'?';
       var cr=ch.coding_rate||'4/5';
-      var col=colors[i%colors.length];
+      var col=ch._is_ef==='channel_e'?'#ef4444':ch._is_ef==='channel_f'?'#a855f7':colors[i%colors.length];
       var isActive=ch.active!==false;
       // Match TX queue data
       var q=null;
+      if(ch._is_ef&&queues[ch._is_ef]) q=queues[ch._is_ef];
       var qKey=friendlyName.toLowerCase().replace(/\s+/g,'_');
-      if(queues[qKey]) q=queues[qKey];
+      if(!q&&queues[qKey]) q=queues[qKey];
       if(!q){
         for(var k in queues){
           if(queues[k].freq && Math.abs(queues[k].freq-ch.frequency)<1000 && (!queues[k].sf || queues[k].sf==sf)){q=queues[k];break;}
@@ -1204,7 +1214,11 @@ function loadTxQueues(){
       html+='<div style="border:1px solid '+borderC+';border-radius:8px;padding:14px;background:'+bgC+';">';
       html+='<div class="flex items-center justify-between mb-2">';
       html+='<span style="font-weight:600;color:'+col+';font-size:13px;">'+esc(friendlyName)+'</span>';
-      if(isActive){
+      if(ch._is_ef==='channel_e'){
+        html+='<span style="background:rgba(239,68,68,0.15);color:#ef4444;font-size:10px;padding:2px 6px;border-radius:4px;">SX1261</span>';
+      }else if(ch._is_ef==='channel_f'){
+        html+='<span style="background:rgba(168,85,247,0.15);color:#a855f7;font-size:10px;padding:2px 6px;border-radius:4px;">SX1302 RF0</span>';
+      }else if(isActive){
         html+='<span style="background:rgba(34,197,94,0.15);color:#22c55e;font-size:10px;padding:2px 6px;border-radius:4px;">ACTIVE</span>';
       }else{
         html+='<span style="background:rgba(128,128,128,0.15);color:#888;font-size:10px;padding:2px 6px;border-radius:4px;">INACTIVE</span>';
@@ -1270,235 +1284,7 @@ function loadTxQueues(){
       }
       html+='</div>';
     }
-    // --- Channel E card if enabled ---
-    for(var ei=0;ei<liveChs.length;ei++){
-      var eLive=liveChs[ei];
-      if(!eLive.is_sx1261)continue;
-      var eName=eLive.name||eLive.friendly_name||'Channel E';
-      var eFreq=(eLive.frequency||0)/1e6;
-      var eBw=(eLive.bandwidth||62500)/1000;
-      var eSf=eLive.spreading_factor||8;
-      var eCr=eLive.coding_rate||'4/5';
-      var eCol='#ef4444';
-      var eTxtC='var(--tx)';
-      // RX metrics
-      var eRxPkts=eLive.rx_packets||0;
-      var eRssi=eLive.rssi_last!=null?eLive.rssi_last:-120;
-      var eSnr=eLive.snr_last!=null?eLive.snr_last:0;
-      var eNfLbtAvg=eLive.noise_floor_lbt_avg;
-      var eNf=(eNfLbtAvg!=null)?eNfLbtAvg:((eLive.noise_floor!=null&&eLive.noise_floor!==-120)?eLive.noise_floor:null);
-      // TX metrics from live API
-      var eTxPkts=eLive.tx_packets||0;
-      var eDutyPct=eLive.tx_duty_pct||0;
-      // TX queue metrics - match from queues object
-      var eQ=queues['channel_e']||{};
-      var ePending=eQ.pending||eLive.queue_pending||0;
-      var eSent=eQ.total_sent||eTxPkts;
-      var eFailed=eQ.total_failed||eLive.tx_failed||0;
-      var eAvgAirtime=eQ.avg_airtime_ms||eLive.avg_tx_airtime_ms||0;
-      var eAvgSend=eQ.avg_send_ms||eLive.avg_tx_send_ms||0;
-      var eAvgWait=eQ.avg_wait_ms||eLive.avg_tx_wait_ms||0;
-      var eTotalAir=eQ.total_airtime_ms||eLive.total_tx_airtime_ms||0;
-      // Accumulate totals
-      totalRx+=eRxPkts;
-      totalTx+=eTxPkts;
-      totalAirtimeMs+=eTotalAir;
-      totalDutySum+=eDutyPct;
-      activeCh++;
-      // RSSI/SNR/Noise display
-      var eRssiStr,eSnrStr,eNoiseStr,eNoiseColor,eRssiC,eSnrC;
-      if(eRxPkts===0){
-        eRssiStr='--'; eSnrStr='--';
-        eRssiC='var(--txm)'; eSnrC='var(--txm)';
-      } else {
-        eRssiStr=eRssi.toFixed(1)+' dBm';
-        eSnrStr=eSnr.toFixed(1)+' dB';
-        eRssiC=eRssi>-90?'#22c55e':eRssi>-110?'#f59e0b':'#ef4444';
-        eSnrC=eSnr>5?'#22c55e':eSnr>0?'#f59e0b':'#ef4444';
-      }
-      if(eNf!=null){
-        eNoiseStr=eNf.toFixed(1)+' dBm';
-        eNoiseColor=eNf<-110?'#22c55e':eNf<-90?'#f59e0b':'#ef4444';
-      } else {
-        eNoiseStr='--'; eNoiseColor='var(--txm)';
-      }
-      // --- Start card ---
-      html+='<div style="border:1px solid '+eCol+';border-radius:8px;padding:14px;background:rgba(239,68,68,0.06);">';
-      html+='<div class="flex items-center justify-between mb-2">';
-      html+='<span style="font-weight:600;color:'+eCol+';font-size:13px;">'+esc(eName)+'</span>';
-      html+='<span style="background:rgba(239,68,68,0.15);color:#ef4444;font-size:10px;padding:2px 6px;border-radius:4px;">SX1261</span>';
-      html+='</div>';
-      html+='<div style="font-size:11px;color:var(--txm);margin-bottom:10px;">'+eFreq.toFixed(3)+' MHz &middot; SF'+eSf+' &middot; BW'+eBw+'kHz &middot; CR'+esc(eCr)+'</div>';
-      // --- Consolidated 2-column metrics grid (matching channels A-D) ---
-      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;">';
-      // Row: RX Packets / TX Packets
-      html+='<div style="color:var(--txm)">RX Packets</div><div style="color:#22c55e;font-weight:500;">'+eRxPkts+'</div>';
-      html+='<div style="color:var(--txm)">TX Packets</div><div style="color:'+eCol+';font-weight:500;">'+eTxPkts+'</div>';
-      // Row: Pending / Sent
-      html+='<div style="color:var(--txm)">Pending</div><div style="color:'+eTxtC+';font-weight:500;">'+ePending+'</div>';
-      html+='<div style="color:var(--txm)">Sent</div><div style="color:#22c55e;font-weight:500;">'+eSent+'</div>';
-      // Row: Failed / TX Duty
-      html+='<div style="color:var(--txm)">Failed</div><div style="color:'+(eFailed>0?'#ef4444':'var(--txm)')+';font-weight:500;">'+eFailed+'</div>';
-      html+='<div style="color:var(--txm)" title="TX duty cycle">TX Duty</div><div style="font-weight:600;color:'+_dutyColor(eDutyPct)+';">'+(eDutyPct).toFixed(3)+' %</div>';
-      // Row: RSSI / SNR
-      html+='<div style="color:var(--txm)">RSSI</div><div style="color:'+eRssiC+';font-weight:500;">'+eRssiStr+'</div>';
-      html+='<div style="color:var(--txm)">SNR</div><div style="color:'+eSnrC+';font-weight:500;">'+eSnrStr+'</div>';
-      // Row: Noise Floor
-      html+='<div style="color:var(--txm)">Noise Floor</div><div style="color:'+eNoiseColor+';font-weight:500;">'+eNoiseStr+'</div>';
-      // Row: Avg Airtime / Avg Send
-      html+='<div style="color:var(--txm)" title="LoRa time-on-air">Avg Airtime</div>';
-      html+='<div style="color:#a78bfa;font-weight:500;">'+_fmtMs(eAvgAirtime)+' ms</div>';
-      html+='<div style="color:var(--txm)" title="Wall-clock send time">Avg Send</div>';
-      html+='<div style="color:'+eTxtC+'">'+_fmtMs(eAvgSend)+' ms</div>';
-      // Row: Avg Wait / Total Airtime
-      html+='<div style="color:var(--txm)" title="Queue wait time">Avg Wait</div>';
-      html+='<div style="color:'+eTxtC+'">'+_fmtMs(eAvgWait)+' ms</div>';
-      html+='<div style="color:var(--txm)">Total Airtime</div>';
-      html+='<div style="color:#a78bfa;font-weight:500;">'+_fmtAirtimeTotal(eTotalAir)+'</div>';
-      // Software LBT stats (if applicable)
-      var eLbtBlocked=eLive.lbt_blocked||0;
-      var eLbtPassed=eLive.lbt_passed||0;
-      var eLbtSkipped=eLive.lbt_skipped||0;
-      var eLbtLastRssi=eLive.lbt_last_rssi;
-      var eLbtEnabled=(eLbtBlocked+eLbtPassed)>0;
-      if(eLbtEnabled){
-        var eLbtColor=eLbtBlocked>0?'#f59e0b':'#22c55e';
-        var eLbtText=eLbtBlocked>0?(eLbtBlocked+' blocked / '+eLbtPassed+' passed'):(eLbtPassed>0?eLbtPassed+' passed':'--');
-        if(eLbtSkipped>0&&eLbtPassed===0&&eLbtBlocked===0)eLbtText='skipped ('+eLbtSkipped+')';
-        html+='<div style="color:var(--txm)" title="Software LBT (Listen Before Talk)">LBT</div>';
-        html+='<div style="color:'+eLbtColor+';font-weight:500;">'+eLbtText+'</div>';
-        if(eLbtLastRssi!==null&&eLbtLastRssi!==undefined){
-          html+='<div style="color:var(--txm)">LBT RSSI</div>';
-          html+='<div style="color:var(--txm);font-weight:500;">'+eLbtLastRssi.toFixed(1)+' dBm</div>';
-        }
-      }
-      // Row: CAD status (Channel E)
-      var eCadClear=eLive.cad_clear||0;
-      var eCadDetected=eLive.cad_detected||0;
-      if(eCadClear>0||eCadDetected>0){
-        var eCadColor=eCadDetected>0?'#f59e0b':'#22c55e';
-        var eCadText=eCadDetected>0?(eCadDetected+' detected / '+eCadClear+' clear'):(eCadClear>0?eCadClear+' clear':'--');
-        html+='<div style="color:var(--txm)" title="Channel Activity Detection">CAD</div>';
-        html+='<div style="color:'+eCadColor+';font-weight:500;">'+eCadText+'</div>';
-      }
-      html+='</div>';
-      // Footer: Last RX / Last TX
-      var eLastParts=[];
-      if(eLive.last_rx){eLastParts.push('Last RX: '+_fmtAgo(eLive.last_rx));}
-      if(eLive.last_tx){eLastParts.push('Last TX: '+_fmtAgo(eLive.last_tx));}
-      if(eLastParts.length){
-        html+='<div style="font-size:10px;color:var(--txm);margin-top:6px;border-top:1px solid var(--brd);padding-top:6px;">'+eLastParts.join(' &middot; ')+'</div>';
-      } else {
-        html+='<div style="font-size:10px;color:var(--txm);margin-top:6px;border-top:1px solid var(--brd);padding-top:6px;">Channel E &mdash; SX1261 Dedicated LoRa Radio</div>';
-      }
-      html+='</div>';
-    }
-    // --- Channel F card if enabled (chan_Lora_std on SX1302 RF0) ---
-    for(var fi=0;fi<liveChs.length;fi++){
-      var fLive=liveChs[fi];
-      if(!fLive.is_chan_lora_std)continue;
-      var fName=fLive.name||fLive.friendly_name||'Channel F';
-      var fFreq=(fLive.frequency||0)/1e6;
-      var fBw=(fLive.bandwidth||250000)/1000;
-      var fSf=fLive.spreading_factor||9;
-      var fCr=fLive.coding_rate||'4/5';
-      var fCol='#a855f7'; // violet
-      var fTxtC='var(--tx)';
-      var fRxPkts=fLive.rx_packets||0;
-      var fRssi=fLive.rssi_last!=null?fLive.rssi_last:-120;
-      var fSnr=fLive.snr_last!=null?fLive.snr_last:0;
-      var fNfLbtAvg=fLive.noise_floor_lbt_avg;
-      var fNf=(fNfLbtAvg!=null)?fNfLbtAvg:((fLive.noise_floor!=null&&fLive.noise_floor!==-120)?fLive.noise_floor:null);
-      var fTxPkts=fLive.tx_packets||0;
-      var fDutyPct=fLive.tx_duty_pct||0;
-      var fQ=queues['channel_f']||{};
-      var fPending=fQ.pending||fLive.queue_pending||0;
-      var fSent=fQ.total_sent||fTxPkts;
-      var fFailed=fQ.total_failed||fLive.tx_failed||0;
-      var fAvgAirtime=fQ.avg_airtime_ms||fLive.avg_tx_airtime_ms||0;
-      var fAvgSend=fQ.avg_send_ms||fLive.avg_tx_send_ms||0;
-      var fAvgWait=fQ.avg_wait_ms||fLive.avg_tx_wait_ms||0;
-      var fTotalAir=fQ.total_airtime_ms||fLive.total_tx_airtime_ms||0;
-      totalRx+=fRxPkts;
-      totalTx+=fTxPkts;
-      totalAirtimeMs+=fTotalAir;
-      totalDutySum+=fDutyPct;
-      activeCh++;
-      var fRssiStr,fSnrStr,fNoiseStr,fNoiseColor,fRssiC,fSnrC;
-      if(fRxPkts===0){
-        fRssiStr='--'; fSnrStr='--';
-        fRssiC='var(--txm)'; fSnrC='var(--txm)';
-      } else {
-        fRssiStr=fRssi.toFixed(1)+' dBm';
-        fSnrStr=fSnr.toFixed(1)+' dB';
-        fRssiC=fRssi>-90?'#22c55e':fRssi>-110?'#f59e0b':'#ef4444';
-        fSnrC=fSnr>5?'#22c55e':fSnr>0?'#f59e0b':'#ef4444';
-      }
-      if(fNf!=null){
-        fNoiseStr=fNf.toFixed(1)+' dBm';
-        fNoiseColor=fNf<-110?'#22c55e':fNf<-90?'#f59e0b':'#ef4444';
-      } else {
-        fNoiseStr='--'; fNoiseColor='var(--txm)';
-      }
-      html+='<div style="border:1px solid '+fCol+';border-radius:8px;padding:14px;background:rgba(168,85,247,0.06);">';
-      html+='<div class="flex items-center justify-between mb-2">';
-      html+='<span style="font-weight:600;color:'+fCol+';font-size:13px;">'+esc(fName)+'</span>';
-      html+='<span style="background:rgba(168,85,247,0.15);color:#a855f7;font-size:10px;padding:2px 6px;border-radius:4px;">SX1302 RF0</span>';
-      html+='</div>';
-      html+='<div style="font-size:11px;color:var(--txm);margin-bottom:10px;">'+fFreq.toFixed(3)+' MHz &middot; SF'+fSf+' &middot; BW'+fBw+'kHz &middot; CR'+esc(fCr)+'</div>';
-      html+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;">';
-      html+='<div style="color:var(--txm)">RX Packets</div><div style="color:#22c55e;font-weight:500;">'+fRxPkts+'</div>';
-      html+='<div style="color:var(--txm)">TX Packets</div><div style="color:'+fCol+';font-weight:500;">'+fTxPkts+'</div>';
-      html+='<div style="color:var(--txm)">Pending</div><div style="color:'+fTxtC+';font-weight:500;">'+fPending+'</div>';
-      html+='<div style="color:var(--txm)">Sent</div><div style="color:#22c55e;font-weight:500;">'+fSent+'</div>';
-      html+='<div style="color:var(--txm)">Failed</div><div style="color:'+(fFailed>0?'#ef4444':'var(--txm)')+';font-weight:500;">'+fFailed+'</div>';
-      html+='<div style="color:var(--txm)" title="TX duty cycle">TX Duty</div><div style="font-weight:600;color:'+_dutyColor(fDutyPct)+';">'+(fDutyPct).toFixed(3)+' %</div>';
-      html+='<div style="color:var(--txm)">RSSI</div><div style="color:'+fRssiC+';font-weight:500;">'+fRssiStr+'</div>';
-      html+='<div style="color:var(--txm)">SNR</div><div style="color:'+fSnrC+';font-weight:500;">'+fSnrStr+'</div>';
-      html+='<div style="color:var(--txm)">Noise Floor</div><div style="color:'+fNoiseColor+';font-weight:500;">'+fNoiseStr+'</div>';
-      html+='<div style="color:var(--txm)" title="LoRa time-on-air">Avg Airtime</div>';
-      html+='<div style="color:#a78bfa;font-weight:500;">'+_fmtMs(fAvgAirtime)+' ms</div>';
-      html+='<div style="color:var(--txm)" title="Wall-clock send time">Avg Send</div>';
-      html+='<div style="color:'+fTxtC+'">'+_fmtMs(fAvgSend)+' ms</div>';
-      html+='<div style="color:var(--txm)" title="Queue wait time">Avg Wait</div>';
-      html+='<div style="color:'+fTxtC+'">'+_fmtMs(fAvgWait)+' ms</div>';
-      html+='<div style="color:var(--txm)">Total Airtime</div>';
-      html+='<div style="color:#a78bfa;font-weight:500;">'+_fmtAirtimeTotal(fTotalAir)+'</div>';
-      var fLbtBlocked=fLive.lbt_blocked||0;
-      var fLbtPassed=fLive.lbt_passed||0;
-      var fLbtSkipped=fLive.lbt_skipped||0;
-      var fLbtLastRssi=fLive.lbt_last_rssi;
-      var fLbtEnabled=(fLbtBlocked+fLbtPassed)>0;
-      if(fLbtEnabled){
-        var fLbtColor=fLbtBlocked>0?'#f59e0b':'#22c55e';
-        var fLbtText=fLbtBlocked>0?(fLbtBlocked+' blocked / '+fLbtPassed+' passed'):(fLbtPassed>0?fLbtPassed+' passed':'--');
-        if(fLbtSkipped>0&&fLbtPassed===0&&fLbtBlocked===0)fLbtText='skipped ('+fLbtSkipped+')';
-        html+='<div style="color:var(--txm)" title="Software LBT (Listen Before Talk)">LBT</div>';
-        html+='<div style="color:'+fLbtColor+';font-weight:500;">'+fLbtText+'</div>';
-        if(fLbtLastRssi!==null&&fLbtLastRssi!==undefined){
-          html+='<div style="color:var(--txm)">LBT RSSI</div>';
-          html+='<div style="color:var(--txm);font-weight:500;">'+fLbtLastRssi.toFixed(1)+' dBm</div>';
-        }
-      }
-      var fCadClear=fLive.cad_clear||0;
-      var fCadDetected=fLive.cad_detected||0;
-      if(fCadClear>0||fCadDetected>0){
-        var fCadColor=fCadDetected>0?'#f59e0b':'#22c55e';
-        var fCadText=fCadDetected>0?(fCadDetected+' detected / '+fCadClear+' clear'):(fCadClear>0?fCadClear+' clear':'--');
-        html+='<div style="color:var(--txm)" title="Channel Activity Detection">CAD</div>';
-        html+='<div style="color:'+fCadColor+';font-weight:500;">'+fCadText+'</div>';
-      }
-      html+='</div>';
-      var fLastParts=[];
-      if(fLive.last_rx){fLastParts.push('Last RX: '+_fmtAgo(fLive.last_rx));}
-      if(fLive.last_tx){fLastParts.push('Last TX: '+_fmtAgo(fLive.last_tx));}
-      if(fLastParts.length){
-        html+='<div style="font-size:10px;color:var(--txm);margin-top:6px;border-top:1px solid var(--brd);padding-top:6px;">'+fLastParts.join(' &middot; ')+'</div>';
-      } else {
-        html+='<div style="font-size:10px;color:var(--txm);margin-top:6px;border-top:1px solid var(--brd);padding-top:6px;">Channel F &mdash; chan_Lora_std on SX1302 RF0</div>';
-      }
-      html+='</div>';
-    }
+    /* Channel E and F cards are now rendered via _combined loop above */
     g.innerHTML=html||'<div class="text-sm" style="color:var(--txm)">No channels</div>';
     // Update totals
     var eRx=document.getElementById('live-total-rx');
@@ -1695,6 +1481,14 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
     freqs.push(eMhz0 - eBwMhz0);
     freqs.push(eMhz0 + eBwMhz0);
   }
+  // Include Channel F in scale calculation
+  var chfActive = (typeof chfData !== 'undefined' && chfData && chfData.enabled);
+  if(chfActive){
+    var fMhz0 = chfData.frequency / 1e6;
+    var fBwMhz0 = (chfData.bandwidth || 250000) / 1e6;
+    freqs.push(fMhz0 - fBwMhz0);
+    freqs.push(fMhz0 + fBwMhz0);
+  }
   if(freqs.length < 2){ el.innerHTML='<div class="text-center py-6 text-xs" style="color:var(--txm)">Configure RF chains to see bandwidth diagram</div>'; G('rf-bw-min').textContent='--'; G('rf-bw-max').textContent='--'; return; }
   var minF = Math.min.apply(null, freqs);
   var maxF = Math.max.apply(null, freqs);
@@ -1746,6 +1540,20 @@ function renderRfBwDiagram(rf0en, rf0f, rf1en, rf1f){
     html += '<div style="position:absolute;left:'+pct(eMhz)+'%;top:24px;width:1.5px;height:32px;background:'+eCol+';transform:translateX(-50%)"></div>';
     // Label
     html += '<div style="position:absolute;left:'+pct(eMhz)+'%;top:58px;transform:translateX(-50%);font-size:8px;color:'+eCol+';white-space:nowrap;font-weight:600">'+esc(eName)+'</div>';
+  }
+  // Channel F bandwidth block (if active)
+  if(chfActive){
+    var fMhz = chfData.frequency / 1e6;
+    var fBwMhz = (chfData.bandwidth || 250000) / 1e6;
+    var fHalfBw = fBwMhz / 2;
+    var fCol = '#a855f7'; // violet for Channel F
+    var fName = chfData.name || chfData.friendly_name || 'Channel F';
+    var fLPct = pct(fMhz - fHalfBw);
+    var fRPct = pct(fMhz + fHalfBw);
+    var fWPct = fRPct - fLPct;
+    html += '<div style="position:absolute;left:'+fLPct+'%;width:'+fWPct+'%;top:24px;height:32px;background:'+fCol+'22;border:1.5px dashed '+fCol+'66;border-radius:3px" title="'+esc(fName)+': '+fMhz.toFixed(3)+' MHz \u00B1 '+(fHalfBw*1000).toFixed(1)+' kHz (Channel F)"></div>';
+    html += '<div style="position:absolute;left:'+pct(fMhz)+'%;top:24px;width:1.5px;height:32px;background:'+fCol+';transform:translateX(-50%)"></div>';
+    html += '<div style="position:absolute;left:'+pct(fMhz)+'%;top:58px;transform:translateX(-50%);font-size:8px;color:'+fCol+';white-space:nowrap;font-weight:600">'+esc(fName)+'</div>';
   }
   // Also show IF chain markers from ifChainData if available
   if(ifChainData && ifChainData.length){
@@ -2018,7 +1826,6 @@ async function loadChF(){
     G('chf-lbt-enabled').checked=!!d.lbt_enabled;
     // populate TX power dropdown (12..27 dBm, 16 LUT entries)
     fillTxPowerDropdown('chf-tx-power', d.tx_power||22);
-    G('chf-boosted-rx').checked=!!d.boosted_rx;
     // sync_word is device-wide; loaded via loadSyncWord() in the REGION & REGULATORY panel
   }catch(e){console.error('loadChF err:',e);}
 }
@@ -2037,7 +1844,6 @@ async function saveChF(restart){
     lbt_threshold:parseInt(G('chf-lbt-rssi').value)||-80,
     lbt_enabled:G('chf-lbt-enabled').checked,
     tx_power:parseInt(G('chf-tx-power').value)||22,
-    boosted_rx:G('chf-boosted-rx').checked,
     restart:!!restart
   };
   try{
@@ -2197,7 +2003,7 @@ async function saveCh(restart){
   }
 }
 let bRules=[];
-async function loadBr(){if(!chData.length){try{const _cr=await fetch("/api/wm1303/channels");const _cj=await _cr.json();chData=normCh(Array.isArray(_cj)?_cj:(_cj.channels||[]));}catch(_e){}}if(!cheData.frequency){try{cheData=await api('GET','/api/wm1303/channel_e');}catch(_e2){}}if(!chfData||!chfData.frequency){try{chfData=await api('GET','/api/wm1303/channel_f');}catch(_e3){}}try{const d=await api("GET","/api/wm1303/bridge");bRules=d.rules||d||[];}catch(e){bRules=[{id:"r1",from:"n1",to:"n2",filter:"all",enabled:true}];}renderBr();}
+async function loadBr(){if(!chData.length){try{const _cj=await api("GET","/api/wm1303/channels");chData=normCh(Array.isArray(_cj)?_cj:(_cj.channels||[]));}catch(_e){}}if(!cheData.frequency){try{cheData=await api('GET','/api/wm1303/channel_e');}catch(_e2){}}if(!chfData||!chfData.frequency){try{chfData=await api('GET','/api/wm1303/channel_f');}catch(_e3){}}try{const d=await api("GET","/api/wm1303/bridge");bRules=d.rules||d||[];}catch(e){bRules=[{id:"r1",from:"n1",to:"n2",filter:"all",enabled:true}];}renderBr();}
 const MC_PKT_TYPES=['REQ','RESPONSE','TXT_MSG','ACK','ADVERT','GRP_TXT','GRP_DATA','ANON_REQ','PATH','TRACE','MULTIPART','CONTROL','RAW_CUSTOM'];
 function togglePktTypes(i){var el=G('pkt-types-'+i);if(el)el.style.display=el.style.display==='none'?'flex':'none';}
 function setPktType(i,t,checked){if(!bRules[i].packet_types)bRules[i].packet_types=[];var pt=bRules[i].packet_types;if(t==='ALL'){bRules[i].packet_types=[];renderBr();return;}if(checked){if(pt.indexOf(t)===-1)pt.push(t);}else{bRules[i].packet_types=pt.filter(x=>x!==t);}renderBr();}
@@ -2784,10 +2590,10 @@ async function loadSignalData() {
   if (typeof Chart === 'undefined') { console.warn('Chart.js not loaded'); return; }
   // Ensure channel data is loaded for friendly name resolution in all charts
   if (!chData || !chData.length) {
-    try { var _cr = await fetch('/api/wm1303/channels'); var _cj = await _cr.json(); chData = normCh(Array.isArray(_cj) ? _cj : (_cj.channels || [])); } catch(e) {}
+    try { var _cj = await api('GET','/api/wm1303/channels'); chData = normCh(Array.isArray(_cj) ? _cj : (_cj.channels || [])); } catch(e) {}
   }
   if (!cheData || !cheData.frequency) {
-    try { cheData = await (await fetch('/api/wm1303/channel_e')).json(); } catch(e) {}
+    try { cheData = await api('GET','/api/wm1303/channel_e'); } catch(e) {}
   }
   await Promise.all([loadSignalQuality(), loadNoiseFloor(), loadLbtHistory(), loadTxActivity(), loadPerChannelNF(), cadChartLoad()]);
 }
@@ -3074,6 +2880,10 @@ function formatChannelName(chId) {
     try { if (typeof cheData !== 'undefined' && cheData && (cheData.name || cheData.friendly_name)) return cheData.name || cheData.friendly_name; } catch(e) {}
     return 'Channel E';
   }
+  if (chId === 'channel_f') {
+    try { if (typeof chfData !== 'undefined' && chfData && (chfData.name || chfData.friendly_name)) return chfData.name || chfData.friendly_name; } catch(e) {}
+    return 'Channel F';
+  }
   var m = chId.match(/^channel_([a-z])$/);
   if (m) {
     var slotIdx = m[1].charCodeAt(0) - 97; // 0=a, 1=b, 2=c, 3=d
@@ -3213,13 +3023,12 @@ function renderNfCards(channels) {
     try {
       // Ensure channel data is loaded for friendly name resolution
       if (!chData || !chData.length) {
-        try { var _cr = await fetch('/api/wm1303/channels'); var _cj = await _cr.json(); chData = normCh(Array.isArray(_cj) ? _cj : (_cj.channels || [])); } catch(e) {}
+        try { var _cj = await api('GET','/api/wm1303/channels'); chData = normCh(Array.isArray(_cj) ? _cj : (_cj.channels || [])); } catch(e) {}
       }
       if (!cheData || !cheData.frequency) {
-        try { cheData = await (await fetch('/api/wm1303/channel_e')).json(); } catch(e) {}
+        try { cheData = await api('GET','/api/wm1303/channel_e'); } catch(e) {}
       }
-      var resp = await fetch("/api/wm1303/cad_stats?range=" + cadRange);
-      var data = await resp.json();
+      var data = await api("GET","/api/wm1303/cad_stats?range=" + cadRange);
       cadChartRender(data);
     } catch(e) {
       console.warn("cadChart fetch error:", e);
@@ -4011,8 +3820,7 @@ function renderPmCrcChart(channels) {
   window.dedupLoad = async function() {
     try {
       var url = '/api/wm1303/dedup?range=' + dedupRange;
-      var resp = await fetch(url);
-      var data = await resp.json();
+      var data = await api('GET', url);
       dedupRender(data);
     } catch(e) {
       console.warn('dedup fetch error:', e);
@@ -4249,8 +4057,7 @@ function renderPmCrcChart(channels) {
   window.pktActLoad = async function() {
     try {
       var h = rangeToHours(pktActRange);
-      var resp = await fetch("/api/wm1303/packet_activity?hours=" + h);
-      var data = await resp.json();
+      var data = await api("GET", "/api/wm1303/packet_activity?hours=" + h);
       pktActRender(data);
     } catch(e) {
       console.warn("pktAct fetch error:", e);
@@ -4440,8 +4247,7 @@ function renderPmCrcChart(channels) {
   }
 
   window.loadAdvConfig = function() {
-    fetch('/api/wm1303/adv_config')
-      .then(function(r) { return r.json(); })
+    api('GET','/api/wm1303/adv_config')
       .then(function(data) {
         acData = data;
         console.log('[AdvConfig] loaded:', data);
@@ -4490,11 +4296,7 @@ function renderPmCrcChart(channels) {
 
     showAcStatus('Saving...', '#fbbf24');
 
-    fetch('/api/wm1303/adv_config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
+    api('POST','/api/wm1303/adv_config',payload)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       if (data.status === 'ok') {
@@ -4707,7 +4509,7 @@ function renderPmCrcChart(channels) {
     var url = '/api/wm1303/packet_traces?limit=' + limit;
     if (status) url += '&status=' + encodeURIComponent(status);
     if (channel) url += '&channel=' + encodeURIComponent(channel);
-    fetch(url).then(function(r){ return r.json(); }).then(function(data){
+    api('GET',url).then(function(data){
       if (data.error) { console.error('Trace API error:', data.error); return; }
       _traceData = data.traces || [];
       // v2.5.x bugfix: expose _traceData on window so the trace playback (Phase 5)

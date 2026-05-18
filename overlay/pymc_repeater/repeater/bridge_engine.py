@@ -1539,11 +1539,19 @@ class BridgeEngine:
 
     async def run(self) -> None:
         self._running = True
+        self._stop_event = asyncio.Event()
         logger.info('BridgeEngine: starting with %d channels, %d rules',
                     len(self.radios), len(self.rules))
         tasks = [asyncio.create_task(self._rx_loop(r)) for r in self.radios]
         try:
-            await asyncio.gather(*tasks)
+            if tasks:
+                await asyncio.gather(*tasks)
+            else:
+                # No A-D radios but channel_e/f may inject packets via
+                # inject_packet().  Keep the engine alive until stop().
+                logger.info('BridgeEngine: no radio RX loops, idling '
+                            '(channel_e/f inject via callbacks)')
+                await self._stop_event.wait()
         except asyncio.CancelledError:
             pass
         finally:
@@ -1553,6 +1561,8 @@ class BridgeEngine:
 
     def stop(self) -> None:
         self._running = False
+        if hasattr(self, '_stop_event') and self._stop_event:
+            self._stop_event.set()
 
     def update_rules(self, new_rules: list) -> None:
         """Hot-reload bridge rules without restarting the engine."""
