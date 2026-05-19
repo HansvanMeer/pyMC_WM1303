@@ -53,11 +53,17 @@ if [ ! -t 0 ] && [ -z "${_WM1303_REEXEC}" ]; then
         echo "    To select a region: WM1303_REGION=AU915 curl -sSL ... | sudo bash"
         _SELF=""
     fi
-    if [ -n "${_SELF}" ] && [ -f "${_SELF}" ]; then
+    if [ -n "${_SELF}" ] && [ -f "${_SELF}" ] && [ -e /dev/tty ]; then
         chmod +x "${_SELF}"
         export _WM1303_REEXEC=1
         # Preserve any env vars (WM1303_REGION, etc.) and pass all args
         exec bash "${_SELF}" "$@" </dev/tty
+    elif [ -n "${_SELF}" ] && [ -f "${_SELF}" ]; then
+        # /dev/tty not available (headless SSH, CI/CD, Docker, etc.)
+        echo "  ⚠ No TTY available for interactive wizard."
+        echo "    To select a region: WM1303_REGION=AU915 curl -sSL ... | sudo bash"
+        echo "    Supported: EU868 US915 AU915 AS923 IN865 JP920 KR920"
+        rm -f "${_SELF}"
     fi
 fi
 # Clean up reexec marker
