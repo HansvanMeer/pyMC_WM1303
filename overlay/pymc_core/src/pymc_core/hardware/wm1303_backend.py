@@ -598,15 +598,13 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
                        'enable=%s, if=%+d',
                        ch_name, idx, if_idx, is_active, if_offset)
     else:
-        # Fallback: position-based (legacy)
-        chan_list = list(channels.items())
-        for i in range(min(len(chan_list), 4)):
-            _, cfg = chan_list[i]
-            freq = int(cfg['frequency'])
-            if_offset = freq - center
-            chan_configs[f'chan_multiSF_{i}'] = {
-                'enable': True, 'radio': 0, 'if': if_offset
-            }
+        # No UI channels configured (fresh install or all channels removed).
+        # Do NOT enable any chan_multiSF slots — user must configure channels
+        # via the WM1303 Manager UI first. The radio will idle on the center
+        # frequency until channels are activated.
+        logger.info('_generate_bridge_conf: no UI channels configured, '
+                    'all chan_multiSF slots will be disabled. '
+                    'Configure channels via the WM1303 Manager UI.')
 
     # Ensure all 8 chan_multiSF slots exist; unused slots are DISABLED
     # to prevent the concentrator from receiving duplicate packets on
