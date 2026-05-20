@@ -1702,6 +1702,7 @@ async function saveChE(restart){
   var body={
     enable:G('che-enable').checked,
     name:G('che-name').value||'Channel E',
+    friendly_name:G('che-name').value||'Channel E',
     frequency:Math.round(parseFloat(G('che-frequency').value.replace(/,/g,'.'))*1e6),
     bandwidth:parseInt(G('che-bandwidth').value),
     spreading_factor:parseInt(G('che-sf').value),
@@ -2011,10 +2012,9 @@ function setPktType(i,t,checked){if(!bRules[i].packet_types)bRules[i].packet_typ
 function renderBr(){
   const l=G('rules-list');
   if(!bRules.length){l.innerHTML='<div class="text-center py-8" style="color:var(--txm)">No rules. Add a forwarding rule.</div>';return;}
-  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name)+'">'+esc(ch.name||ch.friendly_name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
-  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.name||cheData.friendly_name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
-  // Channel F only shown when enabled (chan_Lora_std runs in parallel with A-D)
-  const chfOpt=(chfData&&chfData.frequency&&(chfData.enabled||chfData.enable)) ? '<optgroup label="Channel F"><option value="channel_f">'+(chfData.name||chfData.friendly_name||'Channel F')+' ('+(chfData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
+  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name)+'">'+esc(ch.friendly_name||ch.name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
+  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.friendly_name||cheData.name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
+  const chfOpt=chfData&&chfData.frequency ? '<optgroup label="Channel F"><option value="channel_f">'+(chfData.friendly_name||chfData.name||'Channel F')+' ('+(chfData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
   const nO='<option value="">Select endpoint...</option>'+chOpts+cheOpt+chfOpt+'<option value="repeater">&#128251; Repeater</option>';
   // FILTER_DROPDOWN_REMOVED
   l.innerHTML=bRules.map((r,i)=>{
