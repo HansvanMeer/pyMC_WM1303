@@ -46,7 +46,7 @@
 5. **Per-channel sync_word UI** — Private (0x1424) / Public (0x3444) / Custom (hex input).
 6. **Installation wizard** in bootstrap.sh — interactive region + preset prompts, env var override support, writes region + preset to wm1303_ui.json.
 7. **UI ↔ config parameter completeness audit** — ensure every field in UI also persists to wm1303_ui.json and propagates to bridge_conf.
-8. **Deploy + test on pi01** (192.168.101.52).
+8. **Deploy + test on pi01**.
 
 ## Resolves
 
