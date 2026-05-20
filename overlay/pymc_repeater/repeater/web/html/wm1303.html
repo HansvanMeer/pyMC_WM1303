@@ -300,7 +300,7 @@ select.ci option{background:#1e293b}
       </div>
     </div>
     <div class="hidden sm:grid text-xs font-medium px-1 mb-1 gap-1" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 68px 52px 44px 32px;color:var(--txm)">
-      <span style="grid-column:span 2">Channel Name</span><span>Freq (MHz)</span><span>BW (kHz)</span><span>SF</span><span>CR</span><span>Preamble</span><span>LBT (dBm)</span><span>LBT</span><span>TX (dBm)</span><span></span><span>Active</span><span></span>
+      <span>Channel</span><span>Channel Name</span><span>Freq (MHz)</span><span>BW (kHz)</span><span>SF</span><span>CR</span><span>Preamble</span><span>LBT (dBm)</span><span>LBT</span><span>TX (dBm)</span><span></span><span>Active</span><span></span>
     </div>
     <div id="ch-list"><div class="text-center py-8" style="color:var(--txm)"><div class="spn mx-auto mb-2"></div>Loading...</div></div>
   </div>
@@ -1641,8 +1641,10 @@ async function loadCh(){
   renderIfChains();
 }
 function buildChDropdown(i,ch){
-  // Legacy compatibility — now returns empty, name input is free-text
-  return '';
+  var _used=chData.map(function(c,j){return j!==i?c.friendly_name:null;}).filter(Boolean);
+  return ['Channel A','Channel B','Channel C','Channel D'].map(function(fn){
+    return '<option value="'+fn+'"'+(ch.friendly_name===fn?' selected':'')+(_used.indexOf(fn)>=0&&ch.friendly_name!==fn?' disabled':'')+'>'+fn+'</option>';
+  }).join('');
 }
 function renderCh(){
   const l=G('ch-list');
@@ -1655,7 +1657,8 @@ function renderCh(){
   }
   // Sync word is configured DEVICE-WIDE in the REGION & REGULATORY panel; not per-channel.
   l.innerHTML=chData.map((ch,i)=>`<div class="crow${ch.active?' con':''}" style="grid-template-columns:140px 1fr 108px 82px 52px 58px 72px 68px 44px 68px 52px 44px 32px">
-    <input class="ci" style="font-weight:500;grid-column:span 2" value="${esc(ch.friendly_name||'')}" onchange="chData[${i}].friendly_name=this.value;chData[${i}].name=this.value" placeholder="Channel name (required)" required>
+    <select class="ci" style="font-weight:500" onchange="chData[${i}].friendly_name=this.value;renderCh()">${buildChDropdown(i,ch)}</select>
+    <input class="ci" value="${esc(ch.name||'')}" onchange="chData[${i}].name=this.value" placeholder="Name (required)" required>
     <input class="ci" lang="en" type="text" pattern="[0-9]*[.]?[0-9]*" value="${(ch.frequency/1e6).toFixed(3)}" inputmode="decimal" oninput="this.value=this.value.replace(/,/g,'.')" onchange="chData[${i}].frequency=Math.round(parseFloat(this.value.replace(/,/g,'.'))*1e6)">
     <input class="ci" type="text" value="125" readonly title="Channels A-D = chan_multiSF_0-3 (hardware constraint: BW125 only)" style="background:var(--bgr);cursor:not-allowed;text-align:center">
     <select class="ci" onchange="chData[${i}].spreading_factor=parseInt(this.value)">${mkSel(SF,ch.spreading_factor)}</select>
@@ -1673,7 +1676,7 @@ function renderCh(){
   // Defensive: sync_word is device-wide, never per-channel; strip any stale field
   chData.forEach(function(c){ if(c && 'sync_word' in c){ delete c.sync_word; } });
 }
-function addCh(){chData.push({name:'',friendly_name:'',frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:22,lbt_threshold:-80,lbt_rssi_target:-80,lbt_enabled:false,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
+function addCh(){var _fn='Channel '+'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[chData.length];chData.push({name:'',friendly_name:_fn,frequency:868100000,bandwidth:125000,spreading_factor:7,coding_rate:'4/5',preamble_length:17,tx_power:22,lbt_threshold:-80,lbt_rssi_target:-80,lbt_enabled:false,active:false});renderCh();G('ch-list').lastElementChild?.scrollIntoView({behavior:'smooth'});}
 // -- Channel E load/save --
 let cheData={};
 async function loadChE(){
@@ -1977,8 +1980,8 @@ function renderIfChains(doFetch){
   }).join('');
 }
 async function saveCh(restart){
-  var empty=chData.filter(function(c){return !c.friendly_name||!c.friendly_name.trim();});
-  if(empty.length){toast('Every channel must have a name. Please fill in all Channel Name fields.','er',5000);return;}
+  var empty=chData.filter(function(c){return !c.name||!c.name.trim();});
+  if(empty.length){toast('Every channel must have a Channel Name. Please fill in all name fields.','er',5000);return;}
   try{
     const payload = {channels: chData};
     if(restart) payload.restart = true;
@@ -2013,9 +2016,9 @@ function setPktType(i,t,checked){if(!bRules[i].packet_types)bRules[i].packet_typ
 function renderBr(){
   const l=G('rules-list');
   if(!bRules.length){l.innerHTML='<div class="text-center py-8" style="color:var(--txm)">No rules. Add a forwarding rule.</div>';return;}
-  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name)+'">'+esc(ch.friendly_name||ch.name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
-  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.friendly_name||cheData.name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
-  const chfOpt=chfData&&chfData.frequency ? '<optgroup label="Channel F"><option value="channel_f">'+(chfData.friendly_name||chfData.name||'Channel F')+' ('+(chfData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
+  const chOpts=(chData||[]).length ? '<optgroup label="IF Channels">'+(chData||[]).map(ch=>'<option value="'+esc(ch.name||ch.friendly_name)+'">'+esc(ch.name||ch.friendly_name)+' ('+((ch.frequency||0)/1e6).toFixed(3)+' MHz)</option>').join('')+'</optgroup>' : '';
+  const cheOpt=cheData&&cheData.frequency ? '<optgroup label="Channel E"><option value="channel_e">'+(cheData.name||cheData.friendly_name||'Channel E')+' ('+(cheData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
+  const chfOpt=chfData&&chfData.frequency ? '<optgroup label="Channel F"><option value="channel_f">'+(chfData.name||chfData.friendly_name||'Channel F')+' ('+(chfData.frequency/1e6).toFixed(3)+' MHz)</option></optgroup>' : '';
   const nO='<option value="">Select endpoint...</option>'+chOpts+cheOpt+chfOpt+'<option value="repeater">&#128251; Repeater</option>';
   // FILTER_DROPDOWN_REMOVED
   l.innerHTML=bRules.map((r,i)=>{
