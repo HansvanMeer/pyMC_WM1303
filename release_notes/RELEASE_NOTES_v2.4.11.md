@@ -119,6 +119,81 @@ Supported codes: `EU868`, `US915`, `AU915`, `AS923`, `IN865`, `JP920`, `KR920`, 
 
 ---
 
+## 🆕 Companion App Compatibility (post-release additions)
+
+Field testing on pi01 with a MeshCore-family companion app revealed several gaps in how the WM1303 bridge flow served companion requests. The following companion-facing fixes were added on top of the initial v2.4.11 release, all bundled under the same version tag.
+
+### Bridge-aware response injector for helpers (`main.py`)
+
+Upstream `LoginHelper`, `TextHelper`, and `ProtocolRequestHelper` are constructed with `packet_injector=self.router.inject_packet`. That injector targets `radios[0]/[1]` (the classic-radio TX path), which is **not active** in a WM1303 deployment — the WM1303 only has channel E (SX1261) and channel F (SX1302 service modem) available. As a result, helper-generated responses (login success, CLI replies, status/telemetry packets) silently never reached the air.
+
+A per-request override-then-restore pattern would race against `asyncio.create_task(_delayed_send(...))` used by LoginHelper, so a **permanent bridge-aware injector** was introduced:
+
+```python
+async def _response_injector(self, packet, wait_for_ack: bool = False):
+    """Bridge-aware injector: route helper responses via channel E/F."""
+    packet_bytes = packet.write_to()
+    if self.bridge_engine is not None:
+        await self.bridge_engine.inject_packet('repeater', packet_bytes)
+        return
+    # Fall back to upstream router only if bridge is not configured.
+    await self.router.inject_packet(packet, wait_for_ack=wait_for_ack)
+```
+
+All three helpers are now constructed with `packet_injector=self._response_injector`. The bridge engine's standard origin-channel + round-robin selection takes care of channel choice.
+
+### `WM1303ProtocolRequestHelper` — telemetry + extended owner info
+
+New file: `overlay/pymc_repeater/repeater/wm1303_telemetry_helper.py` (436 lines). Subclasses upstream `ProtocolRequestHelper` and adds:
+
+1. **REQ_TYPE_GET_TELEMETRY_DATA (0x03)** handler with CayenneLPP payload:
+   - Channel 1: CPU temperature (°C) — from `/sys/class/thermal/thermal_zone0/temp`
+   - Channel 2: WM1303 concentrator temperature (°C) — from `/tmp/concentrator_temp` (written by pkt_fwd)
+   - Channel 3-5: CPU usage / memory usage / disk usage as **Humidity-type** values (so the companion displays them as readable `XX %` rather than confusing `0.0 V` / `Analog Input N`)
+
+2. **Extended OWNER_INFO (REQ 0x07) response** — appends device hardware lines after the standard firmware/name/owner regels. Kept for any future companion that switches to the binary REQ 0x07 path; current companions use the CLI `get owner.info` path (see next section).
+
+3. **`FIRMWARE_VER_LEVEL = 11` monkey-patch** applied to `pymc_core.node.handlers.login_server` at import time. The MeshCore companion gates the Owner Info menu on `firmware_ver_level ≥ 2`; upstream pymc_repeater reports `1`, which caused the companion to display `"this repeater requires a firmware update to enable owner info"`. Setting `11` unblocks Owner Info, telemetry refresh, and other gated features without changing upstream pymc_repeater code.
+
+`main.py` imports `WM1303ProtocolRequestHelper` with a graceful fallback so the upstream helper is used when this overlay is absent:
+
+```python
+try:
+    from repeater.wm1303_telemetry_helper import WM1303ProtocolRequestHelper
+except ImportError:
+    WM1303ProtocolRequestHelper = ProtocolRequestHelper
+```
+
+### `mesh_cli.py` — dynamic `owner.info` CLI handler
+
+New file: `overlay/pymc_repeater/repeater/handler_helpers/mesh_cli.py` (856 lines, full overlay of upstream `mesh_cli.py`).
+
+**Surprise discovery**: the MeshCore companion does **not** call binary REQ 0x07 (GET_OWNER_INFO) at all. It sends a `TXT_MSG` CLI command `get owner.info` over the encrypted admin channel. Upstream's `_cmd_get` doesn't know that key and returns the literal string `??: owner.info`, which the companion then displays verbatim on its Owner Info page.
+
+*(There is also a `repeater_cli.py` file in the upstream tree that contains an identical `MeshCLI` class, but `text.py` actually imports from `mesh_cli.py`. Patching `repeater_cli.py` has zero effect — a subtle trap worth knowing.)*
+
+Fix:
+
+1. **Module-level helper** `_build_dynamic_owner_info(max_len=115)` builds the value at request time from runtime sources:
+   - Software version ← `/etc/pymc_repeater/version`
+   - Hardware model ← `/sys/firmware/devicetree/base/model`
+   - Total RAM ← `/proc/meminfo` (`MemTotal`)
+   - Total disk ← `os.statvfs('/')` (root filesystem)
+   
+   Fields are joined with `|` (the companion's line separator) and **hard-capped at 115 characters** with graceful degradation — if appending a field would exceed the cap, it (and any following fields) is skipped rather than truncated mid-token.
+
+2. **`get owner.info`** returns the dynamic string. Example output on a Pi 4 / 4 GB / 64 GB SD:
+   ```
+   pyMC_WM1303 v2.4.11|Raspberry Pi 4 Model B Rev 1.4|RAM: 3846 MiB|Disk: 58.2 GiB
+   ```
+   (79 / 115 chars, displays as four lines in the companion.)
+
+3. **`set owner.info <value>`** returns `Error: owner.info is dynamic and read-only` — the value is derived from the actual device, so accepting a companion-side override would be misleading.
+
+This approach automatically reports correct hardware/version info on **every install** without any per-device config edits.
+
+---
+
 ## 📋 Known issues / not in this release
 
 - **Spectrum scan regio-aware UI** (issue #7 comment #5, AU-specific): The scan range and heading still show EU868 defaults on AU915/US915 installs. The backend scan itself works; only the UI labels are off. **Targeted for v2.4.12.**
@@ -132,9 +207,11 @@ Supported codes: `EU868`, `US915`, `AU915`, `AS923`, `IN865`, `JP920`, `KR920`, 
 | File | Change |
 |---|---|
 | `overlay/pymc_core/src/pymc_core/hardware/wm1303_backend.py` | TRACE bit-shift fix on 2 echo-cache sites |
-| `overlay/pymc_repeater/repeater/main.py` | New TRACE dispatch in `_bridge_repeater_handler` with bridge-aware injector |
-| `overlay/pymc_repeater/repeater/web/wm1303_api.py` | New `_migrate_ui_config()` helper + auto-migrate on load |
-| `README.md` | Added 'Advanced installation' section with `WM1303_REGION` examples |
+| `overlay/pymc_repeater/repeater/main.py` | TRACE dispatch in `_bridge_repeater_handler` + new `_response_injector` (bridge-aware) used by LoginHelper / TextHelper / ProtocolRequestHelper; imports `WM1303ProtocolRequestHelper` with graceful fallback |
+| `overlay/pymc_repeater/repeater/wm1303_telemetry_helper.py` | **NEW** — `WM1303ProtocolRequestHelper` with REQ_TYPE_GET_TELEMETRY_DATA (CayenneLPP), extended OWNER_INFO, and `FIRMWARE_VER_LEVEL=11` monkey-patch |
+| `overlay/pymc_repeater/repeater/handler_helpers/mesh_cli.py` | **NEW** — full overlay of upstream `mesh_cli.py` adding `_build_dynamic_owner_info()` module helper, dynamic `get owner.info` CLI handler, and read-only `set owner.info` |
+| `overlay/pymc_repeater/repeater/web/wm1303_api.py` | `_migrate_ui_config()` helper + auto-migrate on load |
+| `README.md` | 'Advanced installation' section with `WM1303_REGION` examples |
 | `VERSION` | 2.4.10 → 2.4.11 |
 | `release_notes/RELEASE_NOTES_v2.4.11.md` | This file |
 
@@ -154,13 +231,27 @@ After upgrade, hard-refresh the UI (Ctrl+Shift+R) to clear any cached assets.
 
 ## Testing performed
 
-- Code-level review of TRACE bit-shift fix against MeshCore packet header spec
-- Code-level verification of `_migrate_ui_config()` for both legacy-string and missing-key cases
-- Code-level comparison of TRACE dispatch flow vs upstream `packet_router._route_packet`
-- AST/syntax check of patched `main.py` (1817 lines) passes
-- Deployed and smoke-tested on pi01 (192.168.101.52, EU868) with Channel E configured for 869.618 MHz BW62.5 SF7 CR5
-- Service start, UI reachability, region API endpoint verified
-- TraceHelper initialization confirmed in pi01 service startup logs (`Trace processing helper initialized`)
-- Local identity hash registered correctly (`path_hash=CDB7 size=2 bytes`)
+### Code review
+- TRACE bit-shift fix vs MeshCore packet header spec
+- `_migrate_ui_config()` for both legacy-string and missing-key cases
+- TRACE dispatch flow vs upstream `packet_router._route_packet`
+- AST/syntax checks of patched `main.py` and overlay `mesh_cli.py` pass
+- Cross-check that `text.py` imports `from .mesh_cli import MeshCLI` (not `repeater_cli`)
 
-Full mesh-level TRACE ping validation requires a real companion node and is left to user field testing. Initial test on pi01 (24-May-2026 ~16:14) showed that the previous v2.4.11 build (without the bridge TRACE dispatch fix) did not generate a TRACE response when pinged from a companion — the inbound TRACE was being forwarded unchanged as a flood broadcast. The new bridge dispatch fix in `_bridge_repeater_handler` resolves that gap by routing TRACE packets through `TraceHelper.process_trace_packet()` with a bridge-aware injector.
+### Smoke / field tests on a Pi 4 / 4 GB test unit (EU868, Channel E @ 869.618 MHz BW62.5 SF7 CR5)
+- Service start, UI reachability, region API endpoint verified
+- TraceHelper initialization confirmed (`Trace processing helper initialized`)
+- Local identity hash registered correctly (`path_hash=CDB7 size=2 bytes`)
+- `WM1303TelemetryHelper` registered (`hash=0xCD (with TELEMETRY and extended OWNER_INFO support)`)
+- Companion login (ANON_REQ) handled with admin ACL granted
+- Companion `REQ type=0x01 (GET_STATUS)` round-trip via channel E (`_response_injector` path) confirmed
+- Companion `REQ type=0x03 (GET_TELEMETRY_DATA)` round-trip confirmed; CayenneLPP fields display correctly in the companion (temp °C, percentages as Humidity %)
+- Companion CLI `get owner.info` over TXT_MSG returns dynamic 79-char string built from `/etc/pymc_repeater/version`, `/sys/firmware/devicetree/base/model`, `/proc/meminfo`, `os.statvfs('/')`
+- Companion CLI `set owner.info <value>` returns `Error: owner.info is dynamic and read-only` and does not mutate state
+- `FIRMWARE_VER_LEVEL=11` patch verified in-process (`import repeater.wm1303_telemetry_helper; import pymc_core.node.handlers.login_server as ls; ls.FIRMWARE_VER_LEVEL == 11`)
+
+### Validated end-to-end on the test unit with a MeshCore-family companion (24-May-2026)
+- TRACE ping (separate fix from the earlier bridge dispatch work) – completes and returns SNR
+- Telemetry refresh – four CayenneLPP values populate in the companion
+- Owner Info – displays four lines (version / hardware / RAM / disk) sourced live from the device, no static config edit required
+- No spurious `path_len too large` / `Unsupported packet version: 2` errors after fresh re-login (those occur only when an old companion session key races a restarted service ACL — normal mesh hygiene applies)

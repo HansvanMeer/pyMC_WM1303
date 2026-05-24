@@ -26,6 +26,13 @@ from repeater.identity_manager import IdentityManager
 from repeater.packet_router import PacketRouter
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
 
+# WM1303 overlay: telemetry-enabled protocol request helper (adds REQ_TYPE_GET_TELEMETRY_DATA)
+try:
+    from repeater.wm1303_telemetry_helper import WM1303ProtocolRequestHelper
+except ImportError:
+    # Fallback to upstream helper if WM1303 overlay is not present
+    WM1303ProtocolRequestHelper = ProtocolRequestHelper
+
 # WM1303 bridge (optional)
 try:
     from repeater.bridge_engine import BridgeEngine  # noqa: F401
@@ -296,9 +303,11 @@ class RepeaterDaemon:
                 logger.info("Discovery response handler disabled")
 
             # Create login helper (will create per-identity ACLs)
+            # WM1303 v2.4.11: use bridge-aware _response_injector so login
+            # responses go out via channel_e/f instead of classic radios[0]/[1].
             self.login_helper = LoginHelper(
                 identity_manager=self.identity_manager,
-                packet_injector=self.router.inject_packet,
+                packet_injector=self._response_injector,
                 log_fn=logger.info,
             )
 
@@ -342,9 +351,11 @@ class RepeaterDaemon:
                 logger.info("GPS diagnostics disabled")
 
             # Initialize text message helper with per-identity ACLs
+            # WM1303 v2.4.11: use bridge-aware _response_injector so CLI command
+            # responses go out via channel_e/f instead of classic radios[0]/[1].
             self.text_helper = TextHelper(
                 identity_manager=self.identity_manager,
-                packet_injector=self.router.inject_packet,
+                packet_injector=self._response_injector,
                 acl_dict=self.login_helper.get_acl_dict(),  # Per-identity ACLs
                 log_fn=logger.info,
                 config_path=getattr(self, "config_path", None),  # For CLI to save changes
@@ -388,9 +399,11 @@ class RepeaterDaemon:
             logger.info("PATH packet processing helper initialized")
 
             # Initialize protocol request handler for status/telemetry requests
-            self.protocol_request_helper = ProtocolRequestHelper(
+            # WM1303 v2.4.11: use bridge-aware _response_injector so protocol
+            # request responses go out via channel_e/f instead of classic radios.
+            self.protocol_request_helper = WM1303ProtocolRequestHelper(
                 identity_manager=self.identity_manager,
-                packet_injector=self.router.inject_packet,
+                packet_injector=self._response_injector,
                 acl_dict=self.login_helper.get_acl_dict(),
                 radio=self.radio,
                 engine=self.repeater_handler,
@@ -983,6 +996,57 @@ class RepeaterDaemon:
             logger.error(f"Failed to register text handler for '{name}': {e}")
             return False
 
+    async def _response_injector(self, packet, wait_for_ack: bool = False):
+        """WM1303 v2.4.11: bridge-aware packet injector for helper responses.
+
+        Used as the `packet_injector` for LoginHelper, TextHelper, and
+        ProtocolRequestHelper so that responses (login success, CLI replies,
+        status responses) go out via channel_e/f instead of the upstream
+        PacketRouter (which targets classic radios[0]/[1] that are not active
+        in a WM1303 setup).
+
+        Why not per-request override?
+          LoginHelper sends responses via asyncio.create_task(_delayed_send(...))
+          which completes AFTER process_login_packet() returns. A per-request
+          override-then-restore pattern would restore the original injector
+          before the async task fires, causing the response to be routed via
+          the wrong injector. A permanent bridge-aware injector avoids this.
+
+        Args:
+            packet: Packet object to send (helper-generated response).
+            wait_for_ack: Ignored in bridge path; bridge fire-and-forget.
+        """
+        try:
+            packet_bytes = packet.write_to()
+        except Exception as e:
+            logger.warning(
+                "_response_injector: serialize failed: %s (falling back to router)",
+                e,
+            )
+            packet_bytes = None
+
+        if packet_bytes is not None and self.bridge_engine is not None:
+            try:
+                await self.bridge_engine.inject_packet('repeater', packet_bytes)
+                return
+            except Exception as e:
+                logger.warning(
+                    "_response_injector: bridge inject failed: %s (falling back to router)",
+                    e,
+                )
+
+        # Fallback: classic router (used if bridge_engine is unavailable, e.g.
+        # during a setup where only classic radios are active).
+        if self.router is not None:
+            try:
+                await self.router.inject_packet(packet, wait_for_ack=wait_for_ack)
+            except Exception as e:
+                logger.error("_response_injector: router fallback failed: %s", e)
+        else:
+            logger.error(
+                "_response_injector: no injector available (bridge_engine and router both None)"
+            )
+
     async def _bridge_repeater_handler(self, data: bytes,
                                         origin_channel: str | None = None,
                                         rssi: float | None = None,
@@ -1012,6 +1076,9 @@ class RepeaterDaemon:
         from pymc_core.protocol.packet import Packet
         from pymc_core.node.handlers.advert import AdvertHandler
         from pymc_core.node.handlers.trace import TraceHandler
+        from pymc_core.node.handlers.login_server import LoginServerHandler
+        from pymc_core.node.handlers.text import TextMessageHandler
+        from pymc_core.node.handlers.protocol_request import ProtocolRequestHandler
 
         # Parse raw bytes into Packet object
         pkt = Packet()
@@ -1082,6 +1149,65 @@ class RepeaterDaemon:
             finally:
                 self.trace_helper.packet_injector = _saved_injector
             return
+
+        # WM1303 v2.4.11: dispatch ANON_REQ / TXT_MSG / PROTOCOL_REQ packets to
+        # their respective helpers so remote admin from a companion node works
+        # over channel_e/f, just like over classic radios[0]/[1] via the upstream
+        # packet_router. Without this dispatch, login/text/protocol-request
+        # packets are silently forwarded as floods and the helpers never run, so
+        # companion login + CLI commands time out.
+        #
+        # The helpers are initialised with self._response_injector as their
+        # packet_injector (see helper init in _initialise_repeater_helpers),
+        # which routes any response through the BridgeEngine. So we just need
+        # to call process_*_packet(pkt). If handled=True we return (skip the
+        # generic forward). If handled=False we fall through so the packet is
+        # still re-broadcast for mesh propagation.
+
+        # ANON_REQ -> LoginHelper (companion login / authentication)
+        if payload_type == LoginServerHandler.payload_type() and self.login_helper:
+            try:
+                handled = await self.login_helper.process_login_packet(pkt)
+                logger.info(
+                    "BridgeRepeaterHandler: ANON_REQ dispatched to LoginHelper "
+                    "(handled=%s, origin_channel=%s)",
+                    handled, origin_channel
+                )
+                if handled:
+                    return
+            except Exception as e:
+                logger.warning("BridgeRepeaterHandler: login processing error: %s", e)
+
+        # TXT_MSG -> TextHelper (admin CLI commands like reboot, neighbors, ...)
+        if payload_type == TextMessageHandler.payload_type() and self.text_helper:
+            try:
+                handled = await self.text_helper.process_text_packet(pkt)
+                logger.info(
+                    "BridgeRepeaterHandler: TXT_MSG dispatched to TextHelper "
+                    "(handled=%s, origin_channel=%s)",
+                    handled, origin_channel
+                )
+                if handled:
+                    return
+            except Exception as e:
+                logger.warning("BridgeRepeaterHandler: text processing error: %s", e)
+
+        # PROTOCOL_REQ -> ProtocolRequestHelper (status queries, etc.)
+        if (payload_type == ProtocolRequestHandler.payload_type()
+                and self.protocol_request_helper):
+            try:
+                handled = await self.protocol_request_helper.process_request_packet(pkt)
+                logger.info(
+                    "BridgeRepeaterHandler: PROTOCOL_REQ dispatched to "
+                    "ProtocolRequestHelper (handled=%s, origin_channel=%s)",
+                    handled, origin_channel
+                )
+                if handled:
+                    return
+            except Exception as e:
+                logger.warning(
+                    "BridgeRepeaterHandler: protocol_request processing error: %s", e
+                )
 
         # Run repeater forwarding logic
         result = self.repeater_handler.process_packet(pkt)
