@@ -1,10 +1,8 @@
 # Release Notes — v2.5.0
 
-**Type:** Pre-release (test release)
+**Type:** Stable release
 **Date:** 2026-05-25
 **Compatibility:** pyMC_core main (1.0.12), pyMC_Repeater main (1.0.11.dev1), HAL v2.10
-
-> ⚠ This is a **test release**. Production use is at your own risk. Always back up `/etc/pymc_repeater/` before upgrading.
 
 ---
 
@@ -16,7 +14,7 @@ v2.5.0 is a **minor version bump** that introduces three significant improvement
 2. **Extended Debug Export** — four new collector methods and 18 additional file checksums give comprehensive diagnostic capabilities for troubleshooting deployment issues.
 3. **Fork-based update check** — the UI version check now queries the HansvanMeer fork instead of upstream, eliminating false-positive "Update Available" warnings caused by setuptools-scm version calculation differences between branches.
 
-All three improvements were validated via a clean bootstrap test on pi01. No breaking changes. Drop-in upgrade from v2.4.12.
+All three improvements were validated via a clean bootstrap test. No breaking changes. Drop-in upgrade from v2.4.12.
 
 ---
 
@@ -160,7 +158,7 @@ By checking against our fork — which is kept fully in sync with upstream via t
 
 ## 4. Deployment robustness fixes
 
-Three bugs were discovered during bootstrap testing on pi01, **all detected by the new Debug Export**:
+Three bugs were discovered during bootstrap testing, **all detected by the new Debug Export**:
 
 ### Bug A — Branch name inconsistency after upgrade
 
