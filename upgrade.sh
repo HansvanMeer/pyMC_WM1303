@@ -101,8 +101,8 @@ VENV_REBUILD_NEEDED=false
 
 # Branch configuration
 HAL_BRANCH="master"
-CORE_BRANCH="dev"
-REPEATER_BRANCH="dev"
+CORE_BRANCH="main"
+REPEATER_BRANCH="main"
 
 # Parse arguments
 FORCE_REBUILD=false

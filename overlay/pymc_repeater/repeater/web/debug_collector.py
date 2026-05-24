@@ -115,6 +115,10 @@ class DebugCollector:
             self._compute_health_snapshot(work_dir)
             self._collect_packet_traces(work_dir)
             self._collect_versions(work_dir)
+            # WM1303 v2.5.0 — extended diagnostics
+            self._collect_wm1303_state(work_dir)
+            self._collect_service_journal(work_dir, n=500)
+            self._collect_overlay_summary(work_dir)
             self._write_manifest(work_dir)
 
             # Package into tar.gz
@@ -665,6 +669,8 @@ class DebugCollector:
                 f"{site_pkg_base}/pymc_core/hardware/tx_queue.py",
                 f"{site_pkg_base}/pymc_core/hardware/virtual_radio.py",
                 f"{site_pkg_base}/pymc_core/hardware/wm1303_backend.py",
+                # WM1303 v2.4.10+ overlay
+                f"{site_pkg_base}/pymc_core/hardware/region_config.py",
             ]
             check_files.extend(python_files)
 
@@ -673,20 +679,54 @@ class DebugCollector:
         repeater_files = [
             f"{repeater_base}/bridge_engine.py",
             f"{repeater_base}/channel_e_bridge.py",
+            # WM1303 v2.4.9+ overlay (Channel F support)
+            f"{repeater_base}/channel_f_bridge.py",
             f"{repeater_base}/config.py",
             f"{repeater_base}/config_manager.py",
             f"{repeater_base}/engine.py",
             f"{repeater_base}/identity_manager.py",
             f"{repeater_base}/main.py",
+            # WM1303 v2.4.x overlays (metrics, tracing)
+            f"{repeater_base}/metrics_retention.py",
+            f"{repeater_base}/uniform_tracer.py",
             f"{repeater_base}/packet_router.py",
+            # WM1303 v2.4.11+ overlay (companion telemetry + EUI/RAM/disk in owner.info)
+            f"{repeater_base}/wm1303_telemetry_helper.py",
+            # WM1303 v2.4.11+ overlay (mesh CLI owner.info handler)
+            f"{repeater_base}/handler_helpers/mesh_cli.py",
+            # WM1303 data acquisition overlays
+            f"{repeater_base}/data_acquisition/sqlite_handler.py",
+            f"{repeater_base}/data_acquisition/storage_collector.py",
             f"{repeater_base}/web/wm1303_api.py",
             f"{repeater_base}/web/api_endpoints.py",
             f"{repeater_base}/web/http_server.py",
             f"{repeater_base}/web/spectrum_collector.py",
             f"{repeater_base}/web/cad_calibration_engine.py",
+            # WM1303 v2.5.0+ overlay (update check against fork)
+            f"{repeater_base}/web/update_endpoints.py",
+            # WM1303 v2.4.x overlays (web helpers)
+            f"{repeater_base}/web/tiered_query.py",
+            f"{repeater_base}/web/packet_trace.py",
+            f"{repeater_base}/web/debug_collector.py",
             f"{repeater_base}/web/html/wm1303.html",
         ]
         check_files.extend(repeater_files)
+
+        # HAL source files (WM1303 overlay tracks these for patch detection)
+        hal_files = [
+            "/home/pi/sx1302_hal/libloragw/src/loragw_sx1302.c",
+            "/home/pi/sx1302_hal/libloragw/src/loragw_hal.c",
+            "/home/pi/sx1302_hal/libloragw/src/loragw_lbt.c",
+            "/home/pi/sx1302_hal/libloragw/src/loragw_sx1261.c",
+            "/home/pi/sx1302_hal/libloragw/src/loragw_aux.c",
+            "/home/pi/sx1302_hal/libloragw/src/loragw_spi.c",
+            "/home/pi/sx1302_hal/libloragw/src/sx1261_spi.c",
+            "/home/pi/sx1302_hal/libloragw/inc/loragw_hal.h",
+            "/home/pi/sx1302_hal/libloragw/inc/sx1261_defs.h",
+            "/home/pi/sx1302_hal/packet_forwarder/src/lora_pkt_fwd.c",
+            "/home/pi/sx1302_hal/packet_forwarder/src/capture_thread.c",
+        ]
+        check_files.extend(hal_files)
 
         # pkt_fwd binary
         check_files.append("/home/pi/wm1303_pf/lora_pkt_fwd")
@@ -1097,33 +1137,252 @@ class DebugCollector:
             pass
 
     def _collect_versions(self, work_dir):
-        """Collect package and binary versions."""
+        """Collect package, repo and binary versions.
+
+        WM1303 v2.5.0 expanded: now includes per-repo branch + remote URL +
+        ahead/behind counts vs. upstream tracking branch, plus setuptools-scm
+        calculated versions and HAL patch detection (EXP-v markers).
+        """
         out = []
+        # WM1303 version file
         try:
             with open("/etc/pymc_repeater/version") as f:
-                out.append(f"pymc_repeater: {f.read().strip()}")
+                out.append(f"pyMC_WM1303 (overlay): {f.read().strip()}")
         except Exception:
             pass
+
         import subprocess as _sp
+
+        # Per-repo detailed info
         for repo in ["/opt/pymc_repeater/repos/pyMC_core",
                      "/opt/pymc_repeater/repos/pyMC_Repeater",
                      "/opt/pymc_repeater/repos/sx1302_hal"]:
+            name = os.path.basename(repo)
+            out.append(f"\n--- {name} ---")
             try:
                 r = _sp.run(["git", "-C", repo, "describe", "--always", "--dirty"],
                             capture_output=True, text=True, timeout=5)
-                out.append(f"{os.path.basename(repo)}: {r.stdout.strip() or 'unknown'}")
+                out.append(f"  describe: {r.stdout.strip() or 'unknown'}")
+            except Exception as e:
+                out.append(f"  describe: ERROR {e}")
+            try:
+                r = _sp.run(["git", "-C", repo, "branch", "--show-current"],
+                            capture_output=True, text=True, timeout=5)
+                out.append(f"  branch:   {r.stdout.strip() or '(detached)'}")
             except Exception:
                 pass
+            try:
+                r = _sp.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                            capture_output=True, text=True, timeout=5)
+                out.append(f"  HEAD:     {r.stdout.strip()}")
+            except Exception:
+                pass
+            try:
+                r = _sp.run(["git", "-C", repo, "remote", "get-url", "origin"],
+                            capture_output=True, text=True, timeout=5)
+                out.append(f"  origin:   {r.stdout.strip()}")
+            except Exception:
+                pass
+            # ahead/behind vs origin/<current branch>
+            try:
+                br = _sp.run(["git", "-C", repo, "branch", "--show-current"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+                if br:
+                    r = _sp.run(["git", "-C", repo, "rev-list", "--left-right",
+                                 "--count", f"HEAD...origin/{br}"],
+                                capture_output=True, text=True, timeout=5)
+                    if r.returncode == 0 and r.stdout.strip():
+                        ahead, behind = r.stdout.strip().split()
+                        out.append(f"  vs origin/{br}: {ahead} ahead, {behind} behind")
+            except Exception:
+                pass
+
+        # setuptools-scm calculated versions (different from git describe)
+        out.append("\n--- Installed Python package versions (setuptools-scm) ---")
+        for pkg in ["pymc_core", "pymc_repeater"]:
+            try:
+                r = _sp.run(["python3", "-c",
+                             f"import importlib.metadata as m; print(m.version('{pkg}'))"],
+                            capture_output=True, text=True, timeout=5)
+                out.append(f"  {pkg}: {r.stdout.strip() or 'unknown'}")
+            except Exception as e:
+                out.append(f"  {pkg}: ERROR {e}")
+
+        # pkt_fwd binary version
+        out.append("\n--- pkt_fwd binary ---")
         try:
             r = _sp.run(["/home/pi/wm1303_pf/lora_pkt_fwd", "-v"],
                         capture_output=True, text=True, timeout=5)
-            out.append(f"lora_pkt_fwd: {(r.stdout or r.stderr).strip()[:200]}")
-        except Exception:
-            pass
+            out.append(f"  {(r.stdout or r.stderr).strip()[:200]}")
+        except Exception as e:
+            out.append(f"  ERROR {e}")
+
+        # HAL patch detection (EXP-v markers in source files)
+        out.append("\n--- HAL patch detection (EXP markers) ---")
+        hal_src_files = [
+            "/home/pi/sx1302_hal/libloragw/src/loragw_sx1302.c",
+            "/home/pi/sx1302_hal/packet_forwarder/src/lora_pkt_fwd.c",
+        ]
+        for fpath in hal_src_files:
+            try:
+                r = _sp.run(["grep", "-c", "-E", r"EXP-?v[0-9]|WM1303 ", fpath],
+                            capture_output=True, text=True, timeout=5)
+                count = r.stdout.strip() or "0"
+                out.append(f"  {os.path.basename(fpath)}: {count} WM1303/EXP markers")
+                # Show first few markers if any
+                if count != "0":
+                    r2 = _sp.run(["grep", "-n", "-E", r"EXP-?v[0-9]|WM1303 ", fpath],
+                                 capture_output=True, text=True, timeout=5)
+                    for line in r2.stdout.splitlines()[:5]:
+                        out.append(f"    {line[:150]}")
+            except Exception:
+                pass
+
         integrity_dir = os.path.join(str(work_dir), "integrity")
         os.makedirs(integrity_dir, exist_ok=True)
         with open(os.path.join(integrity_dir, "versions.txt"), "w") as f:
             f.write("\n".join(out))
+
+    def _collect_wm1303_state(self, work_dir):
+        """WM1303 v2.5.0: Collect WM1303-specific runtime state.
+
+        Captures top-level UI config (region, sync_word, channels including
+        Channel E and Channel F), available regional presets, and the
+        generated bridge_conf.json that pkt_fwd uses. All sensitive fields
+        flow through _sanitize_config().
+        """
+        state_dir = os.path.join(str(work_dir), "wm1303_state")
+        os.makedirs(state_dir, exist_ok=True)
+
+        # UI config (region, sync_word, channels)
+        ui_path = "/etc/pymc_repeater/wm1303_ui.json"
+        try:
+            if os.path.exists(ui_path):
+                with open(ui_path) as f:
+                    raw = json.load(f)
+                sanitized = self._sanitize_config(raw)
+                self._write_json(Path(state_dir) / "wm1303_ui.json", sanitized)
+                # Extracted summary for quick scanning
+                summary_lines = [
+                    "=== WM1303 UI Top-Level State ===",
+                    f"region:    {raw.get('region', '<not set>')}",
+                    f"sync_word: {raw.get('sync_word', '<not set>')}",
+                    f"channels:  {len(raw.get('channels', []))} configured",
+                ]
+                ch_f = raw.get("channel_f")
+                if ch_f:
+                    summary_lines.append("")
+                    summary_lines.append("=== Channel F (service modem) ===")
+                    for k in ["enabled", "frequency", "bandwidth",
+                              "spreading_factor", "coding_rate", "tx_power",
+                              "friendly_name"]:
+                        if k in ch_f:
+                            summary_lines.append(f"  {k}: {ch_f[k]}")
+                for ch in raw.get("channels", []):
+                    cid = ch.get("id") or ch.get("channel_id") or "?"
+                    summary_lines.append("")
+                    summary_lines.append(f"=== Channel {cid} ===")
+                    for k in ["enabled", "frequency", "bandwidth",
+                              "spreading_factor", "coding_rate", "tx_power",
+                              "lbt_enabled", "friendly_name"]:
+                        if k in ch:
+                            summary_lines.append(f"  {k}: {ch[k]}")
+                self._write(Path(state_dir) / "wm1303_ui_summary.txt",
+                            "\n".join(summary_lines))
+        except Exception as e:
+            self._write(Path(state_dir) / "wm1303_ui.ERROR.txt", str(e))
+
+        # Region presets
+        presets_path = "/etc/pymc_repeater/presets.json"
+        try:
+            if os.path.exists(presets_path):
+                with open(presets_path) as f:
+                    self._write_json(Path(state_dir) / "presets.json", json.load(f))
+        except Exception as e:
+            self._write(Path(state_dir) / "presets.ERROR.txt", str(e))
+
+        # Generated bridge_conf.json (pkt_fwd input)
+        for cfg_name in ["bridge_conf.json", "global_conf.json"]:
+            cfg_path = f"/etc/pymc_repeater/{cfg_name}"
+            try:
+                if os.path.exists(cfg_path):
+                    with open(cfg_path) as f:
+                        self._write_json(Path(state_dir) / cfg_name, json.load(f))
+            except Exception as e:
+                self._write(Path(state_dir) / f"{cfg_name}.ERROR.txt", str(e))
+
+    def _collect_service_journal(self, work_dir, n=500):
+        """WM1303 v2.5.0: Capture recent pymc-repeater service journal.
+
+        Without this, diagnosing service startup, bridge, or TX/RX issues
+        from a debug bundle requires the user to run journalctl manually.
+        """
+        logs_dir = os.path.join(str(work_dir), "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        try:
+            output = self._run_cmd(
+                f"journalctl -u pymc-repeater -n {n} --no-pager 2>/dev/null",
+                timeout=15,
+            )
+            self._write(Path(logs_dir) / "service_journal.txt",
+                        output or "<no output>")
+        except Exception as e:
+            self._write(Path(logs_dir) / "service_journal.ERROR.txt", str(e))
+
+    def _collect_overlay_summary(self, work_dir):
+        """WM1303 v2.5.0: Detect which WM1303 overlay features are active.
+
+        Greps overlay files for known feature markers so we can verify at a
+        glance whether v2.4.9 Channel F, v2.4.10 presets, v2.4.11 telemetry,
+        v2.4.12 banner+IF-guard, and v2.5.0 update-fork overlays are present
+        and correctly deployed on this device.
+        """
+        integrity_dir = os.path.join(str(work_dir), "integrity")
+        os.makedirs(integrity_dir, exist_ok=True)
+
+        repeater_base = "/opt/pymc_repeater/repos/pyMC_Repeater/repeater"
+        # Detect overlay site-packages base for pymc_core
+        sp_base = self._run_cmd(
+            "python3 -c 'import pymc_core, os; print(os.path.dirname(os.path.dirname(pymc_core.__file__)))' 2>/dev/null"
+        ).strip()
+
+        checks = [
+            ("v2.4.9 — Channel F bridge file",
+             f"test -f '{repeater_base}/channel_f_bridge.py' && echo ACTIVE || echo MISSING"),
+            ("v2.4.9 — region_config.py",
+             f"test -f '{sp_base}/pymc_core/hardware/region_config.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
+            ("v2.4.10 — presets.json deployed",
+             "test -f /etc/pymc_repeater/presets.json && echo ACTIVE || echo MISSING"),
+            ("v2.4.11 — Telemetry helper",
+             f"test -f '{repeater_base}/wm1303_telemetry_helper.py' && echo ACTIVE || echo MISSING"),
+            ("v2.4.11 — Mesh CLI owner.info handler",
+             f"test -f '{repeater_base}/handler_helpers/mesh_cli.py' && echo ACTIVE || echo MISSING"),
+            ("v2.4.12 — Bug 2 region banner in wm1303.html",
+             f"grep -q 'Issue #7 Bug 2' '{repeater_base}/web/html/wm1303.html' && echo ACTIVE || echo MISSING"),
+            ("v2.4.12 — Bug 3 IF guard in wm1303_backend.py",
+             f"grep -q 'Issue #7 Bug 3' '{sp_base}/pymc_core/hardware/wm1303_backend.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
+            ("v2.5.0 — update_endpoints.py overlay",
+             f"test -f '{repeater_base}/web/update_endpoints.py' && echo PRESENT || echo MISSING"),
+            ("v2.5.0 — update check points at fork (HansvanMeer)",
+             f"grep -q 'GITHUB_OWNER = \"HansvanMeer\"' '{repeater_base}/web/update_endpoints.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
+            ("v2.5.0 — pyMC_Repeater on main branch",
+             "git -C /opt/pymc_repeater/repos/pyMC_Repeater branch --show-current 2>/dev/null"),
+            ("v2.5.0 — pyMC_core on main branch",
+             "git -C /opt/pymc_repeater/repos/pyMC_core branch --show-current 2>/dev/null"),
+            ("HAL — sx1302_hal current ref",
+             "git -C /opt/pymc_repeater/repos/sx1302_hal describe --always --dirty 2>/dev/null"),
+        ]
+
+        lines = ["=== WM1303 Overlay Feature Detection ===", ""]
+        for label, cmd in checks:
+            try:
+                result = self._run_cmd(cmd, timeout=5).strip() or "(no output)"
+            except Exception as e:
+                result = f"ERROR {e}"
+            lines.append(f"  [{result:<10}] {label}")
+
+        self._write(Path(integrity_dir) / "overlay_summary.txt",
+                    "\n".join(lines))
 
     def _write_manifest(self, work_dir):
         """Write a manifest.json listing every file in the bundle with size."""

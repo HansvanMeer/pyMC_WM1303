@@ -85,8 +85,8 @@ REPEATER_REPO="https://github.com/HansvanMeer/pyMC_Repeater.git"
 
 # Branch configuration
 HAL_BRANCH="master"
-CORE_BRANCH="dev"
-REPEATER_BRANCH="dev"
+CORE_BRANCH="main"
+REPEATER_BRANCH="main"
 
 # Parse arguments
 SKIP_UPDATE=false
