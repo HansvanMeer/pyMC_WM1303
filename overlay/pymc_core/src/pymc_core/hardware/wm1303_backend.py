@@ -672,6 +672,30 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
                         '_generate_bridge_conf: channel_f ENABLED freq=%d bw=%d sf=%d',
                         _chf_freq_hz, _chf_bw_hz, _chf_sf,
                     )
+                    # Issue #7 Bug 3 — runtime IF range guard for Channel F
+                    # (chan_Lora_std on SX1302). When the configured Channel F
+                    # frequency is too far from the RF0 center (e.g. preset
+                    # region mismatch left over from an old install), the HAL
+                    # rejects the standard channel with "invalid configuration
+                    # for Lora standard channel" and pkt_fwd crash-loops. The
+                    # SX1302 max IF offset is (RF_RX_BW/2) − (chan_BW/2);
+                    # we apply a 7.5 kHz safety margin matching the chan_multiSF
+                    # validation above. Force-disable on overrange so the
+                    # service starts cleanly; user can fix Channel F config
+                    # via the UI without a crash loop blocking access.
+                    _chf_max_if = (RF_RX_BANDWIDTH_HZ // 2) - (_chf_bw_hz // 2) - 7500
+                    _chf_if_offset = abs(_chf_freq_hz - center)
+                    if _chf_if_offset > _chf_max_if:
+                        logger.warning(
+                            '_generate_bridge_conf: channel_f freq %d is %d Hz '
+                            'from center %d (max %d Hz for BW %d) — '
+                            'forcing DISABLED to prevent pkt_fwd crash. '
+                            'Update channel_f.frequency or rf_center_freq_mhz '
+                            'in wm1303_ui.json to re-enable.',
+                            _chf_freq_hz, _chf_if_offset, center,
+                            _chf_max_if, _chf_bw_hz,
+                        )
+                        _chf_enabled = False
     except Exception as _chfex:
         logger.warning('_generate_bridge_conf: channel_f read error: %s', _chfex)
 

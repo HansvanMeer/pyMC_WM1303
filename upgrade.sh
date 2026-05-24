@@ -387,12 +387,15 @@ update_repo() {
     cd "${target_dir}"
     local before=$(git rev-parse HEAD)
 
-    # Discard local changes (overlay will be re-applied)
-    sudo -u ${PI_USER} git checkout -- . >> "${LOG_FILE}" 2>&1 || true
-    sudo -u ${PI_USER} git clean -fd >> "${LOG_FILE}" 2>&1 || true
+    # Discard local changes (overlay will be re-applied below).
+    # `git reset --hard origin/<branch>` after fetch is idempotent and avoids
+    # "Your local changes would be overwritten by merge" errors that can occur
+    # when the overlay-copy has modified tracked files (e.g. repeater/main.py,
+    # repeater/config.py) since the last upgrade.
     sudo -u ${PI_USER} git fetch --all >> "${LOG_FILE}" 2>&1
     sudo -u ${PI_USER} git checkout "${branch}" >> "${LOG_FILE}" 2>&1
-    sudo -u ${PI_USER} git pull origin "${branch}" >> "${LOG_FILE}" 2>&1
+    sudo -u ${PI_USER} git reset --hard "origin/${branch}" >> "${LOG_FILE}" 2>&1
+    sudo -u ${PI_USER} git clean -fd >> "${LOG_FILE}" 2>&1 || true
 
     # Sync upstream tags so setuptools-scm computes correct version numbers
     local upstream_url=""
@@ -710,35 +713,46 @@ else
     fi
 fi  # end VENV_REBUILD_NEEDED
 
-# Verify overlays are accessible after all pip installs
+# Verify overlays are accessible after all pip installs.
+# On Python 3.13 `pip install -e .` may fall back to a non-editable install for
+# pymc_core: site-packages then contains *copies* of the repo files and our
+# overlay changes to e.g. hardware/__init__.py are invisible. The blocks below
+# detect this case via the import path and rsync the full overlay tree on top.
 step "Verifying pyMC_core overlay is accessible"
 PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
 if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
     SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
-    cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/"*.py "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
+    # Recursive rsync so sub-directories and non-.py files (e.g. __init__.py
+    # with the WM1303Backend conditional import block) are always included.
+    rsync -a "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/" "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     # Also re-apply companion overlay to site-packages
     SITE_COMPANION_DIR=$(dirname "$SITE_HW_DIR")/companion
-    if [ -d "${SITE_COMPANION_DIR}" ]; then
-        for f in models.py contact_store.py; do
-            if [ -f "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/${f}" ]; then
-                cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/${f}" "${SITE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
-            fi
-        done
+    if [ -d "${SITE_COMPANION_DIR}" ] && [ -d "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion" ]; then
+        rsync -a "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/" "${SITE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
     chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
     chown -R ${PI_USER}:${PI_USER} "${SITE_COMPANION_DIR}" 2>/dev/null || true
-    ok "Re-applied overlay to site-packages"
+    ok "Re-applied overlay to site-packages (rsync)"
 else
     ok "Editable install active"
+fi
+
+# Sanity check: WM1303Backend must be importable after re-apply, otherwise
+# bridge/scheduler init will run in degraded mode at service start.
+step "Verifying WM1303Backend import"
+if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c 'from pymc_core.hardware import WM1303Backend; assert WM1303Backend is not None' >> "${LOG_FILE}" 2>&1; then
+    ok "WM1303Backend importable"
+else
+    warn "WM1303Backend import failed — bridge/scheduler may run in degraded mode (check ${LOG_FILE})"
 fi
 
 step "Verifying pyMC_Repeater overlay is accessible"
 REPEATER_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import repeater.config; print(repeater.config.__file__)" 2>/dev/null || echo "")
 if echo "$REPEATER_IMPORT_PATH" | grep -q "site-packages"; then
     SITE_REPEATER_DIR=$(dirname "$REPEATER_IMPORT_PATH")
-    cp -r "${OVERLAY_DIR}/pymc_repeater/repeater/"* "${SITE_REPEATER_DIR}/" >> "${LOG_FILE}" 2>&1
+    rsync -a "${OVERLAY_DIR}/pymc_repeater/repeater/" "${SITE_REPEATER_DIR}/" >> "${LOG_FILE}" 2>&1
     chown -R ${PI_USER}:${PI_USER} "${SITE_REPEATER_DIR}"
-    ok "Re-applied overlay to site-packages"
+    ok "Re-applied overlay to site-packages (rsync)"
 else
     ok "Editable install active"
 fi

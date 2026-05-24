@@ -167,6 +167,14 @@ run_wizard() {
     echo "  ╚══════════════════════════════════════════════════════════╝"
     echo ""
 
+    # Track whether the user supplied ANY override env var. If none were set
+    # and we're running non-interactively, we'll show a clear summary warning
+    # at the end with the full override syntax (issue #7 Bug 1).
+    local _all_defaulted=1
+    [ -n "${WM1303_REGION}" ] && _all_defaulted=0
+    [ -n "${WM1303_PRESET}" ] && _all_defaulted=0
+    [ -n "${WM1303_SYNC_WORD}" ] && _all_defaulted=0
+
     # Build region list from presets.json (unique region codes)
     local regions
     regions=$(jq -r '.presets[].region' "${presets_file}" | sort -u)
@@ -267,6 +275,30 @@ run_wizard() {
         esac
     fi
     printf "  ► Selected sync word: %s (0x%04X)\n" "${WM1303_SYNC_WORD_MODE}" "${WM1303_SYNC_WORD_VALUE}"
+
+    # Issue #7 Bug 1 — Final summary warning when running fully unattended.
+    # If the install is non-interactive AND the user did not supply any env
+    # var, print a single prominent block showing what was defaulted and the
+    # exact override command for next time. Keeps headless installs easy to
+    # diagnose when the wrong region is silently selected.
+    if [ "${NON_INTERACTIVE}" -eq 1 ] && [ "${_all_defaulted}" -eq 1 ]; then
+        echo ""
+        echo "  ╔══════════════════════════════════════════════════════════════╗"
+        echo "  ║  ⚠  NON-INTERACTIVE DEFAULTS APPLIED                         ║"
+        echo "  ║                                                              ║"
+        printf "  ║    Region:    %-46s ║\n" "${WM1303_REGION}"
+        printf "  ║    Preset:    %-46s ║\n" "${WM1303_PRESET}"
+        printf "  ║    Sync word: %-46s ║\n" "${WM1303_SYNC_WORD_MODE} (0x$(printf %04X "${WM1303_SYNC_WORD_VALUE}"))"
+        echo "  ║                                                              ║"
+        echo "  ║  To install for a different region, re-run with:             ║"
+        echo "  ║    WM1303_REGION=AU915 WM1303_SYNC_WORD=public \\           ║"
+        echo "  ║      curl -sSL https://raw.githubusercontent.com/HansvanMeer/║"
+        echo "  ║      pyMC_WM1303/main/bootstrap.sh | sudo -E bash            ║"
+        echo "  ║                                                              ║"
+        echo "  ║  Supported: EU868 US915 AU915 AS923 IN865 JP920 KR920 CUSTOM ║"
+        echo "  ╚══════════════════════════════════════════════════════════════╝"
+        echo ""
+    fi
 
     write_wizard_config
 }

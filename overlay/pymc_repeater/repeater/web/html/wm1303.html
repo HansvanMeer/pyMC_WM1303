@@ -239,6 +239,11 @@ select.ci option{background:#1e293b}
           </div>
         </div>
         <div class="text-xs mt-2 p-2 rounded" style="background:var(--bgr);color:var(--txm)" id="region-info">Select region to view bounds &amp; bands</div>
+        <!-- Issue #7 Bug 2 — banner shown when user picks a region different from the currently saved one,
+             reminding them that channel frequencies are not auto-updated. -->
+        <div id="region-channel-warning" class="text-xs mt-2 p-2 rounded" style="display:none;background:#fef3c7;color:#92400e;border:1px solid #f59e0b">
+          <b>⚠ Region changed.</b> Channel frequencies are <b>not</b> automatically updated. Review the Channels tab and update each channel's frequency, bandwidth, and other settings to match the new region's plan. Click <b>Save</b> below to apply the region change.
+        </div>
 
         <!-- Device-wide LoRa Network Sync Word -->
         <hr style="border:none;border-top:1px solid var(--brd);margin:12px 0 8px 0">
@@ -1741,6 +1746,10 @@ async function loadRegions(){
     await loadRegion();
   }catch(e){console.error('loadRegions err:',e);}
 }
+// Issue #7 Bug 2 — track the currently saved region so onRegionChange can
+// detect when the user picks a different one and show the channel-update
+// reminder banner.
+var originalRegion='';
 async function loadRegion(){
   try{
     var r=await api('GET','/api/wm1303/region');
@@ -1753,6 +1762,11 @@ async function loadRegion(){
     G('region-tx-max').value=(mx!=null)?(mx/1e6).toFixed(3):'';
     applyRegionEditableState();
     renderRegionInfo();
+    // Snapshot the saved region and hide the change-warning banner. Any
+    // subsequent onRegionChange call compares against this baseline.
+    originalRegion=(sel&&sel.value)?sel.value:'';
+    var warnBox=G('region-channel-warning');
+    if(warnBox)warnBox.style.display='none';
   }catch(e){console.error('loadRegion err:',e);}
 }
 function onRegionChange(){
@@ -1766,6 +1780,14 @@ function onRegionChange(){
   }
   applyRegionEditableState();
   renderRegionInfo();
+  // Issue #7 Bug 2 — show banner when user picks a different region than the
+  // currently saved one. Channel frequencies are not auto-updated by a region
+  // change, so the banner reminds the user to review the Channels tab.
+  var warnBox=G('region-channel-warning');
+  if(warnBox){
+    var differ=(typeof originalRegion==='string' && originalRegion && code && code!==originalRegion);
+    warnBox.style.display=differ?'block':'none';
+  }
 }
 function applyRegionEditableState(){
   var code=G('region-code').value;
@@ -1798,6 +1820,11 @@ async function saveRegion(restart){
     if(restart)body.restart=true;
     var r=await api('POST','/api/wm1303/region',body);
     if(r.status==='ok'||r.code){
+      // Issue #7 Bug 2 — region was just saved, so the change-warning banner
+      // (and the originalRegion baseline) must reflect the new value
+      // immediately, even before loadRegion() runs after a restart delay.
+      originalRegion=code;
+      var _warn=G('region-channel-warning');if(_warn)_warn.style.display='none';
       toast('Region saved'+(restart?' \u2014 restarting...':''),'ok');
       if(restart){
         var overlay=document.createElement('div');overlay.className='gl';overlay.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.7);flex-direction:column;gap:16px';
