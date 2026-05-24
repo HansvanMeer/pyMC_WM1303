@@ -585,14 +585,22 @@ step "Applying pyMC_Repeater overlay"
 RPT_DIR="${REPO_DIR}/pyMC_Repeater"
 
 # repeater/ level files
-for f in bridge_engine.py channel_e_bridge.py channel_f_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py; do
+for f in bridge_engine.py channel_e_bridge.py channel_f_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py wm1303_telemetry_helper.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
+# repeater/handler_helpers/ level files (v2.4.11+ overlays)
+mkdir -p "${RPT_DIR}/repeater/handler_helpers" >> "${LOG_FILE}" 2>&1
+for f in mesh_cli.py; do
+    if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/handler_helpers/${f}" ]; then
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/handler_helpers/${f}" "${RPT_DIR}/repeater/handler_helpers/" >> "${LOG_FILE}" 2>&1
+    fi
+done
+
 # repeater/web/ level files
-for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py debug_collector.py packet_trace.py tiered_query.py; do
+for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py debug_collector.py packet_trace.py tiered_query.py update_endpoints.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" >> "${LOG_FILE}" 2>&1
     fi
