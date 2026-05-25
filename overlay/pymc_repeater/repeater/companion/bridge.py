@@ -123,6 +123,12 @@ class RepeaterCompanionBridge(CompanionBridge):
         # Sync node_name to GroupTextHandler so echo filter uses the stored name
         # after a UI rename.  Without this, the echo filter retains the old name
         # and fails to suppress self-echoes correctly.  (Bug 3 fix — issue #5)
-        gth = self._get_group_text_handler()
-        if gth and hasattr(gth, "set_our_node_name"):
-            gth.set_our_node_name(self.prefs.node_name)
+        # Guard with try/except: during __init__, _handlers may not exist yet;
+        # the sync will succeed on subsequent _load_prefs calls once the bridge
+        # is fully initialised.
+        try:
+            gth = self._get_group_text_handler()
+            if gth and hasattr(gth, "set_our_node_name"):
+                gth.set_our_node_name(self.prefs.node_name)
+        except AttributeError:
+            pass  # _handlers not yet initialised during __init__

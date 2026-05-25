@@ -3492,6 +3492,23 @@ class WM1303Backend:
                     self._hourly_noise_discarded = getattr(self, '_hourly_noise_discarded', 0) + 1
                 return
 
+            # ── Pre-filter raw RX push to companion frame servers ──────────
+            # Fire the BridgeEngine's raw RX callbacks BEFORE echo/dedup
+            # filtering so companion apps receive ALL RF packets, including
+            # TX echoes (= "Heard Repeats") and mesh echoes (= neighbour
+            # retransmissions of our packets = node discovery).
+            # This is purely informational (0x88 PUSH_CODE_LOG_RX_DATA) and
+            # does not interfere with the bridge forwarding logic.
+            try:
+                from repeater.bridge_engine import _active_bridge
+                if _active_bridge and hasattr(_active_bridge, '_fire_raw_rx_callbacks'):
+                    _be_rssi = float(_rx_rssi) if _rx_rssi is not None else -120.0
+                    _be_snr = float(_rx_lsnr) if _rx_lsnr is not None else 0.0
+                    _active_bridge._fire_raw_rx_callbacks(
+                        payload, getattr(self, 'channel_id', 'channel_e'),
+                        _be_rssi, _be_snr)
+            except Exception as _pre_cb_err:
+                logger.debug('WM1303Backend: pre-filter raw RX callback error: %s', _pre_cb_err)
 
             # Self-echo detection: check if this RX matches a recent TX
             # Use stable payload hash (excludes path data that changes per hop)

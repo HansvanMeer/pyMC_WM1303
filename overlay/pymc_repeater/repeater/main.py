@@ -419,8 +419,13 @@ class RepeaterDaemon:
             # Load companion identities (CompanionBridge + frame server per companion)
             await self._load_companion_identities()
 
-            # Subscribe to raw RX in pyMC_core so we can push PUSH_CODE_LOG_RX_DATA to companion clients
-            self.dispatcher.add_raw_rx_subscriber(self._on_raw_rx_for_companions)
+            # Subscribe to raw RX in pyMC_core so we can push PUSH_CODE_LOG_RX_DATA to companion clients.
+            # Note: on WM1303 hardware the Dispatcher path is bypassed (BridgeEngine handles RF),
+            # so this subscriber only fires for non-bridge radios.  The main companion delivery
+            # path is via the BridgeEngine raw RX callback registered in _setup_bridge_engine.
+            async def _async_raw_rx_wrapper(data, rssi, snr):
+                self._on_raw_rx_for_companions(data, 'dispatcher', rssi, snr)
+            self.dispatcher.add_raw_rx_subscriber(_async_raw_rx_wrapper)
             n = len(getattr(self, "companion_frame_servers", []))
             logger.info(
                 "Raw RX subscriber registered (%s companion frame server(s)). Connect a client to see rx_log (0x88).",
@@ -845,16 +850,30 @@ class RepeaterDaemon:
             f"port={tcp_port}, bind={bind_address}, client_idle_timeout_sec={client_idle_timeout_sec}"
         )
 
-    async def _on_raw_rx_for_companions(self, data: bytes, rssi: int, snr: float) -> None:
-        """Raw RX subscriber: push PUSH_CODE_LOG_RX_DATA (0x88) to connected companion clients."""
+    def _on_raw_rx_for_companions(self, data: bytes, source_name: str = '',
+                                    rssi=None, snr=None) -> None:
+        """Raw RX callback: push PUSH_CODE_LOG_RX_DATA (0x88) to connected
+        companion clients.  Registered as a BridgeEngine raw RX callback so it
+        is invoked for ALL RF packets BEFORE echo/dedup filtering, enabling
+        Heard Repeats and node discovery in companion apps.
+
+        Signature matches BridgeEngine._fire_raw_rx_callbacks:
+            callback(data, source_name, rssi, snr)
+        """
         servers = getattr(self, "companion_frame_servers", [])
         if not servers:
             return
+        _rssi = int(rssi) if rssi is not None else 0
+        _snr = float(snr) if snr is not None else 0.0
         for fs in servers:
             try:
-                fs.push_rx_raw(snr, rssi, data)
+                fs.push_rx_raw(_snr, _rssi, data)
             except Exception as e:
                 logger.debug("Push RX raw to companion: %s", e)
+        logger.info(
+            "BridgeEngine raw RX → %d companion server(s) (%d bytes, src=%s, rssi=%s, snr=%s)",
+            len(servers), len(data), source_name, _rssi, _snr
+        )
 
     def _on_raw_packet_for_dedup_logging(self, pkt, data: bytes, analysis: dict) -> None:
         """Record duplicate packets for UI visibility.
@@ -1099,6 +1118,12 @@ class RepeaterDaemon:
             len(data), pkt.header, origin_channel, rssi, snr
         )
 
+        # NOTE: Raw RX push to companion frame servers (0x88 / Heard Repeats)
+        # is now handled by the BridgeEngine raw RX callback mechanism.
+        # The callback is registered in _setup_bridge_engine and fires BEFORE
+        # echo/dedup filtering, so companions receive ALL RF packets including
+        # TX echoes (which are "heard repeats" of our own transmissions).
+
         # Deliver RF-received packets to TCP companion bridges.
         # BridgeEngine bypasses the Dispatcher on WM1303 hardware, so packets
         # never reach PacketRouter via the normal Dispatcher->router->companion
@@ -1331,6 +1356,14 @@ class RepeaterDaemon:
                 "WM1303: repeater_handler is None at bridge init time! "
                 "Will attempt re-registration after startup."
             )
+
+        # Register raw RX callback so companion frame servers receive ALL RF
+        # packets (including TX echoes and duplicates) BEFORE echo/dedup
+        # filtering.  This enables Heard Repeats and node discovery in
+        # companion apps.  The callback is invoked from BridgeEngine._rx_loop
+        # and inject_packet before _is_tx_echo / _is_duplicate checks.
+        self.bridge_engine.register_on_raw_rx(self._on_raw_rx_for_companions)
+        logger.info("WM1303: raw RX callback registered with bridge engine for companion delivery")
 
         logger.info(
             f"BridgeEngine initialized: {len(radios)} radios, {len(rules)} rules, "

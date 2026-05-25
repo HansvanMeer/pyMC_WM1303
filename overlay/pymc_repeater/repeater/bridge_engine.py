@@ -313,6 +313,13 @@ class BridgeEngine:
         self._tx_echo_detected = 0                     # counter for stats
         self._tx_echo_cleanup_ts = 0.0                 # last cleanup timestamp
 
+        # Raw RX callbacks: invoked for EVERY RF-received packet BEFORE echo/dedup
+        # filtering.  This allows companion frame servers to receive all packets
+        # (including TX echoes and duplicates) for "Heard Repeats" and node
+        # discovery, without interfering with the bridge forwarding logic.
+        # Callback signature: callback(data: bytes, source_name: str, rssi, snr)
+        self._on_raw_rx_callbacks: list = []
+
 
 
         # Dedup event logging for visualization
@@ -656,6 +663,26 @@ class BridgeEngine:
         self._endpoint_handlers['mqtt'] = callback
         logger.info('BridgeEngine: MQTT handler registered')
 
+    def register_on_raw_rx(self, callback) -> None:
+        """Register a callback invoked for every RF-received packet BEFORE
+        echo/dedup filtering.  Used by companion frame servers to deliver
+        all packets (including TX echoes and duplicates) for features like
+        Heard Repeats and node discovery.
+        Callback signature: callback(data: bytes, source_name: str, rssi, snr)
+        """
+        self._on_raw_rx_callbacks.append(callback)
+        logger.info('BridgeEngine: raw RX callback registered (%d total)',
+                    len(self._on_raw_rx_callbacks))
+
+    def _fire_raw_rx_callbacks(self, data: bytes, source_name: str,
+                               rssi=None, snr=None) -> None:
+        """Invoke all registered raw RX callbacks (best-effort, non-blocking)."""
+        for cb in self._on_raw_rx_callbacks:
+            try:
+                cb(data, source_name, rssi, snr)
+            except Exception as e:
+                logger.error('BridgeEngine: raw RX callback error: %s', e)
+
     async def inject_packet(self, source_name: str, data: bytes,
                             origin_channel: str | None = None,
                             rssi: float | None = None,
@@ -677,6 +704,12 @@ class BridgeEngine:
         if not self._running:
             logger.warning('BridgeEngine: inject_packet called but bridge not running')
             return
+
+        # NOTE: Raw RX callbacks for companion frame servers are now
+        # fired from WM1303Backend._process_rx_packet BEFORE this code
+        # is reached, so companions receive ALL RF packets including
+        # TX echoes and duplicates.  Do NOT call _fire_raw_rx_callbacks
+        # here to avoid double-pushing non-echo packets.
 
         # TX echo check: drop packets that match our own recent transmissions
         # (must be checked BEFORE dedup, because dedup would also catch it
@@ -1423,6 +1456,12 @@ class BridgeEngine:
                     _rx_nf = source.get_noise_floor()
             except Exception:
                 pass
+
+            # NOTE: Raw RX callbacks for companion frame servers are now
+            # fired from WM1303Backend._process_rx_packet BEFORE this code
+            # is reached, so companions receive ALL RF packets including
+            # TX echoes and duplicates.  Do NOT call _fire_raw_rx_callbacks
+            # here to avoid double-pushing non-echo packets.
 
             # TX echo check: drop our own transmissions bouncing back
             if self._is_tx_echo(data, cid):
