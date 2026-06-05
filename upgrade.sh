@@ -344,7 +344,7 @@ fi
 
 step "Checking required packages"
 PKGS_NEEDED=""
-for pkg in jq i2c-tools rrdtool librrd-dev python3-rrdtool; do
+for pkg in jq i2c-tools rrdtool librrd-dev python3-rrdtool python3-systemd; do
     if ! dpkg -s "$pkg" &>/dev/null; then
         PKGS_NEEDED="${PKGS_NEEDED} ${pkg}"
     fi
@@ -1393,6 +1393,41 @@ sed -i "s|__PI_USER__|${PI_USER}|g" /etc/systemd/system/pymc-repeater.service
 sed -i "s|__PI_HOME__|${PI_HOME}|g" /etc/systemd/system/pymc-repeater.service
 systemctl daemon-reload >> "${LOG_FILE}" 2>&1
 ok "Service file updated (user: ${PI_USER})"
+
+# --- Hardware Watchdog (OS-level) ---
+# Keep upgrades consistent with install.sh: BCM2835 hardware watchdog module +
+# systemd RuntimeWatchdogSec so a full OS freeze reboots the Pi automatically.
+# The service-level watchdog (Type=notify + WatchdogSec) comes from the updated
+# pymc-repeater.service file copied just above.
+step "Enabling BCM2835 hardware watchdog module"
+WDT_MODCONF="/etc/modules-load.d/bcm2835_wdt.conf"
+if [ -f "${WDT_MODCONF}" ] && grep -q '^bcm2835_wdt' "${WDT_MODCONF}" 2>/dev/null; then
+    ok "Module already configured"
+else
+    echo "bcm2835_wdt" > "${WDT_MODCONF}"
+    ok "Configured ${WDT_MODCONF}"
+fi
+modprobe bcm2835_wdt 2>/dev/null || warn "modprobe bcm2835_wdt failed (will load at next boot)"
+
+# Note: the BCM2835 hardware watchdog enforces a fixed 60s timeout (wdctl
+# SETTIMEOUT=0); lower values are clamped to 60s by the kernel. We configure 60s
+# to match the effective hardware behaviour (Pi auto-reboots within ~60s on freeze).
+step "Configuring systemd RuntimeWatchdogSec=60s (BCM2835 hardware limit)"
+SYSTEMD_CONF="/etc/systemd/system.conf"
+if [ -f "${SYSTEMD_CONF}" ]; then
+    if grep -qE '^RuntimeWatchdogSec=60s$' "${SYSTEMD_CONF}"; then
+        ok "Already set"
+    else
+        TMP_SC="$(mktemp)"
+        grep -viE '^[#[:space:]]*RuntimeWatchdogSec' "${SYSTEMD_CONF}" > "${TMP_SC}"
+        echo "RuntimeWatchdogSec=60s" >> "${TMP_SC}"
+        mv "${TMP_SC}" "${SYSTEMD_CONF}"
+        systemctl daemon-reexec >> "${LOG_FILE}" 2>&1 || warn "daemon-reexec failed (applies after reboot)"
+        ok "Set RuntimeWatchdogSec=60s"
+    fi
+else
+    warn "${SYSTEMD_CONF} not found; skipped RuntimeWatchdogSec"
+fi
 
 step "Updating version file"
 if [ -f "${SCRIPT_DIR}/VERSION" ]; then

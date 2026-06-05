@@ -70,6 +70,7 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define CHECK_ERR(a)                    if(a==-1){return LGW_REG_ERROR;}
 
 #define IF_HZ_TO_REG(f)     ((f * 32) / 15625)
+#define IF_HZ_MAX           2000000     /* +/- 2 MHz: hardware envelope (13-bit signed IF register at 15.625 kHz/LSB) */
 
 #define SX1302_FREQ_TO_REG(f)   (uint32_t)((uint64_t)f * (1 << 18) / 32000000U)
 
@@ -648,6 +649,23 @@ int sx1302_channelizer_configure(struct lgw_conf_rxif_s * if_cfg, bool fix_gain)
 
     /* Check input parameters */
     CHECK_NULL(if_cfg);
+
+    /* Validate IF offsets against the hardware envelope (+/- IF_HZ_MAX).
+     * The SX1302 IF frequency register is 13-bit signed at 15.625 kHz/LSB.
+     * Only 5 MSB bits (& 0x1F) + 8 LSB bits (& 0xFF) are written, so values
+     * outside +/- 2 MHz silently wrap and the channel listens on the wrong
+     * frequency (silent rxnb=0). Refuse the configuration instead of
+     * producing a deaf channel. Disabled chains are skipped. */
+    for (i = 0; i < 10; i++) {
+        if (if_cfg[i].enable && (if_cfg[i].freq_hz > IF_HZ_MAX || if_cfg[i].freq_hz < -IF_HZ_MAX)) {
+            const char *chain_name = (i < 8) ? "multi-SF" : ((i == 8) ? "LoRa service" : "FSK");
+            printf("ERROR: [channelizer] %s chain %d IF offset %d Hz exceeds hardware envelope (+/-%d Hz). "
+                   "This would cause silent register overflow and a deaf channel. "
+                   "Check rf_center_freq vs channel frequency (region/preset mismatch?).\n",
+                   chain_name, i, if_cfg[i].freq_hz, IF_HZ_MAX);
+            return LGW_REG_ERROR;
+        }
+    }
 
     /* Select which radio is connected to each multi-SF channel */
     for (i = 0; i < LGW_MULTI_NB; i++) {
@@ -1949,7 +1967,7 @@ int sx1302_arb_start(uint8_t version, const struct lgw_conf_ftime_s * ftime_cont
     /* Enable/Disable double demod for different timing set (best timestamp / best demodulation) - 1 bit per SF (LSB=SF5, MSB=SF12) => 0:Disable 1:Enable */
     if (ftime_context->enable == false) {
         printf("ARB: dual demodulation FORCE ENABLED for all SF (WM1303 RX fix)\n");
-        sx1302_arb_debug_write(3, 0x00); /* double demod FORCE ENABLED for all SF (WM1303 RX fix) */
+        sx1302_arb_debug_write(3, 0xFF); /* double demod FORCE ENABLED for all SF (WM1303 RX fix) -- 0xFF enables all SFs (LSB=SF5 .. MSB=SF12); 0x00 disables all and is the v2.5.2 bug that produced rxnb=0 on chan_multiSF, see GitHub issue #12 */
     } else {
         if (ftime_context->mode == LGW_FTIME_MODE_ALL_SF) {
             printf("ARB: dual demodulation disabled for all SF\n");

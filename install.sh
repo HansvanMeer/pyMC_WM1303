@@ -255,6 +255,7 @@ if ! apt-get install -y \
     rrdtool \
     librrd-dev \
     python3-rrdtool \
+    python3-systemd \
     >> "${LOG_FILE}" 2>&1; then
     fail "Dependency installation failed"
 fi
@@ -1323,6 +1324,51 @@ ok "Reloaded"
 step "Enabling service for auto-start"
 systemctl enable pymc-repeater.service >> "${LOG_FILE}" 2>&1
 ok "Enabled"
+
+# =============================================================================
+# Phase 10b: Hardware Watchdog (OS-level)
+# =============================================================================
+# Two-layer watchdog:
+#  - OS layer (here): BCM2835 hardware watchdog + systemd RuntimeWatchdogSec.
+#    If the whole OS freezes, the hardware timer reboots the Pi automatically.
+#  - Service layer (in pymc-repeater.service): Type=notify + WatchdogSec; the
+#    backend feeds sd_notify WATCHDOG=1 so a hung application is restarted.
+phase "Hardware Watchdog"
+
+step "Enabling BCM2835 hardware watchdog module"
+WDT_MODCONF="/etc/modules-load.d/bcm2835_wdt.conf"
+if [ -f "${WDT_MODCONF}" ] && grep -q '^bcm2835_wdt' "${WDT_MODCONF}" 2>/dev/null; then
+    ok "Module already configured"
+else
+    echo "bcm2835_wdt" > "${WDT_MODCONF}"
+    ok "Configured ${WDT_MODCONF}"
+fi
+modprobe bcm2835_wdt 2>/dev/null || warn "modprobe bcm2835_wdt failed (will load at next boot)"
+if [ -e /dev/watchdog ]; then
+    info "/dev/watchdog present"
+else
+    warn "/dev/watchdog not present yet (expected after reboot)"
+fi
+
+# Note: the BCM2835 hardware watchdog enforces a fixed 60s timeout and does not
+# support shorter custom values (wdctl SETTIMEOUT=0). Lower RuntimeWatchdogSec
+# values are clamped to 60s by the kernel, so we configure 60s to match the
+# effective hardware behaviour. On a full OS freeze the Pi auto-reboots within ~60s.
+step "Configuring systemd RuntimeWatchdogSec=60s (BCM2835 hardware limit)"
+SYSTEMD_CONF="/etc/systemd/system.conf"
+if [ -f "${SYSTEMD_CONF}" ]; then
+    TMP_SC="$(mktemp)"
+    # Remove any existing (commented or active) RuntimeWatchdogSec line, then append ours
+    grep -viE '^[#[:space:]]*RuntimeWatchdogSec' "${SYSTEMD_CONF}" > "${TMP_SC}"
+    echo "RuntimeWatchdogSec=60s" >> "${TMP_SC}"
+    mv "${TMP_SC}" "${SYSTEMD_CONF}"
+    ok "Set RuntimeWatchdogSec=60s in ${SYSTEMD_CONF}"
+    step "Re-executing systemd manager to apply watchdog"
+    systemctl daemon-reexec >> "${LOG_FILE}" 2>&1 || warn "daemon-reexec failed (applies after reboot)"
+    ok "Applied"
+else
+    warn "${SYSTEMD_CONF} not found; skipped RuntimeWatchdogSec"
+fi
 
 # =============================================================================
 # Phase 11: NTP Time Synchronization

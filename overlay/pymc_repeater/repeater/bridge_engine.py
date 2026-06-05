@@ -308,8 +308,16 @@ class BridgeEngine:
         # TX echo detection: buffer of stable hashes from recently transmitted
         # packets.  When a packet arrives whose stable hash matches a recent TX,
         # it is almost certainly our own transmission bouncing back via the mesh.
+        #
+        # NOTE: The primary echo classification now lives in WM1303Backend
+        # (_classify_echo) which drops true RF self-echoes before they reach
+        # the bridge.  This bridge-level check is a secondary safety net and
+        # uses a short TTL (0.5 s) so that only genuine RF feedback (<100 ms)
+        # is caught here.  Mesh-echoes (neighbour retransmissions, typically
+        # >1 s) deliberately pass through so the bridge engine can forward
+        # them to companion servers and protocol handlers.
         self._tx_echo_hashes: dict[str, float] = {}   # stable_hash -> monotonic ts
-        self._tx_echo_ttl = 10.0                       # seconds to keep TX hashes
+        self._tx_echo_ttl = 0.5                        # seconds to keep TX hashes
         self._tx_echo_detected = 0                     # counter for stats
         self._tx_echo_cleanup_ts = 0.0                 # last cleanup timestamp
 
@@ -1073,6 +1081,36 @@ class BridgeEngine:
                 forwarded = True
                 self._store_tx_echo_hash(data)  # store for echo detection
                 self._record_dedup_event('forwarded', source_cid, pkt_hash, len(data), pkt_type_name)
+
+                # Self-TX loopback (v2.5.3 follow-up; companion 'heard repeat' visibility).
+                # The WM1303 cannot hear its own RF transmission, so companion apps
+                # never see our outbound packets in their live activity log alongside
+                # received traffic. Firing the raw-RX callbacks with the TX bytes
+                # pushes a 0x88 frame to companion frame servers -- exactly the same
+                # shape as if a neighbour had repeated the packet.
+                #
+                # Covers BOTH kind='radio' (chan_multiSF A-D) and kind='endpoint'
+                # (channel_e SX1261) because this runs after the if/else dispatch
+                # block and only when TX did not raise (the except branch above
+                # uses `continue`, skipping this code on failure).
+                #
+                # Design principles satisfied:
+                #   - RX #1: in-memory callback dispatch, no radio operation,
+                #     no SX1302/SX1261 state change, zero RX-time impact.
+                #   - TX ASAP: runs after TX completes, so it cannot delay TX.
+                #   - No double-delivery: `_store_tx_echo_hash(data)` above already
+                #     armed the engine's TX-echo filter, so when the same packet
+                #     comes back via real RF from a neighbour repeating it, the
+                #     engine drops it as TX_ECHO before re-forwarding.
+                #
+                # The source_name `self_tx:<channel>` distinguishes loopback frames
+                # from real RF-received frames in companion-side filtering. Sentinel
+                # rssi=0/snr=0.0 prevent garbage in companion-display signal metrics
+                # (the packet did not arrive via RF, so no real values exist).
+                try:
+                    self._fire_raw_rx_callbacks(data, 'self_tx:%s' % tcid, 0, 0.0)
+                except Exception as _loopback_e:
+                    logger.debug('Self-TX loopback error on %s: %s', tcid, _loopback_e)
 
         if not forwarded:
             logger.debug('BridgeEngine: no rule matched for %s on %s (type=%s, '

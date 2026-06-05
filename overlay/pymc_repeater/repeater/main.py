@@ -1111,14 +1111,14 @@ class RepeaterDaemon:
             if self.router is not None:
                 try:
                     await self.router.inject_packet(packet, wait_for_ack=wait_for_ack)
-                    return  # router.inject_packet already enqueues
+                    return True  # router.inject_packet already enqueues
                 except Exception as e:
                     logger.error("_companion_injector: router fallback failed: %s", e)
             else:
                 logger.error(
                     "_companion_injector: no injector available (bridge_engine and router both None)"
                 )
-            return
+            return False
 
         # Bridge injection succeeded — also enqueue on the PacketRouter so
         # companion bridges (including the sender) receive a copy.
@@ -1130,6 +1130,7 @@ class RepeaterDaemon:
                 logger.debug(
                     "_companion_injector: router enqueue failed (non-fatal): %s", e
                 )
+        return True
 
     async def _bridge_repeater_handler(self, data: bytes,
                                         origin_channel: str | None = None,
@@ -1618,6 +1619,36 @@ class RepeaterDaemon:
             else:
                 # Fallback: direct send if no bridge engine
                 await self.dispatcher.send_packet(packet, wait_for_ack=False)
+
+            # Self-ADVERT companion visibility (v2.5.3 follow-up).
+            # RF-received ADVERTs are routed to companion bridges by
+            # packet_router._dispatch_received, but our own outbound ADVERT
+            # only goes through bridge_engine.inject_packet for RF TX. Without
+            # this loop, companion apps never see the repeater's own identity
+            # as a discovered node. Feeding the packet through each companion
+            # bridge's process_received_packet() registers our identity in the
+            # companion's contact list.
+            #
+            # Sentinel RSSI/SNR values prevent garbage in contact-row display
+            # (the packet did not arrive via RF so no real values exist).
+            # This runs BEFORE mark_seen so the companions see the packet;
+            # mark_seen blocks RF-echo re-injection, not companion delivery.
+            try:
+                setattr(packet, "rssi", 0)
+                setattr(packet, "snr", 0.0)
+            except Exception:
+                pass
+            _companion_bridges = getattr(self, "companion_bridges", {}) or {}
+            for _bridge in _companion_bridges.values():
+                try:
+                    await _bridge.process_received_packet(packet)
+                except Exception as _e:
+                    logger.debug(f"Self-advert companion bridge error: {_e}")
+            if _companion_bridges:
+                logger.info(
+                    "Self-advert delivered to %d companion bridge(s) for node discovery",
+                    len(_companion_bridges),
+                )
 
             # Mark our own advert as seen to prevent re-forwarding it
             if self.repeater_handler:

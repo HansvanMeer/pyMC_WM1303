@@ -632,6 +632,51 @@ int lgw_spectral_scan_get_results(int16_t levels_dbm[static LGW_SPECTRAL_SCAN_RE
 */
 int lgw_spectral_scan_abort();
 
+/* -------------------------------------------------------------------------- */
+/* --- GPIO PATHS CONFIGURATION (pyMC_WM1303 extension) --------------------- */
+
+/**
+@struct lgw_gpio_paths_s
+@brief Sysfs GPIO paths for hardware control pins used by the HAL.
+
+The HAL needs absolute sysfs paths (e.g. "/sys/class/gpio/gpio517/value") to
+toggle the SX1261 reset line during post-CAD recovery. Previously these paths
+were hard-coded for the SenseCAP M1 mapping, which broke when users on other
+boards configured different BCM pins via the Advanced Config UI.
+
+This struct lets the packet forwarder push the resolved paths (read from the
+global_conf.json `gpio_paths` block) into the HAL before lgw_start(). When a
+path is empty (""), the HAL falls back to the legacy SenseCAP M1 default so
+existing installations keep working without config changes.
+*/
+#define LGW_GPIO_PATH_MAX_LEN 128
+
+struct lgw_gpio_paths_s {
+    char sx1302_reset[LGW_GPIO_PATH_MAX_LEN];     /*!> sysfs value path, e.g. /sys/class/gpio/gpio529/value */
+    char sx1302_power_en[LGW_GPIO_PATH_MAX_LEN];  /*!> sysfs value path, e.g. /sys/class/gpio/gpio530/value */
+    char sx1261_reset[LGW_GPIO_PATH_MAX_LEN];     /*!> sysfs value path, e.g. /sys/class/gpio/gpio517/value */
+    char ad5338r_reset[LGW_GPIO_PATH_MAX_LEN];    /*!> sysfs value path, e.g. /sys/class/gpio/gpio525/value */
+};
+
+/**
+@brief Configure sysfs GPIO paths used by the HAL for hardware reset operations.
+@param paths pointer to a fully populated lgw_gpio_paths_s; copied into static storage.
+@return LGW_HAL_SUCCESS on success, LGW_HAL_ERROR if `paths` is NULL.
+
+Call once before lgw_start(). Empty path strings leave the legacy default for
+that pin (SenseCAP M1 mapping) intact, so partial configuration is allowed.
+*/
+int lgw_set_gpio_paths(const struct lgw_gpio_paths_s * paths);
+
+/**
+@brief Get the currently configured sysfs GPIO paths.
+@return pointer to the internal lgw_gpio_paths_s; never NULL. Read-only.
+
+Returns the singleton struct with all paths populated (either user-supplied via
+lgw_set_gpio_paths() or the SenseCAP M1 legacy defaults).
+*/
+const struct lgw_gpio_paths_s * lgw_get_gpio_paths(void);
+
 #endif
 
 /* --- EOF ------------------------------------------------------------------ */

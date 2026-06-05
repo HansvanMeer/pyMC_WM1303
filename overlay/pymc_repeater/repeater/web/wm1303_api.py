@@ -891,6 +891,15 @@ class WM1303API:
             if method == "GET":
                 return self._cad_stats_get(**params)
 
+        # -- cache_stats (internal buffer diagnostics, v2.5.3 follow-up) --
+        # GET /api/wm1303/cache_stats -> snapshot of all in-memory caches
+        # (dedup, TX echo, multi-demod RX, TX ACK, per-channel config caches)
+        # with sizes, TTLs, age statistics, and engine counters. Helps diagnose
+        # state-accumulation drift on long-running deployments (#24/#25).
+        if resource == "cache_stats":
+            if method == "GET":
+                return self._cache_stats_get(**params)
+
                 # -- adv_config (advanced configuration) --
         if resource == "adv_config":
             if method == "GET":
@@ -1205,6 +1214,29 @@ class WM1303API:
         for _ch in channels:
             if isinstance(_ch, dict):
                 _ch.pop("sync_word", None)
+
+        # GitHub issue #7 Bug E -- LBT threshold UI/HAL field sync.
+        # The WM1303 UI "LBT (dBm)" field writes `lbt_rssi_target`, but
+        # lora_pkt_fwd reads `lbt_threshold` for the actual TX-blocking
+        # decision. Historically the two fields diverged: bootstrap initialised
+        # `lbt_threshold=-80` directly, so the UI-driven `lbt_rssi_target`
+        # changes never propagated to the field that the HAL actually uses,
+        # making the UI control cosmetic.
+        #
+        # On every channel save we now force both fields to the same value,
+        # treating `lbt_rssi_target` as the source-of-truth (it is what the
+        # UI writes). If only `lbt_threshold` is present (legacy callers),
+        # it is mirrored back into `lbt_rssi_target` so future reads stay
+        # consistent. If neither is set the channel is left untouched.
+        for _ch in channels:
+            if not isinstance(_ch, dict):
+                continue
+            _src = _ch.get("lbt_rssi_target")
+            _dst = _ch.get("lbt_threshold")
+            if _src is not None:
+                _ch["lbt_threshold"] = _src
+            elif _dst is not None:
+                _ch["lbt_rssi_target"] = _dst
 
         ui = _load_ui()
         ui["channels"] = channels
@@ -3140,6 +3172,192 @@ class WM1303API:
             "tx_queue_cad": tx_cad_stats,
             "range": range_str,
             "bucket_minutes": bucket_min,
+        })
+
+    def _cache_stats_get(self, **params):
+        """GET /api/wm1303/cache_stats - Snapshot of in-memory caches.
+
+        Returns per-cache size, max_size, TTL, oldest/newest entry age, and
+        engine counters for diagnosing state-accumulation drift on long-running
+        deployments (GitHub issues #24/#25). Read-only; no side effects.
+
+        ts_mode field: 'wall' = `time.time()` based, 'monotonic' =
+        `time.monotonic()` based. Both reference times are computed at the
+        start of this handler so all reported ages are consistent.
+        """
+        import time as _time
+
+        now_wall = _time.time()
+        now_mono = _time.monotonic()
+
+        def _summarize(d, ts_mode, ttl=None, max_size=None, description=""):
+            """Build a stats dict for a {key: ts} mapping."""
+            size = len(d) if d is not None else 0
+            ref_now = now_mono if ts_mode == "monotonic" else now_wall
+            oldest_age = None
+            newest_age = None
+            if d and size > 0:
+                try:
+                    values = [v for v in d.values()
+                              if isinstance(v, (int, float))]
+                    if values:
+                        oldest_age = round(ref_now - min(values), 2)
+                        newest_age = round(ref_now - max(values), 2)
+                except Exception:
+                    pass
+            return {
+                "size": size,
+                "max_size": max_size,
+                "ttl_seconds": ttl,
+                "oldest_age_seconds": oldest_age,
+                "newest_age_seconds": newest_age,
+                "ts_mode": ts_mode,
+                "description": description,
+            }
+
+        def _age_from(monotonic_ts):
+            """Return age in seconds for a monotonic timestamp, or None."""
+            try:
+                if monotonic_ts and monotonic_ts > 0:
+                    return round(now_mono - float(monotonic_ts), 2)
+            except Exception:
+                pass
+            return None
+
+        # ── BridgeEngine caches ──────────────────────────────────────────
+        bridge_stats = {}
+        bridge_counters = {}
+        try:
+            from repeater.bridge_engine import _active_bridge
+            bridge = _active_bridge
+        except Exception:
+            bridge = None
+
+        if bridge is not None:
+            try:
+                bridge_stats["seen_dedup"] = _summarize(
+                    getattr(bridge, "_seen", {}),
+                    ts_mode="monotonic",
+                    ttl=getattr(bridge, "dedup_ttl", None),
+                    description="Packet-hash dedup cache (BridgeEngine._seen; populated via time.monotonic() in _is_duplicate)",
+                )
+                bridge_stats["tx_echo_hashes"] = _summarize(
+                    getattr(bridge, "_tx_echo_hashes", {}),
+                    ts_mode="monotonic",
+                    ttl=getattr(bridge, "_tx_echo_ttl", None),
+                    description="Recent TX hashes for RF-echo detection",
+                )
+                _ev = getattr(bridge, "_dedup_events", None)
+                bridge_stats["dedup_events_ring"] = {
+                    "size": len(_ev) if _ev is not None else 0,
+                    "max_size": getattr(_ev, "maxlen", None) if _ev is not None else None,
+                    "ttl_seconds": None,
+                    "oldest_age_seconds": None,
+                    "newest_age_seconds": None,
+                    "ts_mode": "n/a",
+                    "description": "Recent dedup-event ring buffer (deque, FIFO)",
+                }
+                try:
+                    st = bridge.get_stats() or {}
+                    bridge_counters = {
+                        "forwarded_packets": st.get("forwarded_packets", 0),
+                        "dropped_duplicate": st.get("dropped_duplicate", 0),
+                        "dropped_filtered": st.get("dropped_filtered", 0),
+                        "fwd_echo_detected": st.get("fwd_echo_detected", 0),
+                        "tx_echo_detected": getattr(bridge, "_tx_echo_detected", 0),
+                    }
+                except Exception:
+                    pass
+            except Exception as _be:
+                bridge_stats["error"] = str(_be)
+
+        # ── WM1303Backend caches ─────────────────────────────────────────
+        backend_stats = {}
+        backend_counters = {}
+        _bk = None
+        try:
+            _bk = _get_backend()
+        except Exception:
+            pass
+
+        if _bk is not None:
+            try:
+                backend_stats["tx_echo_hashes"] = _summarize(
+                    getattr(_bk, "_tx_echo_hashes", {}),
+                    ts_mode="monotonic",
+                    ttl=getattr(_bk, "_tx_echo_ttl", None),
+                    description="Recent TX hashes for backend self-echo detection",
+                )
+                backend_stats["rx_dedup_cache"] = _summarize(
+                    getattr(_bk, "_rx_dedup_cache", {}),
+                    ts_mode="monotonic",
+                    description="Multi-demod RX dedup cache (per-frame hash)",
+                )
+                _tx_ack = getattr(_bk, "_tx_ack_cache", None)
+                backend_stats["tx_ack_cache"] = {
+                    "size": len(_tx_ack) if _tx_ack is not None else 0,
+                    "max_size": getattr(_bk, "_tx_ack_cache_max", None),
+                    "ttl_seconds": getattr(_bk, "_tx_ack_cache_ttl", None),
+                    "oldest_age_seconds": None,
+                    "newest_age_seconds": None,
+                    "ts_mode": "n/a",
+                    "description": "OrderedDict of recent TX ACK results from HAL post_tx phase",
+                }
+                backend_stats["lbt_config_cache"] = {
+                    "size": len(getattr(_bk, "_lbt_config_cache", {}) or {}),
+                    "max_size": None,
+                    "ttl_seconds": getattr(_bk, "_lbt_config_cache_ttl", None),
+                    "oldest_age_seconds": _age_from(getattr(_bk, "_lbt_config_cache_time", 0)),
+                    "newest_age_seconds": _age_from(getattr(_bk, "_lbt_config_cache_time", 0)),
+                    "ts_mode": "monotonic",
+                    "description": "Per-channel LBT config cache (refreshed periodically from wm1303_ui.json)",
+                }
+                backend_stats["cad_config_cache"] = {
+                    "size": len(getattr(_bk, "_cad_config_cache", {}) or {}),
+                    "max_size": None,
+                    "ttl_seconds": None,
+                    "oldest_age_seconds": _age_from(getattr(_bk, "_cad_config_cache_time", 0)),
+                    "newest_age_seconds": _age_from(getattr(_bk, "_cad_config_cache_time", 0)),
+                    "ts_mode": "monotonic",
+                    "description": "Per-channel CAD enabled cache (refreshed periodically from wm1303_ui.json)",
+                }
+                backend_stats["channel_e_config_cache"] = {
+                    "size": len(getattr(_bk, "_channel_e_config_cache", {}) or {}),
+                    "max_size": None,
+                    "ttl_seconds": getattr(_bk, "_channel_e_cache_ttl", None),
+                    "oldest_age_seconds": _age_from(getattr(_bk, "_channel_e_cache_time", 0)),
+                    "newest_age_seconds": _age_from(getattr(_bk, "_channel_e_cache_time", 0)),
+                    "ts_mode": "monotonic",
+                    "description": "Channel E (SX1261) config snapshot cache",
+                }
+                backend_stats["channel_f_config_cache"] = {
+                    "size": len(getattr(_bk, "_channel_f_config_cache", {}) or {}),
+                    "max_size": None,
+                    "ttl_seconds": None,
+                    "oldest_age_seconds": None,
+                    "newest_age_seconds": None,
+                    "ts_mode": "n/a",
+                    "description": "Channel F (SX1302 service modem) config snapshot cache",
+                }
+                backend_counters = {
+                    "tx_unknown_echo_detected": getattr(_bk, "_tx_unknown_echo_detected", 0),
+                }
+            except Exception as _bke:
+                backend_stats["error"] = str(_bke)
+
+        return _j({
+            "timestamp": now_wall,
+            "now_monotonic": now_mono,
+            "bridge_engine": {
+                "available": bridge is not None,
+                "caches": bridge_stats,
+                "counters": bridge_counters,
+            },
+            "wm1303_backend": {
+                "available": _bk is not None,
+                "caches": backend_stats,
+                "counters": backend_counters,
+            },
         })
 
     def noise_floor_history(self, hours='24'):

@@ -1316,10 +1316,13 @@ cad_done:
      * The JIT thread's lgw_abort_tx() handles SX1302 TX FSM recovery. */
     gettimeofday(&t0, NULL);
 
-    /* Step 1: GPIO reset SX1261 via sysfs (GPIO517 = BCM5) */
+    /* Step 1: GPIO reset SX1261 via sysfs (path configured via lgw_set_gpio_paths()
+     * from global_conf.json `gpio_paths.sx1261_reset`, defaults to SenseCAP M1
+     * mapping GPIO517 = BCM5 + GPIO base offset 512). */
     {
         int fd;
-        const char *gpio_path = "/sys/class/gpio/gpio517/value";
+        const struct lgw_gpio_paths_s *paths = lgw_get_gpio_paths();
+        const char *gpio_path = paths->sx1261_reset;
 
         fd = open(gpio_path, O_WRONLY);
         if (fd < 0) {

@@ -7,7 +7,6 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
 User=__PI_USER__
 Group=__PI_USER__
 WorkingDirectory=/opt/pymc_repeater/repos/pyMC_Repeater
@@ -23,8 +22,18 @@ ExecStartPre=-/bin/bash -c '/usr/bin/sudo /bin/systemctl stop lora_pkt_fwd.servi
 ExecStartPre=/bin/bash -c 'for f in /tmp/pymc_spectral_results.json /tmp/pymc_wm1303_bridge_conf.json /tmp/pymc_cad_config.json; do touch "$f" && chown __PI_USER__:__PI_USER__ "$f" && chmod 664 "$f"; done 2>/dev/null || true'
 ExecStart=/opt/pymc_repeater/venv/bin/python3 -m repeater.main --config /etc/pymc_repeater/config.yaml
 
-# Restart on failure
-Restart=on-failure
+# Service-level hardware watchdog (Type=notify):
+# The backend sends sd_notify READY=1 once the RX watchdog thread is up, and
+# WATCHDOG=1 every loop cycle (~5s). If no keepalive arrives within WatchdogSec,
+# systemd considers the service hung and restarts it.
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+# Allow slow concentrator/HAL startup before READY=1 (no false-positive restart)
+TimeoutStartSec=120
+
+# Restart on failure AND on watchdog timeout
+Restart=always
 RestartSec=5
 
 # Resource limits

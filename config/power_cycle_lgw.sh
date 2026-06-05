@@ -16,7 +16,11 @@ done
 
 echo "Power OFF CoreCell..."
 echo "0" > /sys/class/gpio/gpio${SX1302_POWER_EN_PIN}/value
-sleep 3
+# 10s drain: long enough for all bulk/decoupling caps to fully discharge so the
+# SX1302 internal SRAM (AGC/ARB MCU memory, channelizer state) is wiped clean.
+# Short drains (~3s) can leave residual charge, allowing stale state to survive
+# the power cycle and prevent recovery from a stuck channel/calibration state.
+sleep 10
 
 echo "Power ON CoreCell..."
 echo "1" > /sys/class/gpio/gpio${SX1302_POWER_EN_PIN}/value

@@ -41,6 +41,47 @@ except ImportError:  # pragma: no cover
     _REGION_AVAILABLE = False
     _REGION_DEFAULT = "EU868"
 
+
+# --- systemd watchdog notification (sd_notify) ---------------------------------
+# Used to feed the systemd service-level hardware watchdog (Type=notify,
+# WatchdogSec=). Prefers python3-systemd if available, otherwise falls back to a
+# pure-Python AF_UNIX datagram write to $NOTIFY_SOCKET. No-op when not running
+# under systemd (NOTIFY_SOCKET unset), so it is safe in dev/manual runs.
+try:
+    from systemd import daemon as _sd_daemon  # type: ignore
+    _SD_NATIVE = True
+except Exception:  # pragma: no cover
+    _sd_daemon = None
+    _SD_NATIVE = False
+
+
+def _sd_notify(state: str) -> bool:
+    """Send a notification (e.g. 'READY=1' or 'WATCHDOG=1') to systemd.
+
+    Returns True if the message was sent, False otherwise (incl. no systemd).
+    Never raises; watchdog keepalive must never crash the loop.
+    """
+    try:
+        if _SD_NATIVE and _sd_daemon is not None:
+            return bool(_sd_daemon.notify(state))
+        addr = os.environ.get('NOTIFY_SOCKET')
+        if not addr:
+            return False
+        # Abstract namespace socket starts with '@'
+        if addr[0] == '@':
+            addr = '\0' + addr[1:]
+        _sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC)
+        try:
+            _sock.connect(addr)
+            _sock.sendall(state.encode('utf-8'))
+            return True
+        finally:
+            _sock.close()
+    except Exception as _e:  # pragma: no cover
+        logger.debug('sd_notify(%s) failed: %s', state, _e)
+        return False
+
+
 class _SharedConn:
     """Module-level shared SQLite connection with thread-safe access.
 
@@ -334,12 +375,14 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     region_code = _REGION_DEFAULT  # Regulatory region (default EU868)
     region_custom_min = None       # Optional CUSTOM region tx_freq_min (Hz)
     region_custom_max = None       # Optional CUSTOM region tx_freq_max (Hz)
-    # Device-wide LoRa network sync word (NOT per-channel).
-    # SX1302 hardware supports ONLY two values via the board-level
-    # lorawan_public flag (lgw_conf_board_t):
-    #   - Private 0x1424 (5156)  -> lorawan_public = false  (default; MeshCore)
-    #   - Public  0x3444 (13380) -> lorawan_public = true   (LoRaWAN public nets)
-    # Custom sync words are NOT hardware-supported and are removed from the UI.
+    # Device-wide MeshCore protocol-level network identifier (NOT per-channel,
+    # NOT the LoRa PHY sync word). Two values are recognised by the UI:
+    #   - Private 0x1424 (5156)  -- MeshCore "Private" community
+    #   - Public  0x3444 (13380) -- MeshCore "Public" community
+    # These are MeshCore protocol-level labels, NOT LoRaWAN public/private
+    # sync words. The LoRa PHY sync word on-air is ALWAYS 0x12 regardless of
+    # which MeshCore identifier the user picks (see v2.5.3 hotfix below).
+    # Custom sync words are NOT supported and are removed from the UI.
     # Legacy configs with mode=="custom" fall back silently to Private.
     _sync_word_value = 0x1424
     _sync_word_mode = 'private'
@@ -382,11 +425,31 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     except Exception as ex:
         logger.warning('_generate_bridge_conf: could not read %s: %s', UI_JSON_PATH, ex)
 
-    # Derive the board-level lorawan_public flag from device-wide sync_word.
-    # HAL v2.10 lgw_conf_board_t.lorawan_public is BOARD-LEVEL: true -> Public
-    # sync word 0x3444; false -> Private 0x1424. This is the ONLY mechanism
-    # SX1302 exposes for sync word selection.
-    _lorawan_public = (_sync_word_mode == 'public')
+    # v2.5.3 hotfix (GitHub issue #12):
+    # WM1303 is a MeshCore repeater, NOT a LoRaWAN gateway. MeshCore networks
+    # always use the standard LoRa physical-layer sync word 0x12 (the value
+    # the LoRaWAN spec labels "private") on-air, regardless of the MeshCore
+    # protocol-level "network identifier" the user picks in the UI:
+    #   - MeshCore "Private" -> sync_word 0x1424 (5156)
+    #   - MeshCore "Public"  -> sync_word 0x3444 (13380)
+    # These two MeshCore identifiers are protocol-level labels that MeshCore
+    # software uses to separate communities, NOT LoRaWAN public/private sync
+    # word indicators. All MeshCore traffic uses on-air sync word 0x12.
+    #
+    # Previously (v2.5.2) we derived lorawan_public from _sync_word_mode,
+    # which meant a MeshCore "Public" install (sync_word=0x3444) programmed
+    # the SX1302 with the LoRaWAN public on-air sync word 0x34 -- causing the
+    # ARB correlators on every receiving MeshCore peer (which listen on 0x12)
+    # to silently reject our transmissions. The unit became invisible to all
+    # other MeshCore devices.
+    #
+    # Hardcoding False forces the SX1302 board-level lorawan_public flag off,
+    # so the on-air sync word is always 0x12 -- correct for MeshCore and all
+    # other non-LoRaWAN LoRa networks (Meshtastic, etc). The UI sync_word
+    # picker still works and is still written into bridge_conf.json for
+    # MeshCore protocol-level identification; it just no longer affects the
+    # LoRa PHY sync word.
+    _lorawan_public = False
     logger.info(
         '_generate_bridge_conf: sync_word=0x%04X mode=%s lorawan_public=%s',
         _sync_word_value, _sync_word_mode, _lorawan_public,
@@ -2723,12 +2786,20 @@ class WM1303Backend:
         logger.info('WM1303Backend: RX watchdog started (timeout=%ds, '
                     'stat_detect=2 windows, rssi_detect=5 spikes/60s)',
                     self._watchdog_timeout)
+        # Notify systemd we are ready (Type=notify); enables service-level
+        # hardware watchdog (WatchdogSec). No-op outside systemd.
+        if _sd_notify('READY=1'):
+            logger.info('WM1303Backend: sd_notify READY=1 sent (systemd watchdog active)')
         _cycle_num = 0
         while self._watchdog_running:
             _cycle_num += 1
             logger.info('WM1303Backend: WATCHDOG_DIAG pre-sleep cycle=%d', _cycle_num)
             time.sleep(5)  # check every 5 seconds (fast L2 detection)
             logger.info('WM1303Backend: WATCHDOG_DIAG post-sleep cycle=%d', _cycle_num)
+            # Feed the systemd service-level watchdog each cycle (WatchdogSec=60s).
+            # The 5s loop gives ~12x safety margin; if this loop hangs, systemd
+            # restarts the service.
+            _sd_notify('WATCHDOG=1')
             if not self._watchdog_running:
                 break
 
@@ -3544,17 +3615,24 @@ class WM1303Backend:
                         _echo_label = 'Unknown-echo'
                         _echo_desc = 'content hash matched recent TX but path/src did not confirm origin'
                         _echo_count = self._tx_unknown_echo_detected
+                    # Decide action: self_echo is true RF feedback and must
+                    # be discarded.  mesh_echo / unknown_echo are packets
+                    # retransmitted by neighbour repeaters — they MUST be
+                    # forwarded so companion servers receive 'repeat heard'
+                    # confirmations and the bridge engine can deliver them.
+                    _discard = (_echo_kind == 'self_echo')
+                    _action_label = 'DISCARDING' if _discard else 'FORWARDING'
                     logger.warning('WM1303Backend: %s detected! hash=%s age=%.1fs rssi=%s '
-                                   'freq=%.3f (total_%ses=%d) - DISCARDING',
+                                   'freq=%.3f (total_%ses=%d) - %s',
                                    _echo_label, _rx_echo_hash, _age, _rx_rssi, _rx_freq,
-                                   _echo_kind, _echo_count)
-                    # Emit trace step so the UI shows why no further processing happens.
+                                   _echo_kind, _echo_count, _action_label)
+                    # Emit trace step so the UI shows the classification.
                     # Use distinct step names so the UI can render them differently.
                     try:
                         from repeater.web.packet_trace import trace_event as _trace_ev
                         _trace_ev(_rx_echo_hash, _echo_kind,
                                   channel=str(_rx_freq),
-                                  detail='%s (%s, age=%.1fs, rssi=%s, freq=%.3f) - DISCARDED' % (_echo_label, _echo_desc, _age, _rx_rssi, _rx_freq),
+                                  detail='%s (%s, age=%.1fs, rssi=%s, freq=%.3f) - %s' % (_echo_label, _echo_desc, _age, _rx_rssi, _rx_freq, _action_label),
                                   status='ok')
                     except Exception:
                         pass
@@ -3573,7 +3651,11 @@ class WM1303Backend:
                                                                self._get_packet_type_name(payload) if hasattr(self, '_get_packet_type_name') else '')
                     except Exception:
                         pass
-                    return
+                    if _discard:
+                        return
+                    # mesh_echo / unknown_echo: fall through to normal RX
+                    # processing so the bridge engine and companion servers
+                    # receive the retransmitted packet.
                 else:
                     del self._tx_echo_hashes[_rx_echo_hash]
             # Multi-demod dedup: prevent 8x TX for same packet (stable hash)

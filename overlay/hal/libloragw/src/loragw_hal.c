@@ -248,6 +248,61 @@ static uint8_t ts_addr = 0xFF;
 static int     ad_fd = -1;
 
 /* -------------------------------------------------------------------------- */
+/* --- GPIO PATHS STORAGE (pyMC_WM1303 extension) --------------------------- */
+
+/* Static storage for sysfs GPIO paths used by the HAL during hardware reset
+ * operations (currently the SX1261 post-CAD recovery path in loragw_sx1261.c).
+ *
+ * Defaults match the SenseCAP M1 mapping (BCM 17/18/5/13 + GPIO base offset
+ * 512 on Pi 4/5 Bookworm kernels). Other boards configure these via the
+ * Advanced Config UI, which writes them into global_conf.json's `gpio_paths`
+ * block; lora_pkt_fwd parses that block and calls lgw_set_gpio_paths() before
+ * lgw_start(). When the block is missing or a field is empty, the legacy
+ * SenseCAP M1 default below is retained so existing installs keep working.
+ */
+static struct lgw_gpio_paths_s gpio_paths_storage = {
+    .sx1302_reset    = "/sys/class/gpio/gpio529/value",   /* BCM17 + 512 */
+    .sx1302_power_en = "/sys/class/gpio/gpio530/value",   /* BCM18 + 512 */
+    .sx1261_reset    = "/sys/class/gpio/gpio517/value",   /* BCM5  + 512 */
+    .ad5338r_reset   = "/sys/class/gpio/gpio525/value",   /* BCM13 + 512 */
+};
+
+int lgw_set_gpio_paths(const struct lgw_gpio_paths_s * paths) {
+    if (paths == NULL) {
+        DEBUG_MSG("ERROR: NULL POINTER AS ARGUMENT\n");
+        return LGW_HAL_ERROR;
+    }
+    /* Per-field copy with legacy fallback: empty string keeps the existing
+     * default. This lets callers override only the fields that actually
+     * differ from the SenseCAP M1 mapping. strncpy with explicit NUL ensures
+     * we never produce an unterminated path. */
+    if (paths->sx1302_reset[0] != '\0') {
+        strncpy(gpio_paths_storage.sx1302_reset, paths->sx1302_reset, LGW_GPIO_PATH_MAX_LEN - 1);
+        gpio_paths_storage.sx1302_reset[LGW_GPIO_PATH_MAX_LEN - 1] = '\0';
+    }
+    if (paths->sx1302_power_en[0] != '\0') {
+        strncpy(gpio_paths_storage.sx1302_power_en, paths->sx1302_power_en, LGW_GPIO_PATH_MAX_LEN - 1);
+        gpio_paths_storage.sx1302_power_en[LGW_GPIO_PATH_MAX_LEN - 1] = '\0';
+    }
+    if (paths->sx1261_reset[0] != '\0') {
+        strncpy(gpio_paths_storage.sx1261_reset, paths->sx1261_reset, LGW_GPIO_PATH_MAX_LEN - 1);
+        gpio_paths_storage.sx1261_reset[LGW_GPIO_PATH_MAX_LEN - 1] = '\0';
+    }
+    if (paths->ad5338r_reset[0] != '\0') {
+        strncpy(gpio_paths_storage.ad5338r_reset, paths->ad5338r_reset, LGW_GPIO_PATH_MAX_LEN - 1);
+        gpio_paths_storage.ad5338r_reset[LGW_GPIO_PATH_MAX_LEN - 1] = '\0';
+    }
+    printf("INFO: GPIO paths configured: sx1302_reset=%s sx1302_power_en=%s sx1261_reset=%s ad5338r_reset=%s\n",
+           gpio_paths_storage.sx1302_reset, gpio_paths_storage.sx1302_power_en,
+           gpio_paths_storage.sx1261_reset, gpio_paths_storage.ad5338r_reset);
+    return LGW_HAL_SUCCESS;
+}
+
+const struct lgw_gpio_paths_s * lgw_get_gpio_paths(void) {
+    return &gpio_paths_storage;
+}
+
+/* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
 
 int32_t lgw_sf_getval(int x);
