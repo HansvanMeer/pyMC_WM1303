@@ -884,6 +884,26 @@ else
     warn "System rrdtool module not found - RRD metrics will be unavailable"
 fi
 
+step "Symlinking system systemd module into venv"
+# python3-systemd is installed via apt but lives in the system dist-packages.
+# The venv is created with include-system-site-packages=false, so the native
+# binding is invisible inside the venv. Symlinking the package dir lets the
+# service use the native sd_notify path (Type=notify watchdog keep-alive).
+# The code keeps a pure-Python AF_UNIX fallback, so this is a robustness step.
+SYS_SYSTEMD=$(python3 -c "import os, systemd; print(os.path.dirname(systemd.__file__))" 2>/dev/null || true)
+if [ -n "${SYS_SYSTEMD}" ] && [ -d "${SYS_SYSTEMD}" ] && [ -n "${VENV_SITE}" ]; then
+    if [ ! -e "${VENV_SITE}/systemd" ]; then
+        sudo -u ${PI_USER} ln -s "${SYS_SYSTEMD}" "${VENV_SITE}/systemd"
+    fi
+    if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import systemd.daemon" 2>/dev/null; then
+        ok "Native systemd binding available in venv"
+    else
+        warn "Symlink created but import failed - sd_notify will use pure-Python fallback"
+    fi
+else
+    warn "System systemd module not found - sd_notify will use pure-Python fallback"
+fi
+
 step "Installing pyMC_core (editable/dev mode)"
 cd "${REPO_DIR}/pyMC_core"
 if ! sudo -u ${PI_USER} "${VENV_DIR}/bin/pip" install -e . >> "${LOG_FILE}" 2>&1; then

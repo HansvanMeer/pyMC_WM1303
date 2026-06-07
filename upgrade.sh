@@ -374,6 +374,26 @@ else
     warn "venv not found at ${VENV_DIR} - skipping rrdtool symlink"
 fi
 
+step "Ensuring systemd module available in venv"
+if [ -d "${VENV_DIR}" ]; then
+    VENV_SITE=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    SYS_SYSTEMD=$(python3 -c "import os, systemd; print(os.path.dirname(systemd.__file__))" 2>/dev/null || true)
+    if [ -n "${SYS_SYSTEMD}" ] && [ -d "${SYS_SYSTEMD}" ] && [ -n "${VENV_SITE}" ]; then
+        if [ ! -e "${VENV_SITE}/systemd" ]; then
+            sudo -u ${PI_USER} ln -s "${SYS_SYSTEMD}" "${VENV_SITE}/systemd"
+        fi
+        if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import systemd.daemon" 2>/dev/null; then
+            ok "Native systemd binding available in venv"
+        else
+            warn "Symlink created but import failed - sd_notify will use pure-Python fallback"
+        fi
+    else
+        warn "System systemd module not found - sd_notify will use pure-Python fallback"
+    fi
+else
+    warn "venv not found at ${VENV_DIR} - skipping systemd symlink"
+fi
+
 step "Checking NTP synchronization"
 if command -v timedatectl &>/dev/null; then
     NTP_STATUS=$(timedatectl show --property=NTPSynchronized --value 2>/dev/null || echo "unknown")
@@ -781,6 +801,23 @@ if [ "$VENV_REBUILD_NEEDED" = true ]; then
         fi
     else
         warn "System rrdtool module not found"
+    fi
+
+    # Re-symlink system systemd module into new venv
+    step "Re-symlinking systemd module into new venv"
+    VENV_SITE=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import site; print(site.getsitepackages()[0])" 2>/dev/null)
+    SYS_SYSTEMD=$(python3 -c "import os, systemd; print(os.path.dirname(systemd.__file__))" 2>/dev/null || true)
+    if [ -n "${SYS_SYSTEMD}" ] && [ -d "${SYS_SYSTEMD}" ] && [ -n "${VENV_SITE}" ]; then
+        if [ ! -e "${VENV_SITE}/systemd" ]; then
+            sudo -u ${PI_USER} ln -s "${SYS_SYSTEMD}" "${VENV_SITE}/systemd"
+        fi
+        if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import systemd.daemon" 2>/dev/null; then
+            ok "Native systemd binding available in venv"
+        else
+            warn "Symlink created but import failed - sd_notify will use pure-Python fallback"
+        fi
+    else
+        warn "System systemd module not found - sd_notify will use pure-Python fallback"
     fi
 else
     # Normal path: only reinstall packages that changed
