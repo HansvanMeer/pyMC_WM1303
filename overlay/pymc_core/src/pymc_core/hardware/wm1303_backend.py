@@ -1151,6 +1151,15 @@ class WM1303Backend:
         self._sx1261_escalation_threshold = 2       # after N consecutive crashes, use extended power-off
         self._l2_ack_timeout_threshold = 3      # trigger restart after N consecutive timeouts
 
+        # Issue #11.1: auto-escalate non-crash watchdog restarts to deep_reset
+        # when they recur back-to-back. Covers hardware-level stalls where
+        # pkt_fwd does NOT crash but lgw_receive() returns no packets for
+        # extended periods (rssi_monitor / stat_monitor / timeout triggers).
+        # Without this, repeated standard power_cycles can leave the SX1261
+        # latched and only the extended deep_reset (>=10s drain) clears it.
+        self._consecutive_watchdog_restarts = 0
+        self._watchdog_escalation_threshold = 2  # after N consecutive non-crash restarts, escalate
+
 
         # Early detection: PUSH_DATA stat monitoring (Detection Method 1)
         self._zero_rx_stat_count = 0   # consecutive stat windows with rxnb=0
@@ -2919,9 +2928,29 @@ class WM1303Backend:
         If *escalate* is True (SX1261 hard-stuck after consecutive crashes),
         uses an extended 15s power-off drain via reset_lgw.sh deep_reset
         instead of the standard 3s power_cycle_lgw.sh.
+
+        Issue #11.1: in addition to the explicit escalation path triggered by
+        consecutive pkt_fwd CRASHES, this method also auto-escalates when the
+        watchdog has just restarted back-to-back without an intervening valid
+        RX. This covers hardware-level stalls where pkt_fwd does NOT crash
+        (rssi_monitor / stat_monitor / timeout triggers).
+        ``_consecutive_watchdog_restarts`` is reset to 0 in the RX handler
+        when a valid LoRa packet is received.
         """
-        logger.warning('WM1303Backend: WATCHDOG restart triggered by: %s (escalate=%s)',
-                      trigger_reason, escalate)
+        # Issue #11.1: track and auto-escalate non-crash watchdog restarts.
+        self._consecutive_watchdog_restarts += 1
+        if (not escalate
+                and self._consecutive_watchdog_restarts >= self._watchdog_escalation_threshold):
+            logger.warning(
+                'WM1303Backend: WATCHDOG auto-escalation - %d consecutive restarts '
+                'without RX recovery, switching to deep_reset (trigger=%s)',
+                self._consecutive_watchdog_restarts, trigger_reason
+            )
+            escalate = True
+
+        logger.warning('WM1303Backend: WATCHDOG restart triggered by: %s (escalate=%s, '
+                      'consec_restarts=%d)',
+                      trigger_reason, escalate, self._consecutive_watchdog_restarts)
         try:
             if escalate:
                 # Extended power-off drain to recover SX1261 from hard-stuck state.
@@ -3715,6 +3744,7 @@ class WM1303Backend:
                 self._zero_rx_stat_count = 0  # reset stat monitor on valid RX
                 self._rssi_spike_count = 0    # reset RSSI spike monitor on valid RX
                 self._consecutive_crash_count = 0  # reset SX1261 escalation on valid RX
+                self._consecutive_watchdog_restarts = 0  # Issue #11.1: reset auto-escalation on valid RX
                 self._update_rx_stats(cid, freq_hz, rssi, snr)
                 # TX batch hold: dynamic delay based on queue depth
                 _dynamic_hold = self._calculate_dynamic_tx_hold()

@@ -55,6 +55,15 @@ LBT_RSSI_BUFFER_SIZE = 20
 # TX noisefloor (pre-CAD FSK-RX) rolling buffer size
 TX_NF_BUFFER_SIZE = 20
 
+# Noise-floor outlier-filter window (Issue #7.2).
+# Samples outside this range are rejected so a single active LoRa burst or a
+# sensor glitch cannot pull the displayed noise floor away from the real
+# background level. The displayed `noise_floor_lbt_avg` is computed as the
+# MEDIAN of the rolling buffer (not the mean) for additional robustness
+# against transient spikes that fall inside the valid range.
+NF_VALID_MIN_DBM = -130.0   # below this: HAL sentinel-adjacent / sensor glitch
+NF_VALID_MAX_DBM = -60.0    # above this: active signal burst, not noise floor
+
 
 def _bw_hz_to_str(bw_hz: int) -> str:
     """Convert bandwidth in Hz to string for datr field."""
@@ -342,36 +351,76 @@ class ChannelTXQueue:
 
         Called after every LBT check (pass or block) to build a
         noise floor estimate from real pre-TX RSSI measurements.
+
+        Filtering and statistics (Issue #7.2):
+        - Sentinel values (HAL ``-127``) are rejected.
+        - Out-of-band values (active signals stronger than
+          ``NF_VALID_MAX_DBM``, sensor glitches below
+          ``NF_VALID_MIN_DBM``) are rejected as outliers so a single
+          burst that the LBT happens to coincide with does not skew the
+          displayed noise floor.
+        - ``noise_floor_lbt_avg`` is computed as the MEDIAN of the
+          rolling buffer (not the mean) to be robust against the
+          remaining transient spikes that still fall inside the valid
+          range.
         """
         if rssi is None or rssi <= -126:  # filter HAL sentinel (-127)
+            return
+        # Outlier filter: reject values that are clearly not the noise
+        # floor. An LBT measurement that happens to land on top of an
+        # active LoRa burst can be -50 dBm or stronger; such samples must
+        # not be counted as background noise floor.
+        if rssi < NF_VALID_MIN_DBM or rssi > NF_VALID_MAX_DBM:
             return
         self._lbt_rssi_buffer.append(rssi)
         n = len(self._lbt_rssi_buffer)
         self.stats["lbt_last_rssi"] = round(rssi, 1)
         self.stats["noise_floor_lbt_samples"] = n
         if n > 0:
-            vals = list(self._lbt_rssi_buffer)
-            self.stats["noise_floor_lbt_avg"] = round(sum(vals) / n, 1)
-            self.stats["noise_floor_lbt_min"] = round(min(vals), 1)
-            self.stats["noise_floor_lbt_max"] = round(max(vals), 1)
+            vals_sorted = sorted(self._lbt_rssi_buffer)
+            # Median is robust against transient spikes inside the valid
+            # range (e.g. one strong neighbour landing just below
+            # NF_VALID_MAX_DBM). Field name kept as 'noise_floor_lbt_avg'
+            # for API backward compatibility.
+            if n % 2 == 1:
+                median = vals_sorted[n // 2]
+            else:
+                median = (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2.0
+            self.stats["noise_floor_lbt_avg"] = round(median, 1)
+            self.stats["noise_floor_lbt_min"] = round(vals_sorted[0], 1)
+            self.stats["noise_floor_lbt_max"] = round(vals_sorted[-1], 1)
 
     def record_tx_noisefloor(self, rssi: float) -> None:
         """Record a TX noisefloor measurement (pre-CAD FSK-RX) in the rolling buffer.
 
         Called after every TX with CAD enabled. The value is the noise floor
         measured on the TX frequency just before the CAD preamble scan.
+
+        Same filtering/statistics policy as ``record_lbt_rssi`` (Issue #7.2):
+        sentinel rejection, [NF_VALID_MIN_DBM .. NF_VALID_MAX_DBM] outlier
+        filter, and MEDIAN over the rolling buffer (not the mean).
         """
         if rssi is None or rssi <= -127:  # filter sentinel values
+            return
+        # Outlier filter: same window as record_lbt_rssi to keep both
+        # noise-floor sources consistent and robust against transient bursts.
+        if rssi < NF_VALID_MIN_DBM or rssi > NF_VALID_MAX_DBM:
             return
         self._tx_nf_buffer.append(rssi)
         n = len(self._tx_nf_buffer)
         self.stats["tx_noisefloor_last"] = round(rssi, 1)
         self.stats["tx_noisefloor_samples"] = n
         if n > 0:
-            vals = list(self._tx_nf_buffer)
-            self.stats["tx_noisefloor_avg"] = round(sum(vals) / n, 1)
-            self.stats["tx_noisefloor_min"] = round(min(vals), 1)
-            self.stats["tx_noisefloor_max"] = round(max(vals), 1)
+            vals_sorted = sorted(self._tx_nf_buffer)
+            # Median ipv mean for robustness; field name kept for API
+            # backward compatibility.
+            if n % 2 == 1:
+                median = vals_sorted[n // 2]
+            else:
+                median = (vals_sorted[n // 2 - 1] + vals_sorted[n // 2]) / 2.0
+            self.stats["tx_noisefloor_avg"] = round(median, 1)
+            self.stats["tx_noisefloor_min"] = round(vals_sorted[0], 1)
+            self.stats["tx_noisefloor_max"] = round(vals_sorted[-1], 1)
 
     def get_status(self) -> dict:
         """Return queue status and stats."""

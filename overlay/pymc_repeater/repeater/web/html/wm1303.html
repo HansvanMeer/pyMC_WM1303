@@ -119,6 +119,7 @@ select.ci option{background:#1e293b}
       <button class="tab-btn" onclick="showTab('channels',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>Channels</button>
       <button class="tab-btn" onclick="showTab('bridge',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M7 3v18M17 3v18"/></svg>Bridge Rules</button>
       <button class="tab-btn" onclick="showTab('tracing',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Tracing</button>
+      <button class="tab-btn" onclick="showTab('neighbours',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><circle cx="17" cy="7" r="3"/><path d="M21 21v-2a4 4 0 00-3-3.87"/></svg>Neighbours</button>
       <button class="tab-btn" onclick="showTab('logs',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>Logs</button>
       <button class="tab-btn" onclick="showTab('adv-config',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Adv. Config</button>
     </div>
@@ -928,7 +929,7 @@ function toast(msg,type,dur){
   G('toasts').appendChild(e);
   setTimeout(()=>{e.style.animation='sOut .3s ease forwards';setTimeout(()=>e.remove(),300);},dur);
 }
-const TABS={status:function(){try{loadStatus();}catch(e){console.error('loadStatus err:',e);}},dedup:function(){try{dedupLoad();}catch(e){console.error('dedupLoad err:',e);}},channels:function(){try{loadCh();loadChE();loadChF();loadRegions();loadSyncWord();loadTxQueues();}catch(e){console.error('loadCh err:',e);G('tab-channels').innerHTML='<h3 style="color:red">Error: '+e.message+'</h3>';}},ifchains:function(){try{renderIfChains(true);}catch(e){console.error('renderIfChains err:',e);}},bridge:function(){try{loadBr();}catch(e){console.error('loadBr err:',e);}},logs:function(){try{startLogs();dbgCheckStatus();}catch(e){console.error('startLogs err:',e);}},spectrum:function(){try{specLoad();}catch(e){console.error('specLoad err:',e);}},'adv-config':function(){try{loadAdvConfig();}catch(e){console.error('loadAdvConfig err:',e);}}};
+const TABS={status:function(){try{loadStatus();}catch(e){console.error('loadStatus err:',e);}},dedup:function(){try{dedupLoad();}catch(e){console.error('dedupLoad err:',e);}},channels:function(){try{loadCh();loadChE();loadChF();loadRegions();loadSyncWord();loadTxQueues();}catch(e){console.error('loadCh err:',e);G('tab-channels').innerHTML='<h3 style="color:red">Error: '+e.message+'</h3>';}},ifchains:function(){try{renderIfChains(true);}catch(e){console.error('renderIfChains err:',e);}},bridge:function(){try{loadBr();}catch(e){console.error('loadBr err:',e);}},logs:function(){try{startLogs();dbgCheckStatus();}catch(e){console.error('startLogs err:',e);}},spectrum:function(){try{specLoad();}catch(e){console.error('specLoad err:',e);}},neighbours:function(){try{loadNeighbours();}catch(e){console.error('loadNeighbours err:',e);}},'adv-config':function(){try{loadAdvConfig();}catch(e){console.error('loadAdvConfig err:',e);}}};
 function showTab(name,btn){
   console.log('showTab called:',name);
   document.querySelectorAll('.tp').forEach(p=>p.classList.remove('active'));
@@ -2297,6 +2298,15 @@ async function specLoad() {
     G('specNote').style.display = 'block';
     G('specNote').textContent = d.last_scan.note || '';
   }
+
+  // Issue #7.1: update spectrum title with region-aware frequency range.
+  // Prefer freq_range from cached last_scan; fall back to top-level if present.
+  if (G('specFreqTitle')) {
+    var _fr = (d.last_scan && d.last_scan.freq_range) || d.freq_range || null;
+    if (_fr && _fr.start_mhz != null && _fr.stop_mhz != null) {
+      G('specFreqTitle').textContent = 'Frequency Spectrum (' + _fr.start_mhz + '-' + _fr.stop_mhz + ' MHz' + (_fr.region ? ', ' + _fr.region : '') + ')';
+    }
+  }
 }
 
 async function specScan() {
@@ -2308,9 +2318,464 @@ async function specScan() {
       specRenderChart(d, specData ? specData.channels : []);
       G('specLastUpdate').textContent = 'Scanned: ' + new Date().toLocaleTimeString();
       if (d.note) { G('specNote').style.display='block'; G('specNote').textContent=d.note; }
+      // Issue #7.1: update spectrum title with region-aware frequency range.
+      if (G('specFreqTitle') && d.freq_range && d.freq_range.start_mhz != null && d.freq_range.stop_mhz != null) {
+        var _fr = d.freq_range;
+        G('specFreqTitle').textContent = 'Frequency Spectrum (' + _fr.start_mhz + '-' + _fr.stop_mhz + ' MHz' + (_fr.region ? ', ' + _fr.region : '') + ')';
+      }
     }
   } finally {
     btn.disabled = false; btn.textContent = '⚡ Scan Now';
+  }
+}
+
+// ── Issue #11.2: Neighbours tab (Pack 1+2+3) ─────────────────────────────
+var nbState = {
+  all: [],          // raw list from API
+  filtered: [],     // after search/filter
+  selected: new Set(),
+  view: 'table',    // 'table' | 'topology'
+  sort: 'last_seen',
+  sortDir: 'desc',
+  autoTimer: null,
+  historyChart: null,
+  topoChart: null,
+  channels: new Set()
+};
+function _nbFmtTs(ts){
+  if(!ts || ts <= 0) return 'never';
+  try {
+    var d = new Date(ts * 1000);
+    var age = (Date.now()/1000) - ts;
+    var rel;
+    if (age < 60) rel = Math.round(age) + 's ago';
+    else if (age < 3600) rel = Math.round(age/60) + 'm ago';
+    else if (age < 86400) rel = Math.round(age/3600) + 'h ago';
+    else rel = Math.round(age/86400) + 'd ago';
+    return rel + ' (' + d.toLocaleTimeString() + ')';
+  } catch(e) { return String(ts); }
+}
+function _nbRssiColor(v){
+  if (v == null) return 'var(--txm)';
+  if (v > -90)  return '#22c55e';
+  if (v > -110) return '#f59e0b';
+  return '#ef4444';
+}
+function _nbSnrColor(v){
+  if (v == null) return 'var(--txm)';
+  if (v > 5) return '#22c55e';
+  if (v > 0) return '#f59e0b';
+  return '#ef4444';
+}
+function _nbVal(n, k){
+  if (k === 'name') return (n.friendly_name || n.name || n.node_id || '').toLowerCase();
+  if (k === 'last_seen') return n.last_seen || 0;
+  if (k === 'rssi') return (n.rssi != null ? n.rssi : (n.rssi_last != null ? n.rssi_last : -999));
+  if (k === 'snr') return (n.snr != null ? n.snr : (n.snr_last != null ? n.snr_last : -999));
+  if (k === 'adverts') return (n.advert_count != null ? n.advert_count : (n.adverts || 0));
+  return 0;
+}
+function _nbCh(n){ return n.channel || n.channel_name || ''; }
+function _nbName(n){
+  var nid = n.node_id || '';
+  return n.friendly_name || n.name || ('Node ' + (nid.substring(0, 8) || '?'));
+}
+function _nbRssi(n){ return (n.rssi != null) ? n.rssi : (n.rssi_last != null ? n.rssi_last : null); }
+function _nbSnr(n){ return (n.snr != null) ? n.snr : (n.snr_last != null ? n.snr_last : null); }
+
+function nbSort(col){
+  if (nbState.sort === col) {
+    nbState.sortDir = (nbState.sortDir === 'asc') ? 'desc' : 'asc';
+  } else {
+    nbState.sort = col;
+    nbState.sortDir = (col === 'name') ? 'asc' : 'desc';
+  }
+  nbApplySortAndRender();
+}
+function nbApplySortAndRender(){
+  var dir = (nbState.sortDir === 'asc') ? 1 : -1;
+  nbState.filtered.sort(function(a,b){
+    var va = _nbVal(a, nbState.sort);
+    var vb = _nbVal(b, nbState.sort);
+    if (va < vb) return -1 * dir;
+    if (va > vb) return  1 * dir;
+    return 0;
+  });
+  // Update sort indicators
+  ['Name','Last','Rssi','Snr','Ad'].forEach(function(k){
+    var el = G('nbSort' + k);
+    if (el) el.textContent = '';
+  });
+  var indMap = { name:'Name', last_seen:'Last', rssi:'Rssi', snr:'Snr', adverts:'Ad' };
+  var arrow = (nbState.sortDir === 'asc') ? '\u25B2' : '\u25BC';
+  var indEl = G('nbSort' + indMap[nbState.sort]);
+  if (indEl) indEl.textContent = arrow;
+  nbRenderTable();
+  if (nbState.view === 'topology') nbRenderTopology();
+}
+function nbApplyFilters(){
+  var q = (G('nbSearch') ? G('nbSearch').value : '').trim().toLowerCase();
+  var lsCutoff = (G('nbLastSeenFilter') ? G('nbLastSeenFilter').value : '');
+  var chFilter = (G('nbChannelFilter') ? G('nbChannelFilter').value : '');
+  var now = Date.now()/1000;
+  nbState.filtered = nbState.all.filter(function(n){
+    if (q) {
+      var hay = ((n.friendly_name||'') + ' ' + (n.name||'') + ' ' + (n.node_id||'')).toLowerCase();
+      if (hay.indexOf(q) < 0) return false;
+    }
+    if (lsCutoff) {
+      var ls = n.last_seen || 0;
+      if (!ls || (now - ls) > parseFloat(lsCutoff)) return false;
+    }
+    if (chFilter) {
+      if (_nbCh(n) !== chFilter) return false;
+    }
+    return true;
+  });
+  nbState.selected = new Set([...nbState.selected].filter(function(nid){
+    return nbState.filtered.some(function(n){ return n.node_id === nid; });
+  }));
+  nbUpdateBulkBtn();
+  nbRenderStats();
+  nbApplySortAndRender();
+}
+function nbRenderStats(){
+  var el = G('nbStats');
+  if (!el) return;
+  var list = nbState.filtered;
+  var now = Date.now()/1000;
+  var total = list.length;
+  var active = list.filter(function(n){ return n.last_seen && (now - n.last_seen) < 300; }).length;
+  var rssiVals = list.map(_nbRssi).filter(function(v){ return v != null; });
+  var strongest = rssiVals.length ? Math.max.apply(null, rssiVals) : null;
+  var weakest   = rssiVals.length ? Math.min.apply(null, rssiVals) : null;
+  function card(label, val, color){
+    return '<div style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:8px;padding:12px">' +
+      '<div style="font-size:11px;color:var(--txm);margin-bottom:4px">' + esc(label) + '</div>' +
+      '<div style="font-size:18px;font-weight:600;color:' + (color||'var(--tx)') + '">' + esc(val) + '</div>' +
+      '</div>';
+  }
+  el.innerHTML = [
+    card('Total visible', String(total), 'var(--tx)'),
+    card('Active (<5 min)', String(active), active > 0 ? '#22c55e' : 'var(--tx)'),
+    card('Strongest RSSI', strongest != null ? strongest.toFixed(1) + ' dBm' : '\u2014', _nbRssiColor(strongest)),
+    card('Weakest RSSI',   weakest   != null ? weakest.toFixed(1)   + ' dBm' : '\u2014', _nbRssiColor(weakest))
+  ].join('');
+}
+function nbUpdateBulkBtn(){
+  var btn = G('nbBulkPingBtn');
+  if (!btn) return;
+  var n = nbState.selected.size;
+  btn.disabled = (n === 0);
+  btn.textContent = (n > 0) ? ('Ping selected (' + n + ')') : 'Ping selected';
+}
+function nbToggleSelectAll(checked){
+  if (checked) {
+    nbState.selected = new Set(nbState.filtered.map(function(n){ return n.node_id; }));
+  } else {
+    nbState.selected.clear();
+  }
+  nbUpdateBulkBtn();
+  nbRenderTable();
+}
+function nbToggleRow(nid, checked){
+  if (checked) nbState.selected.add(nid);
+  else nbState.selected.delete(nid);
+  nbUpdateBulkBtn();
+  var selAll = G('nbSelectAll');
+  if (selAll) selAll.checked = (nbState.selected.size === nbState.filtered.length && nbState.filtered.length > 0);
+}
+function nbRenderTable(){
+  var tbody = G('nbTbody');
+  if (!tbody) return;
+  var list = nbState.filtered;
+  if (G('nbCount')) G('nbCount').textContent = list.length + ' node' + (list.length === 1 ? '' : 's');
+  if (G('nbLastUpdate')) G('nbLastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  if (list.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">No neighbours match the current filters.</td></tr>';
+    return;
+  }
+  var rows = list.map(function(n){
+    var nid = n.node_id || '';
+    var name = _nbName(n);
+    var rssi = _nbRssi(n);
+    var snr  = _nbSnr(n);
+    var ad   = n.advert_count != null ? n.advert_count : (n.adverts || 0);
+    var ch   = _nbCh(n) || '\u2014';
+    var path = n.path_len != null ? n.path_len : (n.path != null ? n.path : '\u2014');
+    var rssiStr = rssi != null ? rssi.toFixed(1) + ' dBm' : '\u2014';
+    var snrStr  = snr  != null ? snr.toFixed(1)  + ' dB'  : '\u2014';
+    var nidShort = nid ? '<code style="font-size:10px;color:var(--txm)">' + esc(nid) + '</code>' : '';
+    var checked = nbState.selected.has(nid) ? ' checked' : '';
+    return '<tr style="border-bottom:1px solid var(--brd);cursor:pointer" onclick="nbShowDetail(\'' + esc(nid) + '\')">' +
+      '<td style="padding:8px 6px;text-align:center" onclick="event.stopPropagation()"><input type="checkbox"' + checked + ' onchange="nbToggleRow(\'' + esc(nid) + '\', this.checked)"></td>' +
+      '<td style="padding:8px 10px"><div style="font-weight:500;color:var(--tx)">' + esc(name) + '</div>' + nidShort + '</td>' +
+      '<td style="padding:8px 10px;color:var(--txm)">' + esc(_nbFmtTs(n.last_seen)) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:' + _nbRssiColor(rssi) + '">' + esc(rssiStr) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right;color:' + _nbSnrColor(snr) + '">' + esc(snrStr) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right">' + esc(String(ad)) + '</td>' +
+      '<td style="padding:8px 10px">' + esc(String(ch)) + '</td>' +
+      '<td style="padding:8px 10px;text-align:right">' + esc(String(path)) + '</td>' +
+      '<td style="padding:8px 10px;text-align:center" onclick="event.stopPropagation()">' +
+        (nid ? '<button class="btn sec sm" onclick="pingNeighbour(\'' + esc(nid) + '\')" style="padding:2px 8px;font-size:11px">Ping</button>' : '\u2014') +
+      '</td>' +
+    '</tr>';
+  }).join('');
+  tbody.innerHTML = rows;
+  var selAll = G('nbSelectAll');
+  if (selAll) selAll.checked = (nbState.selected.size === list.length && list.length > 0);
+}
+function nbSetView(view){
+  nbState.view = view;
+  var tBtn = G('nbViewTableBtn');
+  var pBtn = G('nbViewTopoBtn');
+  if (tBtn) { tBtn.className = 'btn ' + (view === 'table' ? 'pri' : 'sec') + ' sm'; }
+  if (pBtn) { pBtn.className = 'btn ' + (view === 'topology' ? 'pri' : 'sec') + ' sm'; }
+  if (G('nbTableView')) G('nbTableView').style.display = (view === 'table') ? '' : 'none';
+  if (G('nbTopoView'))  G('nbTopoView').style.display  = (view === 'topology') ? '' : 'none';
+  if (view === 'topology') nbRenderTopology();
+}
+var _NB_CH_COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#a78bfa','#06b6d4','#f97316','#ec4899'];
+function _nbChColor(ch){
+  var idx = 0;
+  var s = String(ch||'');
+  for (var i=0;i<s.length;i++) idx = (idx*31 + s.charCodeAt(i)) & 0xffff;
+  return _NB_CH_COLORS[idx % _NB_CH_COLORS.length];
+}
+function nbRenderTopology(){
+  var canvas = G('nbTopoCanvas');
+  if (!canvas || typeof Chart === 'undefined') return;
+  var pts = nbState.filtered.map(function(n, i){
+    var rssi = _nbRssi(n);
+    var snr = _nbSnr(n);
+    var nrssi = rssi != null ? rssi : -130;
+    // Distance: stronger RSSI -> closer to center. Map [-130..-40] to [1..0.05]
+    var r = Math.max(0.05, Math.min(1.0, (-nrssi - 40) / 90));
+    var ang = (i * 137.508) * Math.PI / 180; // golden angle for distribution
+    return {
+      x: r * Math.cos(ang),
+      y: r * Math.sin(ang),
+      r: Math.max(4, Math.min(20, 6 + (snr != null ? snr/2 : 0))),
+      name: _nbName(n),
+      rssi: rssi,
+      snr: snr,
+      ch: _nbCh(n),
+      _n: n
+    };
+  });
+  // Local node at center
+  var datasets = [
+    { label: 'Local', data: [{ x: 0, y: 0, r: 10, name: 'This repeater' }], backgroundColor: '#fff', borderColor: '#fff' }
+  ];
+  // Group by channel for legend
+  var byCh = {};
+  pts.forEach(function(p){
+    var k = p.ch || 'unknown';
+    if (!byCh[k]) byCh[k] = [];
+    byCh[k].push(p);
+  });
+  Object.keys(byCh).forEach(function(k){
+    datasets.push({
+      label: k,
+      data: byCh[k],
+      backgroundColor: _nbChColor(k) + 'cc',
+      borderColor: _nbChColor(k)
+    });
+  });
+  if (nbState.topoChart) { nbState.topoChart.destroy(); nbState.topoChart = null; }
+  nbState.topoChart = new Chart(canvas.getContext('2d'), {
+    type: 'bubble',
+    data: { datasets: datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { min: -1.1, max: 1.1, display: false, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: { min: -1.1, max: 1.1, display: false, grid: { color: 'rgba(255,255,255,0.04)' } }
+      },
+      plugins: {
+        legend: { labels: { color: '#ddd' } },
+        tooltip: {
+          callbacks: {
+            label: function(ctx){
+              var p = ctx.raw;
+              if (!p) return '';
+              var bits = [p.name || ''];
+              if (p.rssi != null) bits.push('RSSI ' + p.rssi.toFixed(1) + ' dBm');
+              if (p.snr  != null) bits.push('SNR '  + p.snr.toFixed(1)  + ' dB');
+              if (p.ch)           bits.push('ch ' + p.ch);
+              return bits.join(' \u2022 ');
+            }
+          }
+        }
+      }
+    }
+  });
+}
+function nbToggleAutoRefresh(){
+  var on = (G('nbAutoRefresh') && G('nbAutoRefresh').checked);
+  if (nbState.autoTimer) { clearInterval(nbState.autoTimer); nbState.autoTimer = null; }
+  if (on) {
+    nbState.autoTimer = setInterval(function(){
+      // Only refresh while the tab is visible
+      var tab = G('tab-neighbours');
+      if (tab && tab.classList.contains('active')) loadNeighbours();
+    }, 15000);
+  }
+}
+function nbExportCsv(){
+  var list = nbState.filtered;
+  var headers = ['node_id','friendly_name','last_seen','rssi','snr','adverts','channel','path_len'];
+  var rows = list.map(function(n){
+    return [
+      n.node_id || '',
+      _nbName(n).replace(/"/g, '""'),
+      n.last_seen ? new Date(n.last_seen*1000).toISOString() : '',
+      _nbRssi(n) != null ? _nbRssi(n) : '',
+      _nbSnr(n)  != null ? _nbSnr(n)  : '',
+      n.advert_count != null ? n.advert_count : (n.adverts || ''),
+      _nbCh(n) || '',
+      n.path_len != null ? n.path_len : (n.path != null ? n.path : '')
+    ];
+  });
+  var csv = headers.join(',') + '\n' + rows.map(function(r){
+    return r.map(function(c){
+      var s = String(c);
+      if (/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+      return s;
+    }).join(',');
+  }).join('\n');
+  var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'neighbours-' + new Date().toISOString().replace(/[:.]/g,'-') + '.csv';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+}
+async function nbBulkPing(){
+  var ids = [...nbState.selected];
+  if (!ids.length) return;
+  if (!confirm('Ping ' + ids.length + ' selected neighbour(s)?')) return;
+  var results = { ok: 0, fail: 0 };
+  for (var i=0;i<ids.length;i++){
+    try {
+      var d = await api('POST', '/api/ping_neighbor', { target_id: ids[i], timeout: 10 });
+      if (d && (d.success || d.status === 'ok')) results.ok++; else results.fail++;
+    } catch(e) { results.fail++; }
+  }
+  alert('Bulk ping done: ' + results.ok + ' ok, ' + results.fail + ' failed');
+}
+function nbShowDetail(nid){
+  if (!nid) return;
+  var n = nbState.all.find(function(x){ return x.node_id === nid; });
+  if (!n) return;
+  var rows = '';
+  Object.keys(n).sort().forEach(function(k){
+    var v = n[k];
+    if (v == null) return;
+    if (typeof v === 'object') v = JSON.stringify(v);
+    rows += '<tr><td style="padding:4px 8px;color:var(--txm);width:35%">' + esc(k) + '</td>' +
+            '<td style="padding:4px 8px;color:var(--tx);font-family:monospace;font-size:11px;word-break:break-all">' + esc(String(v)) + '</td></tr>';
+  });
+  if (G('nbDetailTitle')) G('nbDetailTitle').textContent = 'Neighbour: ' + _nbName(n);
+  if (G('nbDetailBody'))  G('nbDetailBody').innerHTML  = '<table style="width:100%;border-collapse:collapse;font-size:12px;background:rgba(255,255,255,0.02);border-radius:6px;overflow:hidden">' + rows + '</table>';
+  var modal = G('nbDetailModal');
+  if (modal) modal.style.display = 'flex';
+  nbFetchHistory(nid);
+}
+function nbCloseDetail(){
+  var modal = G('nbDetailModal');
+  if (modal) modal.style.display = 'none';
+  if (nbState.historyChart) { nbState.historyChart.destroy(); nbState.historyChart = null; }
+}
+async function nbFetchHistory(nid){
+  try {
+    var d = await api('GET', '/api/wm1303/neighbours_history?node_id=' + encodeURIComponent(nid));
+    var samples = (d && d.samples) ? d.samples : [];
+    nbDrawHistoryChart(samples);
+  } catch(e) {
+    console.error('nbFetchHistory failed', e);
+  }
+}
+function nbDrawHistoryChart(samples){
+  var canvas = G('nbDetailChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  if (nbState.historyChart) { nbState.historyChart.destroy(); nbState.historyChart = null; }
+  if (!samples.length) {
+    var ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = '#888'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('No history yet (refresh the tab a few times to build samples)', canvas.width/2, canvas.height/2);
+    return;
+  }
+  var rssi = samples.map(function(s){ return { x: new Date(s.ts*1000), y: s.rssi }; });
+  var snr  = samples.map(function(s){ return { x: new Date(s.ts*1000), y: s.snr  }; });
+  nbState.historyChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'RSSI (dBm)', data: rssi, borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.15)', yAxisID: 'y',  tension: 0.2, spanGaps: true },
+        { label: 'SNR (dB)',   data: snr,  borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.15)', yAxisID: 'y2', tension: 0.2, spanGaps: true }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x:  { type: 'time', time: { tooltipFormat: 'HH:mm:ss' }, ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+        y:  { position: 'left',  ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.05)' }, title: { display: true, text: 'RSSI dBm', color: '#aaa' } },
+        y2: { position: 'right', ticks: { color: '#aaa' }, grid: { drawOnChartArea: false },          title: { display: true, text: 'SNR dB',   color: '#aaa' } }
+      },
+      plugins: { legend: { labels: { color: '#ddd' } } }
+    }
+  });
+}
+function _nbUpdateChannelFilter(){
+  var sel = G('nbChannelFilter');
+  if (!sel) return;
+  var current = sel.value;
+  var channels = new Set();
+  nbState.all.forEach(function(n){
+    var c = _nbCh(n);
+    if (c) channels.add(c);
+  });
+  var opts = ['<option value="">All channels</option>'];
+  [...channels].sort().forEach(function(c){
+    opts.push('<option value="' + esc(c) + '"' + (c === current ? ' selected' : '') + '>' + esc(c) + '</option>');
+  });
+  sel.innerHTML = opts.join('');
+}
+async function loadNeighbours(){
+  var tbody = G('nbTbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>';
+  try {
+    var d = await api('GET', '/api/wm1303/neighbours');
+    if (!d || d.error) {
+      if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String((d && d.error) || 'no response')) + '</td></tr>';
+      nbState.all = []; nbState.filtered = [];
+      nbRenderStats();
+      return;
+    }
+    nbState.all = d.neighbours || [];
+    _nbUpdateChannelFilter();
+    nbApplyFilters();
+  } catch (e) {
+    console.error('loadNeighbours failed:', e);
+    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String(e && e.message ? e.message : e)) + '</td></tr>';
+    nbState.all = []; nbState.filtered = [];
+    nbRenderStats();
+  }
+}
+async function pingNeighbour(nodeId){
+  if (!nodeId) return;
+  try {
+    var d = await api('POST', '/api/ping_neighbor', { target_id: nodeId, timeout: 10 });
+    if (d && (d.success || d.status === 'ok')) {
+      alert('Ping sent to ' + nodeId);
+    } else {
+      alert('Ping failed: ' + ((d && (d.error || d.message)) || 'unknown error'));
+    }
+  } catch (e) {
+    alert('Ping error: ' + (e && e.message ? e.message : e));
   }
 }
 
@@ -2476,7 +2941,7 @@ showTab = function(name, btn) {
   <!-- Frequency Spectrum chart (existing) -->
   <div class="gl" style="padding:18px;margin-bottom:16px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <h3 style="margin:0;font-size:14px;font-weight:600;color:var(--tx)">Frequency Spectrum (863–870 MHz)</h3>
+      <h3 id="specFreqTitle" style="margin:0;font-size:14px;font-weight:600;color:var(--tx)">Frequency Spectrum</h3>
       <div style="display:flex;align-items:center;gap:10px"><span style="font-size:11px;color:var(--txm)" id="specLastUpdate">Not yet scanned</span><button class="btn pri sm" onclick="specScan()" id="btnSpecScan" style="padding:4px 12px;font-size:12px">⚡ Scan Now</button></div>
     </div>
     <div style="position:relative;height:220px">
@@ -4434,6 +4899,96 @@ function renderPmCrcChart(channels) {
 })();
 </script>
 <!-- TRACING TAB -->
+<!-- Issue #11.2: Neighbours tab (Pack 1+2+3) - Mesh neighbours with sort/filter/topology/history -->
+<div id="tab-neighbours" class="tp">
+  <!-- Pack 1: Stats cards -->
+  <div id="nbStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
+
+  <div class="gl" style="padding:18px;margin-bottom:16px">
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+      <h3 style="margin:0;font-size:14px;font-weight:600;color:var(--tx)">Mesh Neighbours</h3>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span id="nbCount" style="font-size:11px;color:var(--txm)">0 nodes</span>
+        <span id="nbLastUpdate" style="font-size:11px;color:var(--txm)">Not loaded</span>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input id="nbAutoRefresh" type="checkbox" onchange="nbToggleAutoRefresh()"> Auto-refresh (15s)
+        </label>
+        <button class="btn sec sm" onclick="nbExportCsv()" style="padding:4px 12px;font-size:12px">&#8595; CSV</button>
+        <button class="btn sec sm" onclick="nbBulkPing()" id="nbBulkPingBtn" disabled style="padding:4px 12px;font-size:12px">Ping selected</button>
+        <button class="btn pri sm" onclick="loadNeighbours()" style="padding:4px 12px;font-size:12px">&#8635; Refresh</button>
+      </div>
+    </div>
+
+    <!-- Pack 1+3: Toolbar (search + filters + view tabs) -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <input id="nbSearch" type="text" placeholder="Search name or node-id..." oninput="nbApplyFilters()" style="flex:1;min-width:180px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+      <select id="nbLastSeenFilter" onchange="nbApplyFilters()" style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+        <option value="">All times</option>
+        <option value="300">Last 5 min</option>
+        <option value="3600">Last 1 hour</option>
+        <option value="86400">Last 24 hours</option>
+      </select>
+      <select id="nbChannelFilter" onchange="nbApplyFilters()" style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+        <option value="">All channels</option>
+      </select>
+      <div style="display:flex;gap:4px">
+        <button id="nbViewTableBtn" class="btn pri sm" onclick="nbSetView('table')" style="padding:4px 12px;font-size:12px">Table</button>
+        <button id="nbViewTopoBtn" class="btn sec sm" onclick="nbSetView('topology')" style="padding:4px 12px;font-size:12px">Topology</button>
+      </div>
+    </div>
+
+    <div id="nbInfo" style="font-size:11px;color:var(--txm);margin-bottom:10px;line-height:1.45">
+      Nodes seen via received ADVERTs. Click a row to see details + per-node RSSI/SNR history. Use checkboxes for bulk ping, or the column headers to sort.
+    </div>
+
+    <!-- TABLE VIEW -->
+    <div id="nbTableView">
+      <div id="nbTableWrap" style="overflow-x:auto">
+        <table id="nbTable" style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead>
+            <tr style="background:rgba(99,102,241,0.08);color:var(--tx);text-align:left">
+              <th style="padding:8px 6px;border-bottom:1px solid var(--brd);width:24px;text-align:center"><input type="checkbox" id="nbSelectAll" onchange="nbToggleSelectAll(this.checked)"></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('name')">Name / Node-ID <span id="nbSortName" style="opacity:0.5"></span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('last_seen')">Last seen <span id="nbSortLast" style="opacity:0.5">&#9660;</span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('rssi')">RSSI <span id="nbSortRssi" style="opacity:0.5"></span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('snr')">SNR <span id="nbSortSnr" style="opacity:0.5"></span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('adverts')">Adverts <span id="nbSortAd" style="opacity:0.5"></span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd)">Channel</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right">Path</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:center">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="nbTbody">
+            <tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TOPOLOGY VIEW (Pack 3) -->
+    <div id="nbTopoView" style="display:none">
+      <div style="position:relative;height:480px"><canvas id="nbTopoCanvas"></canvas></div>
+      <div style="font-size:11px;color:var(--txm);margin-top:8px">Radial scatter: distance from center is signal strength (closer = stronger). Bubble color = channel; bubble size = SNR. Hover for details.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Pack 2: Neighbour detail modal (per-node info + history chart) -->
+<div id="nbDetailModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;align-items:center;justify-content:center;padding:20px">
+  <div style="background:var(--bg2,#1a1a24);border:1px solid var(--brd);border-radius:10px;max-width:760px;width:100%;max-height:90vh;overflow-y:auto;padding:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <h3 id="nbDetailTitle" style="margin:0;font-size:15px;color:var(--tx)">Neighbour details</h3>
+      <button class="btn sec sm" onclick="nbCloseDetail()" style="padding:4px 10px;font-size:12px">&#10006; Close</button>
+    </div>
+    <div id="nbDetailBody"></div>
+    <div style="margin-top:14px">
+      <div style="font-size:12px;color:var(--tx);margin-bottom:6px;font-weight:500">RSSI / SNR history (in-memory since service start)</div>
+      <div style="position:relative;height:220px"><canvas id="nbDetailChart"></canvas></div>
+    </div>
+  </div>
+</div>
+
 <div id="tab-tracing" class="tp">
   <!-- v2.5.0+: Trace stats dashboard - quick overview of recent traces -->
   <div class="gl p-5 mb-4" id="traceStatsPanel" style="display:none">

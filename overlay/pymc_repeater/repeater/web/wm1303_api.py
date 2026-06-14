@@ -116,6 +116,75 @@ _GLOBAL_CONF = _PKTFWD_DIR / "global_conf.json"
 _SPECTRAL_BIN = _PKTFWD_DIR / "spectral_scan"
 _SPECTRAL_RES = Path("/tmp/pymc_spectral_results.json")
 
+# Spectrum-scan region presets (Issue #7.1).
+# Maps `region.code` (from wm1303_ui.json) to a (start_hz, stop_hz, step_hz)
+# tuple used by the SX1261 spectrum scan and the simulated-fallback range.
+# Selecting CUSTOM uses `region.tx_freq_min` / `region.tx_freq_max` from
+# wm1303_ui.json directly. Unknown / empty region.code falls back to EU868.
+#
+# These ranges are display/scan-only and do NOT change regulatory behaviour;
+# real regulatory enforcement still lives in per-channel duty-cycle and
+# LBT/CAD logic.
+SPECTRUM_REGION_PRESETS = {
+    "EU868": (863_000_000, 870_000_000, 200_000),
+    "US915": (902_000_000, 928_000_000, 500_000),
+    "AU915": (915_000_000, 928_000_000, 500_000),
+    "AS923": (920_000_000, 928_000_000, 200_000),
+    "IN865": (865_000_000, 867_000_000, 200_000),
+    "JP920": (920_000_000, 928_000_000, 200_000),
+    "KR920": (920_000_000, 923_000_000, 200_000),
+}
+SPECTRUM_DEFAULT_REGION = "EU868"
+SPECTRUM_DEFAULT_STEP_HZ = 200_000  # fallback step for CUSTOM when not specified
+
+# Issue #11.2 Pack 3: per-node neighbour history buffer.
+# Simple in-memory ring buffer that grows on every `_neighbours_get()` call.
+# Survives until the service restarts. Sufficient for live charts in the UI;
+# persistent history would need a dedicated SQLite table.
+_NEIGHBOURS_HISTORY_MAX = 200          # samples retained per node
+_NEIGHBOURS_HISTORY = {}                # node_id -> list[(ts, rssi, snr)]
+_NEIGHBOURS_HISTORY_TIMEOUT_S = 86400  # drop nodes whose last sample is older than 24h
+
+
+def _get_spectrum_scan_range():
+    """Resolve the spectrum-scan frequency range from wm1303_ui.json.
+
+    Reads top-level ``region`` from wm1303_ui.json and looks ``region.code``
+    up in ``SPECTRUM_REGION_PRESETS``. Falls back to ``SPECTRUM_DEFAULT_REGION``
+    (EU868) when the code is empty / unknown. For ``CUSTOM`` region, uses
+    ``region.tx_freq_min`` and ``region.tx_freq_max`` from the same block;
+    step defaults to ``SPECTRUM_DEFAULT_STEP_HZ`` (200 kHz).
+
+    Returns:
+        Tuple ``(start_hz, stop_hz, step_hz, region_code_resolved)`` where
+        ``region_code_resolved`` is the code that actually applied (after any
+        fallback) so the UI can show it in the spectrum-tab header.
+    """
+    try:
+        ui_data = json.loads(_UI_JSON.read_text()) if _UI_JSON.exists() else {}
+    except (OSError, ValueError) as _e:
+        logger.debug("_get_spectrum_scan_range: read failed: %s", _e)
+        ui_data = {}
+    region = ui_data.get("region") or {}
+    code = (region.get("code") or "").strip().upper() or SPECTRUM_DEFAULT_REGION
+    if code == "CUSTOM":
+        fmin = region.get("tx_freq_min")
+        fmax = region.get("tx_freq_max")
+        if (isinstance(fmin, (int, float)) and isinstance(fmax, (int, float))
+                and fmax > fmin):
+            return (int(fmin), int(fmax), SPECTRUM_DEFAULT_STEP_HZ, "CUSTOM")
+        logger.debug("_get_spectrum_scan_range: CUSTOM without valid "
+                     "tx_freq_min/max -> fallback to %s", SPECTRUM_DEFAULT_REGION)
+        code = SPECTRUM_DEFAULT_REGION
+    preset = SPECTRUM_REGION_PRESETS.get(code)
+    if preset is None:
+        logger.debug("_get_spectrum_scan_range: unknown region %r -> fallback to %s",
+                     code, SPECTRUM_DEFAULT_REGION)
+        code = SPECTRUM_DEFAULT_REGION
+        preset = SPECTRUM_REGION_PRESETS[code]
+    return (preset[0], preset[1], preset[2], code)
+
+
 def _safe_write(path: Path, content: str) -> bool:
     """Write content to path with automatic permission recovery."""
     try:
@@ -827,6 +896,14 @@ class WM1303API:
                 return self._spectrum_get()
             if method == "POST":
                 return self._spectrum_post()
+
+        # -- neighbours (Issue #11.2: mesh neighbour list) --
+        if resource == "neighbours":
+            return self._neighbours_get()
+
+        # -- neighbours_history (Issue #11.2 Pack 3: per-node RSSI/SNR history) --
+        if resource == "neighbours_history":
+            return self._neighbours_history_get(params.get("node_id", ""))
 
         # -- logs --
         if resource == "logs":
@@ -2222,6 +2299,18 @@ class WM1303API:
                     sx1261_status["chip_mode"] = getattr(sx, '_last_mode', 'unknown')
         except Exception:
             pass
+        # Issue #7.1: include region-aware freq_range so UI can show the active scan band
+        try:
+            _scan_start_hz, _scan_stop_hz, _scan_step_hz, _scan_region = _get_spectrum_scan_range()
+            _freq_range = {
+                "start_mhz": round(_scan_start_hz / 1e6, 3),
+                "stop_mhz": round(_scan_stop_hz / 1e6, 3),
+                "step_khz": round(_scan_step_hz / 1e3, 1),
+                "region": _scan_region,
+            }
+        except Exception:
+            _freq_range = None
+            _scan_region = None
         return _j({
             "channels": channels,
             "radio_0_freq_mhz": round(rf[0] / 1e6, 4),
@@ -2239,6 +2328,8 @@ class WM1303API:
             "active_channel_count": sum(1 for ch in _load_ui().get("channels", []) if ch.get("active", False)) + (1 if _load_ui().get("channel_e", {}).get("enabled", False) else 0),
             "sx1261_tx_enabled": False,
             "sx1261_status": sx1261_status,
+            "freq_range": _freq_range,
+            "region": _scan_region,
             "timestamp": time.time(),
         })
 
@@ -2383,21 +2474,28 @@ class WM1303API:
             except Exception as e:
                 logger.debug("Cached spectral results read failed: %s", e)
 
+        # Resolve region-aware scan range once (Issue #7.1). Used by both
+        # the Python SX1261 driver and the simulated-data fallback below,
+        # and exposed to the UI via the response so the spectrum header
+        # can show the actual MHz range.
+        _scan_start_hz, _scan_stop_hz, _scan_step_hz, _scan_region = _get_spectrum_scan_range()
+
         # --- Priority 4: Try Python SX1261 driver ---
         if not scan_points:
             sx = self._get_sx1261()
             if sx and getattr(sx, '_initialized', False):
                 try:
-                    results = sx.get_rssi_scan(863000000, 870000000, 200000)
+                    results = sx.get_rssi_scan(_scan_start_hz, _scan_stop_hz, _scan_step_hz)
                     scan_points = [{"freq_mhz": round(r["freq_hz"]/1e6, 3), "rssi_dbm": r["rssi_dbm"]} for r in results]
-                    note = "Real Channel E RSSI measurement (Python driver)"
+                    note = "Real Channel E RSSI measurement (Python driver, {})".format(_scan_region)
                 except Exception as e:
                     logger.debug("Channel E Python driver scan failed: %s", e)
                     scan_points = []
 
         # --- Fallback: Simulated data ---
         if not scan_points:
-            for freq_hz in range(863000000, 870200000, 200000):
+            # Iterate inclusive of the stop frequency by adding one step.
+            for freq_hz in range(_scan_start_hz, _scan_stop_hz + _scan_step_hz, _scan_step_hz):
                 freq_mhz = round(freq_hz / 1e6, 3)
                 near = any(abs(ch["frequency_hz"] - freq_hz) < 150000 for ch in channels)
                 rssi = -120.0 + random.uniform(0, 4)
@@ -2405,7 +2503,17 @@ class WM1303API:
                 scan_points.append({"freq_mhz": freq_mhz, "rssi_dbm": round(rssi, 1)})
             note = ""
 
-        result = {"status": "ok", "timestamp": time.time(), "scan_points": scan_points, "channels": channels, "note": note}
+        # Include the resolved frequency range so the UI can render a
+        # region-aware header (e.g. "Frequency Spectrum (902-928 MHz, US915)").
+        _freq_range = {
+            "start_mhz": round(_scan_start_hz / 1e6, 3),
+            "stop_mhz": round(_scan_stop_hz / 1e6, 3),
+            "step_khz": round(_scan_step_hz / 1e3, 1),
+            "region": _scan_region,
+        }
+        result = {"status": "ok", "timestamp": time.time(),
+                  "scan_points": scan_points, "channels": channels,
+                  "note": note, "freq_range": _freq_range}
         try:
             _SPECTRAL_RES.write_text(json.dumps(result))
         except OSError as _e:
@@ -2479,6 +2587,136 @@ class WM1303API:
                 c.config = getattr(self.daemon, 'config', {}) or {}
             except Exception:
                 pass
+
+    # -- neighbours (Issue #11.2) -----------------------------------------
+    def _neighbours_get(self):
+        """Return the list of known mesh neighbours.
+
+        The data is sourced from ``engine.storage.get_neighbors()`` via the
+        active repeater_engine / bridge_engine attached to the daemon. Each
+        entry is normalized so the UI receives a stable shape regardless of
+        how the storage layer keys its dict.
+
+        Response::
+
+            {
+              "status": "ok",
+              "timestamp": <unix-ts>,
+              "count": N,
+              "neighbours": [
+                {
+                  "node_id": "hex...",
+                  "friendly_name": "...",
+                  "last_seen": <unix-ts>,   # may be 0 if unknown
+                  "rssi": <float|null>,
+                  "snr": <float|null>,
+                  "advert_count": <int>,
+                  "channel": "...",
+                  "path_len": <int|null>,
+                  ...other engine-provided fields
+                },
+                ...
+              ]
+            }
+        """
+        neighbours = []
+        try:
+            eng = None
+            if hasattr(self, 'daemon') and self.daemon:
+                eng = (getattr(self.daemon, 'repeater_engine', None)
+                       or getattr(self.daemon, 'bridge_engine', None))
+            if eng is None:
+                be = _get_backend()
+                eng = (getattr(be, 'repeater_engine', None)
+                       or getattr(be, 'bridge_engine', None)) if be else None
+            raw = {}
+            if eng is not None:
+                try:
+                    if hasattr(eng, 'storage') and eng.storage:
+                        raw = eng.storage.get_neighbors() or {}
+                    elif hasattr(eng, 'get_neighbors'):
+                        raw = eng.get_neighbors() or {}
+                except Exception as _e:
+                    logger.debug("_neighbours_get: storage.get_neighbors failed: %s", _e)
+            if isinstance(raw, dict):
+                _iter = raw.items()
+            elif isinstance(raw, list):
+                _iter = enumerate(raw)
+            else:
+                _iter = []
+            for key, item in _iter:
+                entry = {}
+                if isinstance(item, dict):
+                    entry.update(item)
+                # Ensure node_id always present
+                if "node_id" not in entry:
+                    entry["node_id"] = str(key)
+                # Normalize common timestamp aliases
+                if "last_seen" not in entry:
+                    entry["last_seen"] = entry.get("last_seen_ts") or entry.get("last_seen_at") or 0
+                neighbours.append(entry)
+            # Sort by last_seen DESC so freshest first
+            try:
+                neighbours.sort(key=lambda x: x.get("last_seen") or 0, reverse=True)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("_neighbours_get: %s", e)
+            return _j({"status": "error", "error": str(e),
+                       "neighbours": [], "count": 0})
+
+        # Pack 3: append each neighbour's current snapshot to its history
+        # so the UI can render a per-node RSSI/SNR line chart.
+        try:
+            now = time.time()
+            for n in neighbours:
+                nid = n.get("node_id")
+                if not nid:
+                    continue
+                rssi = n.get("rssi") if n.get("rssi") is not None else n.get("rssi_last")
+                snr = n.get("snr") if n.get("snr") is not None else n.get("snr_last")
+                hist = _NEIGHBOURS_HISTORY.setdefault(nid, [])
+                # Avoid duplicate samples from rapid back-to-back calls.
+                if not hist or hist[-1][0] < now - 1.0:
+                    hist.append((now, rssi, snr))
+                    if len(hist) > _NEIGHBOURS_HISTORY_MAX:
+                        del hist[:-_NEIGHBOURS_HISTORY_MAX]
+            # Periodically prune stale nodes (last sample > timeout ago).
+            _stale = [k for k, v in _NEIGHBOURS_HISTORY.items()
+                      if v and (now - v[-1][0]) > _NEIGHBOURS_HISTORY_TIMEOUT_S]
+            for k in _stale:
+                _NEIGHBOURS_HISTORY.pop(k, None)
+        except Exception as _e:
+            logger.debug("_neighbours_get: history update failed: %s", _e)
+
+        return _j({"status": "ok", "timestamp": time.time(),
+                   "count": len(neighbours), "neighbours": neighbours})
+
+    def _neighbours_history_get(self, node_id):
+        """Return the in-memory RSSI/SNR history for a single neighbour.
+
+        Pack 3 (Issue #11.2): supports the per-node line chart in the
+        Neighbours detail modal. Samples are appended by `_neighbours_get()`
+        every time the tab refreshes; the buffer is in-memory only and is
+        cleared by a service restart.
+
+        Response::
+
+            {
+              "status": "ok",
+              "node_id": "...",
+              "count": N,
+              "samples": [{"ts": <unix-ts>, "rssi": <float|null>, "snr": <float|null>}, ...]
+            }
+        """
+        if not node_id:
+            return _j({"status": "error", "error": "missing node_id",
+                       "samples": [], "count": 0})
+        hist = _NEIGHBOURS_HISTORY.get(node_id, [])
+        samples = [{"ts": ts, "rssi": rssi, "snr": snr}
+                   for (ts, rssi, snr) in hist]
+        return _j({"status": "ok", "node_id": node_id,
+                   "count": len(samples), "samples": samples})
 
     # -- control -----------------------------------------------------------
     def _control(self):
