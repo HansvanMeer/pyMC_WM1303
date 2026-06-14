@@ -735,10 +735,167 @@ class SQLiteHandler:
                     )
                     logger.info(f"Migration '{migration_name}' applied successfully")
 
+                # Migration 10: Neighbour RSSI/SNR sample history (v2.5.7).
+                # Persistent ring buffer so signal-quality charts survive
+                # service restarts. Indexed on (pubkey, timestamp) for fast
+                # per-node range queries; old samples pruned by retention job.
+                migration_name = "neighbour_samples_table"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,),
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS neighbour_samples (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            pubkey TEXT NOT NULL,
+                            timestamp REAL NOT NULL,
+                            rssi REAL,
+                            snr REAL,
+                            channel TEXT
+                        )
+                        """
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_nbsamp_pk_ts "
+                        "ON neighbour_samples(pubkey, timestamp)"
+                    )
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time()),
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+
+                # Migration 11: Extra neighbour columns (v2.5.7).
+                # last_channel, channels_heard, duplicate_count for enhanced
+                # neighbour tracking.
+                migration_name = "adverts_extra_columns_v257"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,),
+                ).fetchone()
+                if not existing:
+                    for col_def in [
+                        "last_channel TEXT DEFAULT ''",
+                        "channels_heard TEXT DEFAULT ''",
+                        "duplicate_count INTEGER DEFAULT 0",
+                    ]:
+                        col_name = col_def.split()[0]
+                        try:
+                            conn.execute(f"ALTER TABLE adverts ADD COLUMN {col_def}")
+                        except Exception:
+                            # Column may already exist from a prior partial run
+                            logger.debug("Column %s may already exist, skipping", col_name)
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time()),
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+
                 conn.commit()
 
         except Exception as e:
             logger.error(f"Failed to run migrations: {e}")
+
+    # -- Neighbour sample persistence (v2.5.7) --------------------------------
+
+    def record_neighbour_sample(self, pubkey: str, rssi, snr, channel: str = "") -> None:
+        """Append one RSSI/SNR sample for *pubkey* into the persistent ring buffer."""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO neighbour_samples (pubkey, timestamp, rssi, snr, channel) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (pubkey, time.time(), rssi, snr, channel or ""),
+                )
+        except Exception as e:
+            logger.debug("record_neighbour_sample: %s", e)
+
+    def get_neighbour_samples(self, pubkey: str, limit: int = 200) -> list:
+        """Return the most recent *limit* samples for *pubkey*, oldest-first."""
+        try:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT timestamp, rssi, snr, channel FROM neighbour_samples "
+                    "WHERE pubkey = ? ORDER BY timestamp DESC LIMIT ?",
+                    (pubkey, limit),
+                ).fetchall()
+                return [
+                    {"ts": r["timestamp"], "rssi": r["rssi"], "snr": r["snr"],
+                     "channel": r["channel"]}
+                    for r in reversed(rows)
+                ]
+        except Exception as e:
+            logger.debug("get_neighbour_samples: %s", e)
+            return []
+
+    def prune_neighbour_samples(self, max_age_seconds: int = 691200, max_per_node: int = 200) -> int:
+        """Remove samples older than *max_age_seconds* and cap per node at *max_per_node*."""
+        removed = 0
+        try:
+            cutoff = time.time() - max_age_seconds
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "DELETE FROM neighbour_samples WHERE timestamp < ?", (cutoff,)
+                )
+                removed += cur.rowcount
+                # Cap per node
+                over = conn.execute(
+                    "SELECT pubkey, COUNT(*) AS cnt FROM neighbour_samples "
+                    "GROUP BY pubkey HAVING cnt > ?", (max_per_node,)
+                ).fetchall()
+                for row in over:
+                    pk = row[0]
+                    excess = row[1] - max_per_node
+                    conn.execute(
+                        "DELETE FROM neighbour_samples WHERE id IN ("
+                        "  SELECT id FROM neighbour_samples WHERE pubkey = ? "
+                        "  ORDER BY timestamp ASC LIMIT ?"
+                        ")", (pk, excess)
+                    )
+                    removed += excess
+        except Exception as e:
+            logger.debug("prune_neighbour_samples: %s", e)
+        return removed
+
+    def delete_neighbours(self, pubkeys: list) -> int:
+        """Delete one or more neighbours by pubkey. Returns count deleted."""
+        if not pubkeys:
+            return 0
+        try:
+            with self._connect() as conn:
+                ph = ",".join("?" for _ in pubkeys)
+                cur = conn.execute(f"DELETE FROM adverts WHERE pubkey IN ({ph})", pubkeys)
+                conn.execute(f"DELETE FROM neighbour_samples WHERE pubkey IN ({ph})", pubkeys)
+                # Invalidate hot cache so next get_neighbors reflects deletion
+                self._neighbors_cache = {"timestamp": 0.0, "value": None}
+                return cur.rowcount
+        except Exception as e:
+            logger.error("delete_neighbours: %s", e)
+            return 0
+
+    def record_advert_duplicate(self, pubkey: str, count: int = 1) -> None:
+        """Increment duplicate_count for a neighbour (v2.5.7 Pack 3).
+
+        Called when a duplicate ADVERT (same message hash) is detected for
+        a known pubkey. The increment is best-effort; failures are logged
+        at debug level and do not raise.
+        """
+        if not pubkey:
+            return
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE adverts SET duplicate_count = COALESCE(duplicate_count, 0) + ? "
+                    "WHERE pubkey = ?",
+                    (int(count), pubkey),
+                )
+                # Invalidate hot cache so the next get_neighbors picks up the change
+                self._neighbors_cache = {"timestamp": 0.0, "value": None}
+        except Exception as e:
+            logger.debug("record_advert_duplicate(%s): %s", pubkey[:8] if pubkey else None, e)
 
     # API Token methods
     def create_api_token(self, name: str, token_hash: str) -> int:
@@ -877,7 +1034,7 @@ class SQLiteHandler:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 existing = conn.execute(
-                    "SELECT pubkey, first_seen, advert_count, zero_hop, rssi, snr FROM adverts WHERE pubkey = ? ORDER BY last_seen DESC LIMIT 1",
+                    "SELECT pubkey, first_seen, advert_count, zero_hop, rssi, snr, last_seen FROM adverts WHERE pubkey = ? ORDER BY last_seen DESC LIMIT 1",
                     (record.get("pubkey", ""),),
                 ).fetchone()
 
@@ -905,13 +1062,46 @@ class SQLiteHandler:
                         snr_to_store = None
                         zero_hop_to_store = False
 
+                    # v2.5.7: channel tracking — merge incoming channel into
+                    # the comma-separated channels_heard list.
+                    incoming_channel = record.get("channel", "")
+                    existing_channels_heard = ""
+                    try:
+                        row_ch = conn.execute(
+                            "SELECT channels_heard FROM adverts WHERE pubkey = ?",
+                            (record.get("pubkey", ""),),
+                        ).fetchone()
+                        existing_channels_heard = (row_ch[0] or "") if row_ch else ""
+                    except Exception:
+                        pass
+                    ch_set = set(filter(None, existing_channels_heard.split(",")))
+                    if incoming_channel:
+                        ch_set.add(incoming_channel)
+                    channels_heard_str = ",".join(sorted(ch_set))
+
+                    # v2.5.7 Pack 3: detect duplicate ADVERT (mesh echo of same
+                    # broadcast). A repeated ADVERT from the same node within
+                    # the dedup window (default 300 s) is treated as a
+                    # duplicate; first-occurrence updates do not increment.
+                    _DUP_WINDOW_S = 300.0
+                    try:
+                        _prev_last_seen = float(existing["last_seen"] or 0)
+                    except Exception:
+                        _prev_last_seen = 0.0
+                    _is_duplicate = (
+                        _prev_last_seen > 0
+                        and (current_time - _prev_last_seen) < _DUP_WINDOW_S
+                    )
+                    _dup_inc = 1 if _is_duplicate else 0
+
                     conn.execute(
                         """
                         UPDATE adverts
                         SET timestamp = ?, node_name = ?, is_repeater = ?, route_type = ?,
                             contact_type = ?, latitude = ?, longitude = ?, last_seen = ?,
                             rssi = ?, snr = ?, advert_count = advert_count + 1, is_new_neighbor = 0,
-                            zero_hop = ?
+                            zero_hop = ?, last_channel = ?, channels_heard = ?,
+                            duplicate_count = COALESCE(duplicate_count, 0) + ?
                         WHERE pubkey = ?
                     """,
                         (
@@ -926,17 +1116,21 @@ class SQLiteHandler:
                             rssi_to_store,
                             snr_to_store,
                             zero_hop_to_store,
+                            incoming_channel,
+                            channels_heard_str,
+                            _dup_inc,
                             record.get("pubkey", ""),
                         ),
                     )
                 else:
+                    incoming_channel = record.get("channel", "")
                     conn.execute(
                         """
                         INSERT INTO adverts (
                             timestamp, pubkey, node_name, is_repeater, route_type, contact_type,
                             latitude, longitude, first_seen, last_seen, rssi, snr, advert_count,
-                            is_new_neighbor, zero_hop
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            is_new_neighbor, zero_hop, last_channel, channels_heard
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             current_time,
@@ -954,6 +1148,8 @@ class SQLiteHandler:
                             1,
                             True,
                             record.get("zero_hop", False),
+                            incoming_channel,
+                            incoming_channel,
                         ),
                     )
 
@@ -1564,11 +1760,15 @@ class SQLiteHandler:
                 neighbors = conn.execute(
                     """
                     SELECT pubkey, node_name, is_repeater, route_type, contact_type,
-                           latitude, longitude, first_seen, last_seen, rssi, snr, advert_count, zero_hop
+                           latitude, longitude, first_seen, last_seen, rssi, snr,
+                           advert_count, zero_hop, last_channel, channels_heard,
+                           duplicate_count
                     FROM (
                         SELECT
                             pubkey, node_name, is_repeater, route_type, contact_type,
-                            latitude, longitude, first_seen, last_seen, rssi, snr, advert_count, zero_hop,
+                            latitude, longitude, first_seen, last_seen, rssi, snr,
+                            advert_count, zero_hop, last_channel, channels_heard,
+                            duplicate_count,
                             ROW_NUMBER() OVER (PARTITION BY pubkey ORDER BY last_seen DESC) AS rn
                         FROM adverts
                     ) latest
@@ -1592,6 +1792,9 @@ class SQLiteHandler:
                         "snr": row["snr"],
                         "advert_count": row["advert_count"],
                         "zero_hop": bool(row["zero_hop"]),
+                        "last_channel": row["last_channel"] or "",
+                        "channels_heard": row["channels_heard"] or "",
+                        "duplicate_count": row["duplicate_count"] or 0,
                     }
 
                 self._neighbors_cache = {"timestamp": now, "value": result}

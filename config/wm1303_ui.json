@@ -63,5 +63,13 @@
     "spi_devices": {
         "sx1302_spi_path": "/dev/spidev0.0",
         "sx1261_spi_path": "/dev/spidev0.1"
+    },
+    "repeater_location": {
+        "lat": 0,
+        "lon": 0
+    },
+    "neighbours_filter": {
+        "test_nodes": [],
+        "hide_test_nodes": false
     }
 }

@@ -6,6 +6,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <style>
 :root{--bg:#0f172a;--card:rgba(255,255,255,.05);--bdr:rgba(255,255,255,.1);--pri:#6366f1;--tx:#f8fafc;--txs:rgba(255,255,255,.7);--txm:rgba(255,255,255,.4);--ok:#22c55e;--er:#ef4444;--wa:#f59e0b}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2334,13 +2336,15 @@ var nbState = {
   all: [],          // raw list from API
   filtered: [],     // after search/filter
   selected: new Set(),
-  view: 'table',    // 'table' | 'topology'
+  view: 'table',    // 'table' | 'topology' | 'map'  (v2.5.7 Pack 7)
   sort: 'last_seen',
   sortDir: 'desc',
   autoTimer: null,
   historyChart: null,
   topoChart: null,
-  channels: new Set()
+  channels: new Set(),
+  repeaterLocation: {lat: 0, lon: 0},                   // v2.5.7 Pack 6
+  serverFilter: {test_nodes: [], hide_test_nodes: false} // v2.5.7 Pack 8
 };
 function _nbFmtTs(ts){
   if(!ts || ts <= 0) return 'never';
@@ -2438,6 +2442,7 @@ function nbApplyFilters(){
   nbUpdateBulkBtn();
   nbRenderStats();
   nbApplySortAndRender();
+  if (nbState.view === 'map') nbUpdateMapMarkers();
 }
 function nbRenderStats(){
   var el = G('nbStats');
@@ -2464,10 +2469,16 @@ function nbRenderStats(){
 }
 function nbUpdateBulkBtn(){
   var btn = G('nbBulkPingBtn');
-  if (!btn) return;
+  var dBtn = G('nbBulkDeleteBtn');
   var n = nbState.selected.size;
-  btn.disabled = (n === 0);
-  btn.textContent = (n > 0) ? ('Ping selected (' + n + ')') : 'Ping selected';
+  if (btn) {
+    btn.disabled = (n === 0);
+    btn.textContent = (n > 0) ? ('Ping selected (' + n + ')') : 'Ping selected';
+  }
+  if (dBtn) {
+    dBtn.disabled = (n === 0);
+    dBtn.textContent = (n > 0) ? ('Delete selected (' + n + ')') : 'Delete selected';
+  }
 }
 function nbToggleSelectAll(checked){
   if (checked) {
@@ -2492,7 +2503,7 @@ function nbRenderTable(){
   if (G('nbCount')) G('nbCount').textContent = list.length + ' node' + (list.length === 1 ? '' : 's');
   if (G('nbLastUpdate')) G('nbLastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">No neighbours match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">No neighbours match the current filters.</td></tr>';
     return;
   }
   var rows = list.map(function(n){
@@ -2507,9 +2518,13 @@ function nbRenderTable(){
     var snrStr  = snr  != null ? snr.toFixed(1)  + ' dB'  : '\u2014';
     var nidShort = nid ? '<code style="font-size:10px;color:var(--txm)">' + esc(nid) + '</code>' : '';
     var checked = nbState.selected.has(nid) ? ' checked' : '';
+    // v2.5.7 Pack 4: node_type badge
+    var nt = (n.node_type || 'unknown').toLowerCase();
+    var typeBadge = _nbTypeBadge(nt, n.has_gps);
     return '<tr style="border-bottom:1px solid var(--brd);cursor:pointer" onclick="nbShowDetail(\'' + esc(nid) + '\')">' +
       '<td style="padding:8px 6px;text-align:center" onclick="event.stopPropagation()"><input type="checkbox"' + checked + ' onchange="nbToggleRow(\'' + esc(nid) + '\', this.checked)"></td>' +
       '<td style="padding:8px 10px"><div style="font-weight:500;color:var(--tx)">' + esc(name) + '</div>' + nidShort + '</td>' +
+      '<td style="padding:8px 10px;text-align:center">' + typeBadge + '</td>' +
       '<td style="padding:8px 10px;color:var(--txm)">' + esc(_nbFmtTs(n.last_seen)) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;color:' + _nbRssiColor(rssi) + '">' + esc(rssiStr) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;color:' + _nbSnrColor(snr) + '">' + esc(snrStr) + '</td>' +
@@ -2529,11 +2544,18 @@ function nbSetView(view){
   nbState.view = view;
   var tBtn = G('nbViewTableBtn');
   var pBtn = G('nbViewTopoBtn');
+  var mBtn = G('nbViewMapBtn');
   if (tBtn) { tBtn.className = 'btn ' + (view === 'table' ? 'pri' : 'sec') + ' sm'; }
   if (pBtn) { pBtn.className = 'btn ' + (view === 'topology' ? 'pri' : 'sec') + ' sm'; }
+  if (mBtn) { mBtn.className = 'btn ' + (view === 'map' ? 'pri' : 'sec') + ' sm'; }
   if (G('nbTableView')) G('nbTableView').style.display = (view === 'table') ? '' : 'none';
   if (G('nbTopoView'))  G('nbTopoView').style.display  = (view === 'topology') ? '' : 'none';
+  if (G('nbMapView'))   G('nbMapView').style.display   = (view === 'map') ? '' : 'none';
   if (view === 'topology') nbRenderTopology();
+  if (view === 'map') {
+    nbInitMap();
+    setTimeout(function(){ nbUpdateMapMarkers(); }, 50);
+  }
 }
 var _NB_CH_COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#a78bfa','#06b6d4','#f97316','#ec4899'];
 function _nbChColor(ch){
@@ -2624,17 +2646,27 @@ function nbToggleAutoRefresh(){
 }
 function nbExportCsv(){
   var list = nbState.filtered;
-  var headers = ['node_id','friendly_name','last_seen','rssi','snr','adverts','channel','path_len'];
+  // v2.5.7: include node_type, last_channel, channels_heard, duplicate_count, lat/lon
+  var headers = ['node_id','friendly_name','node_type','last_seen','rssi','snr',
+                 'adverts','duplicate_count','channel','last_channel','channels_heard',
+                 'path_len','latitude','longitude','has_gps'];
   var rows = list.map(function(n){
     return [
       n.node_id || '',
       _nbName(n).replace(/"/g, '""'),
+      (n.node_type || ''),
       n.last_seen ? new Date(n.last_seen*1000).toISOString() : '',
       _nbRssi(n) != null ? _nbRssi(n) : '',
       _nbSnr(n)  != null ? _nbSnr(n)  : '',
       n.advert_count != null ? n.advert_count : (n.adverts || ''),
+      n.duplicate_count != null ? n.duplicate_count : 0,
       _nbCh(n) || '',
-      n.path_len != null ? n.path_len : (n.path != null ? n.path : '')
+      n.last_channel || '',
+      n.channels_heard || '',
+      n.path_len != null ? n.path_len : (n.path != null ? n.path : ''),
+      n.latitude != null ? n.latitude : '',
+      n.longitude != null ? n.longitude : '',
+      n.has_gps ? 'yes' : 'no'
     ];
   });
   var csv = headers.join(',') + '\n' + rows.map(function(r){
@@ -2746,21 +2778,28 @@ function _nbUpdateChannelFilter(){
 }
 async function loadNeighbours(){
   var tbody = G('nbTbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>';
   try {
     var d = await api('GET', '/api/wm1303/neighbours');
     if (!d || d.error) {
-      if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String((d && d.error) || 'no response')) + '</td></tr>';
+      if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String((d && d.error) || 'no response')) + '</td></tr>';
       nbState.all = []; nbState.filtered = [];
       nbRenderStats();
       return;
     }
     nbState.all = d.neighbours || [];
+    nbState.repeaterLocation = d.repeater_location || {lat:0, lon:0};
+    nbState.serverFilter = d.neighbours_filter || {test_nodes:[], hide_test_nodes:false};
+    if (G('nbHideTestNodes')) G('nbHideTestNodes').checked = !!nbState.serverFilter.hide_test_nodes;
+    if (G('testNodesList')) G('testNodesList').value = (nbState.serverFilter.test_nodes || []).join(', ');
+    if (G('repLocLat') && (nbState.repeaterLocation.lat || 0)) G('repLocLat').value = nbState.repeaterLocation.lat;
+    if (G('repLocLon') && (nbState.repeaterLocation.lon || 0)) G('repLocLon').value = nbState.repeaterLocation.lon;
     _nbUpdateChannelFilter();
     nbApplyFilters();
+    if (nbState.view === 'map') nbUpdateMapMarkers();
   } catch (e) {
     console.error('loadNeighbours failed:', e);
-    if (tbody) tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String(e && e.message ? e.message : e)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String(e && e.message ? e.message : e)) + '</td></tr>';
     nbState.all = []; nbState.filtered = [];
     nbRenderStats();
   }
@@ -2777,6 +2816,180 @@ async function pingNeighbour(nodeId){
   } catch (e) {
     alert('Ping error: ' + (e && e.message ? e.message : e));
   }
+}
+
+// ── v2.5.7 Pack 4: node_type badge helper ────────────────────────────────
+function _nbTypeBadge(nodeType, hasGps){
+  var nt = (nodeType || 'unknown').toLowerCase();
+  var label = nt === 'repeater' ? 'REP'
+            : nt === 'room_server' ? 'ROOM'
+            : nt === 'chat_node' ? 'CHAT'
+            : '?';
+  var color = nt === 'repeater' ? '#10b981'
+            : nt === 'room_server' ? '#a78bfa'
+            : nt === 'chat_node' ? '#3b82f6'
+            : 'var(--txm)';
+  var bg = nt === 'repeater' ? 'rgba(16,185,129,0.18)'
+         : nt === 'room_server' ? 'rgba(167,139,250,0.18)'
+         : nt === 'chat_node' ? 'rgba(59,130,246,0.18)'
+         : 'rgba(128,128,128,0.18)';
+  var gpsDot = hasGps ? '<span title="GPS coords known" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-left:4px;vertical-align:middle"></span>' : '';
+  return '<span style="display:inline-block;padding:2px 8px;font-size:10px;font-weight:600;border-radius:4px;color:' + color + ';background:' + bg + ';border:1px solid ' + color + '">' + label + '</span>' + gpsDot;
+}
+
+// ── v2.5.7 Pack 7: Leaflet map ───────────────────────────────────────────
+var _nbMap = null;
+var _nbMapMarkers = [];
+var _nbMapRepeaterMarker = null;
+function nbInitMap(){
+  if (_nbMap) return _nbMap; // singleton
+  if (typeof L === 'undefined') {
+    console.error('Leaflet (L) not loaded — cannot init map');
+    return null;
+  }
+  var el = G('nbLeafletMap');
+  if (!el) return null;
+  var loc = nbState.repeaterLocation || {lat:0, lon:0};
+  var center = (loc.lat || loc.lon) ? [loc.lat, loc.lon] : [52.0, 5.0]; // NL center fallback
+  var zoom = (loc.lat || loc.lon) ? 12 : 6;
+  _nbMap = L.map(el).setView(center, zoom);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(_nbMap);
+  return _nbMap;
+}
+function nbUpdateMapMarkers(){
+  if (!_nbMap) return;
+  // Clear existing neighbour markers
+  _nbMapMarkers.forEach(function(m){ _nbMap.removeLayer(m); });
+  _nbMapMarkers = [];
+  // Repeater (own) marker — blue
+  var loc = nbState.repeaterLocation || {lat:0, lon:0};
+  if (_nbMapRepeaterMarker) { _nbMap.removeLayer(_nbMapRepeaterMarker); _nbMapRepeaterMarker = null; }
+  if (loc.lat || loc.lon) {
+    var blueIcon = L.divIcon({
+      className: 'nb-rep-icon',
+      html: '<div style="width:18px;height:18px;border-radius:50%;background:#3b82f6;border:3px solid #fff;box-shadow:0 0 4px rgba(0,0,0,0.5)"></div>',
+      iconSize: [18,18],
+      iconAnchor: [9,9]
+    });
+    _nbMapRepeaterMarker = L.marker([loc.lat, loc.lon], {icon: blueIcon, title: 'Own repeater'})
+      .bindPopup('<strong>Own repeater</strong><br>Lat: ' + loc.lat + '<br>Lon: ' + loc.lon)
+      .addTo(_nbMap);
+  }
+  // Neighbour markers — green for GPS-known nodes
+  var bounds = [];
+  if (loc.lat || loc.lon) bounds.push([loc.lat, loc.lon]);
+  (nbState.filtered || []).forEach(function(n){
+    var lat = n.latitude, lon = n.longitude;
+    if (!n.has_gps || !lat || !lon) return;
+    var greenIcon = L.divIcon({
+      className: 'nb-node-icon',
+      html: '<div style="width:14px;height:14px;border-radius:50%;background:#22c55e;border:2px solid #fff;box-shadow:0 0 3px rgba(0,0,0,0.5)"></div>',
+      iconSize: [14,14],
+      iconAnchor: [7,7]
+    });
+    var name = _nbName(n);
+    var rssi = _nbRssi(n);
+    var snr = _nbSnr(n);
+    var typeStr = (n.node_type || 'unknown').toUpperCase();
+    var lastSeen = _nbFmtTs(n.last_seen);
+    var popupHtml = '<div style="font-size:12px;min-width:180px">' +
+      '<strong>' + esc(name) + '</strong><br>' +
+      '<small style="color:#666">' + esc(n.node_id || '') + '</small><br>' +
+      'Type: ' + esc(typeStr) + '<br>' +
+      'Lat/Lon: ' + lat.toFixed(5) + ', ' + lon.toFixed(5) + '<br>' +
+      'RSSI: ' + (rssi != null ? rssi.toFixed(1) + ' dBm' : '—') + '<br>' +
+      'SNR: ' + (snr != null ? snr.toFixed(1) + ' dB' : '—') + '<br>' +
+      'Last seen: ' + esc(lastSeen) +
+      '</div>';
+    var m = L.marker([lat, lon], {icon: greenIcon, title: name})
+      .bindPopup(popupHtml)
+      .addTo(_nbMap);
+    _nbMapMarkers.push(m);
+    bounds.push([lat, lon]);
+  });
+  // Auto fit-bounds when we have multiple points
+  if (bounds.length > 1) {
+    try { _nbMap.fitBounds(bounds, {padding:[30,30], maxZoom: 14}); } catch (e) {}
+  } else if (bounds.length === 1) {
+    _nbMap.setView(bounds[0], 13);
+  }
+}
+
+// ── v2.5.7 Pack 8: bulk delete ───────────────────────────────────────────
+async function nbBulkDelete(){
+  var ids = [...nbState.selected].filter(Boolean);
+  if (!ids.length) return;
+  if (!confirm('Permanently delete ' + ids.length + ' selected neighbour(s) from the database?\n\nThis cannot be undone. The neighbour will reappear when its next ADVERT is received.')) return;
+  try {
+    var d = await api('POST', '/api/wm1303/neighbours', { action: 'delete', pubkeys: ids });
+    if (d && d.status === 'ok') {
+      alert('Deleted ' + (d.deleted || 0) + ' neighbour(s).');
+      nbState.selected.clear();
+      loadNeighbours();
+    } else {
+      alert('Delete failed: ' + ((d && (d.error || d.message)) || 'unknown error'));
+    }
+  } catch (e) {
+    alert('Delete error: ' + (e && e.message ? e.message : e));
+  }
+}
+
+// ── v2.5.7 Pack 6: repeater location config ──────────────────────────────
+async function loadRepeaterLocation(){
+  try {
+    var d = await api('GET', '/api/wm1303/repeater_location');
+    if (d && d.status === 'ok') {
+      var loc = d.repeater_location || {lat:0, lon:0};
+      if (G('repLocLat') && (loc.lat || 0)) G('repLocLat').value = loc.lat;
+      if (G('repLocLon') && (loc.lon || 0)) G('repLocLon').value = loc.lon;
+      nbState.repeaterLocation = loc;
+    }
+  } catch (e) { console.warn('loadRepeaterLocation:', e); }
+}
+async function saveRepeaterLocation(){
+  var lat = parseFloat((G('repLocLat')||{}).value || '0');
+  var lon = parseFloat((G('repLocLon')||{}).value || '0');
+  if (isNaN(lat) || isNaN(lon)) { alert('Invalid lat/lon'); return; }
+  var status = G('repLocStatus');
+  if (status) { status.textContent = 'Saving...'; status.style.color = 'var(--txm)'; }
+  try {
+    var d = await api('POST', '/api/wm1303/repeater_location', { lat: lat, lon: lon });
+    if (d && d.status === 'ok') {
+      if (status) { status.textContent = 'Location saved.'; status.style.color = '#22c55e'; }
+      nbState.repeaterLocation = d.repeater_location || {lat:lat, lon:lon};
+      if (_nbMap && nbState.view === 'map') {
+        _nbMap.setView([nbState.repeaterLocation.lat, nbState.repeaterLocation.lon], 13);
+        nbUpdateMapMarkers();
+      }
+    } else {
+      if (status) { status.textContent = 'Save failed: ' + ((d && d.error) || ''); status.style.color = '#ef4444'; }
+    }
+  } catch (e) {
+    if (status) { status.textContent = 'Error: ' + (e && e.message ? e.message : e); status.style.color = '#ef4444'; }
+  }
+}
+
+// ── v2.5.7 Pack 8: hide-test-nodes filter ────────────────────────────────
+async function saveNeighboursFilterUI(){
+  var hide = !!(G('nbHideTestNodes') && G('nbHideTestNodes').checked);
+  var tns = (G('testNodesList')||{}).value || '';
+  var tnArr = tns.split(',').map(function(s){ return s.trim(); }).filter(Boolean);
+  try {
+    var d = await api('POST', '/api/wm1303/neighbours_filter', { hide_test_nodes: hide, test_nodes: tnArr });
+    if (d && d.status === 'ok') {
+      nbState.serverFilter = d.neighbours_filter || nbState.serverFilter;
+      loadNeighbours();
+    } else {
+      alert('Filter save failed: ' + ((d && d.error) || ''));
+    }
+  } catch (e) { alert('Filter error: ' + (e && e.message ? e.message : e)); }
+}
+async function saveTestNodesList(){
+  // Same backend call as saveNeighboursFilterUI but keeps current hide flag
+  return saveNeighboursFilterUI();
 }
 
 function specRenderChart(scanData, channels) {
@@ -4916,6 +5129,7 @@ function renderPmCrcChart(channels) {
         </label>
         <button class="btn sec sm" onclick="nbExportCsv()" style="padding:4px 12px;font-size:12px">&#8595; CSV</button>
         <button class="btn sec sm" onclick="nbBulkPing()" id="nbBulkPingBtn" disabled style="padding:4px 12px;font-size:12px">Ping selected</button>
+        <button class="btn ber sm" onclick="nbBulkDelete()" id="nbBulkDeleteBtn" disabled style="padding:4px 12px;font-size:12px">Delete selected</button>
         <button class="btn pri sm" onclick="loadNeighbours()" style="padding:4px 12px;font-size:12px">&#8635; Refresh</button>
       </div>
     </div>
@@ -4932,9 +5146,13 @@ function renderPmCrcChart(channels) {
       <select id="nbChannelFilter" onchange="nbApplyFilters()" style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
         <option value="">All channels</option>
       </select>
+      <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input id="nbHideTestNodes" type="checkbox" onchange="saveNeighboursFilterUI()"> Hide test nodes
+      </label>
       <div style="display:flex;gap:4px">
         <button id="nbViewTableBtn" class="btn pri sm" onclick="nbSetView('table')" style="padding:4px 12px;font-size:12px">Table</button>
         <button id="nbViewTopoBtn" class="btn sec sm" onclick="nbSetView('topology')" style="padding:4px 12px;font-size:12px">Topology</button>
+        <button id="nbViewMapBtn" class="btn sec sm" onclick="nbSetView('map')" style="padding:4px 12px;font-size:12px">Map</button>
       </div>
     </div>
 
@@ -4950,6 +5168,7 @@ function renderPmCrcChart(channels) {
             <tr style="background:rgba(99,102,241,0.08);color:var(--tx);text-align:left">
               <th style="padding:8px 6px;border-bottom:1px solid var(--brd);width:24px;text-align:center"><input type="checkbox" id="nbSelectAll" onchange="nbToggleSelectAll(this.checked)"></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('name')">Name / Node-ID <span id="nbSortName" style="opacity:0.5"></span></th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:center;width:74px">Type</th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('last_seen')">Last seen <span id="nbSortLast" style="opacity:0.5">&#9660;</span></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('rssi')">RSSI <span id="nbSortRssi" style="opacity:0.5"></span></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('snr')">SNR <span id="nbSortSnr" style="opacity:0.5"></span></th>
@@ -4960,7 +5179,7 @@ function renderPmCrcChart(channels) {
             </tr>
           </thead>
           <tbody id="nbTbody">
-            <tr><td colspan="9" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>
+            <tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>
           </tbody>
         </table>
       </div>
@@ -4971,6 +5190,39 @@ function renderPmCrcChart(channels) {
       <div style="position:relative;height:480px"><canvas id="nbTopoCanvas"></canvas></div>
       <div style="font-size:11px;color:var(--txm);margin-top:8px">Radial scatter: distance from center is signal strength (closer = stronger). Bubble color = channel; bubble size = SNR. Hover for details.</div>
     </div>
+
+    <!-- MAP VIEW (v2.5.7 Pack 7) - Leaflet + OSM tiles -->
+    <div id="nbMapView" style="display:none">
+      <div id="nbLeafletMap" style="height:480px;border-radius:8px;border:1px solid var(--brd)"></div>
+      <div style="font-size:11px;color:var(--txm);margin-top:8px">
+        Green markers = neighbours with known GPS coordinates (broadcast in their ADVERT).
+        Nodes without GPS are not shown on the map and only appear in the Table view.
+        Repeater origin is shown as a blue marker.
+      </div>
+    </div>
+  </div>
+
+  <!-- v2.5.7 Pack 6: Repeater location & filter config panel -->
+  <div class="gl" style="padding:18px;margin-bottom:16px">
+    <h4 style="margin:0 0 10px 0;font-size:13px;font-weight:600;color:var(--tx)">Repeater location &amp; filter config</h4>
+    <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;color:var(--txm)">Repeater latitude</label>
+        <input id="repLocLat" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;color:var(--txm)">Repeater longitude</label>
+        <input id="repLocLon" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+      </div>
+      <button class="btn pri sm" onclick="saveRepeaterLocation()" style="padding:6px 14px;font-size:12px">Save location</button>
+      <div style="flex:1"></div>
+      <div style="display:flex;flex-direction:column;gap:4px;min-width:280px">
+        <label style="font-size:11px;color:var(--txm)">Test nodes (comma-separated pubkeys, hidden when filter is on)</label>
+        <input id="testNodesList" type="text" placeholder="abc123..., def456..." style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+      </div>
+      <button class="btn sec sm" onclick="saveTestNodesList()" style="padding:6px 14px;font-size:12px">Save list</button>
+    </div>
+    <div id="repLocStatus" style="margin-top:6px;font-size:11px;color:var(--txm)"></div>
   </div>
 </div>
 

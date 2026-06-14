@@ -439,6 +439,23 @@ class StorageCollector:
     def get_neighbors(self) -> dict:
         return self.sqlite_handler.get_neighbors()
 
+    # v2.5.7: persistent neighbour sample ring buffer
+    def record_neighbour_sample(self, pubkey: str, rssi, snr, channel: str = "") -> None:
+        self.sqlite_handler.record_neighbour_sample(pubkey, rssi, snr, channel)
+
+    def get_neighbour_samples(self, pubkey: str, limit: int = 200) -> list:
+        return self.sqlite_handler.get_neighbour_samples(pubkey, limit)
+
+    def prune_neighbour_samples(self, max_age_seconds: int = 691200, max_per_node: int = 200) -> int:
+        return self.sqlite_handler.prune_neighbour_samples(max_age_seconds, max_per_node)
+
+    def delete_neighbours(self, pubkeys: list) -> int:
+        return self.sqlite_handler.delete_neighbours(pubkeys)
+
+    def record_advert_duplicate(self, pubkey: str, count: int = 1) -> None:
+        """Increment duplicate_count for a neighbour (v2.5.7 Pack 3)."""
+        self.sqlite_handler.record_advert_duplicate(pubkey, count)
+
     def get_node_name_by_pubkey(self, pubkey: str) -> Optional[str]:
         """
         Lookup node name from adverts table by public key.

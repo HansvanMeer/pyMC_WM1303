@@ -137,11 +137,12 @@ SPECTRUM_REGION_PRESETS = {
 SPECTRUM_DEFAULT_REGION = "EU868"
 SPECTRUM_DEFAULT_STEP_HZ = 200_000  # fallback step for CUSTOM when not specified
 
-# Issue #11.2 Pack 3: per-node neighbour history buffer.
-# Simple in-memory ring buffer that grows on every `_neighbours_get()` call.
-# Survives until the service restarts. Sufficient for live charts in the UI;
-# persistent history would need a dedicated SQLite table.
-_NEIGHBOURS_HISTORY_MAX = 200          # samples retained per node
+# v2.5.7: Neighbour RSSI/SNR sample persistence.
+# Samples are written to the neighbour_samples SQLite table on every
+# _neighbours_get() call so signal-quality charts survive service restarts.
+# The in-memory ring buffer is kept as a fast read-path cache; it is
+# re-populated from the DB on first access after a restart.
+_NEIGHBOURS_HISTORY_MAX = 200          # samples retained per node (in-memory + DB)
 _NEIGHBOURS_HISTORY = {}                # node_id -> list[(ts, rssi, snr)]
 _NEIGHBOURS_HISTORY_TIMEOUT_S = 86400  # drop nodes whose last sample is older than 24h
 
@@ -897,13 +898,30 @@ class WM1303API:
             if method == "POST":
                 return self._spectrum_post()
 
-        # -- neighbours (Issue #11.2: mesh neighbour list) --
+        # -- neighbours (v2.5.7: mesh neighbour list with persistence) --
         if resource == "neighbours":
-            return self._neighbours_get()
+            if method == "GET":
+                return self._neighbours_get()
+            if method == "DELETE" or (method == "POST" and _body().get("action") == "delete"):
+                return self._neighbours_delete()
 
-        # -- neighbours_history (Issue #11.2 Pack 3: per-node RSSI/SNR history) --
+        # -- neighbours_history (v2.5.7: persistent per-node RSSI/SNR history) --
         if resource == "neighbours_history":
             return self._neighbours_history_get(params.get("node_id", ""))
+
+        # -- repeater_location (v2.5.7: own repeater GPS coordinates) --
+        if resource == "repeater_location":
+            if method == "GET":
+                return self._repeater_location_get()
+            if method in ("POST", "PUT"):
+                return self._repeater_location_post()
+
+        # -- neighbours_filter (v2.5.7: hide-test-nodes config) --
+        if resource == "neighbours_filter":
+            if method == "GET":
+                return self._neighbours_filter_get()
+            if method in ("POST", "PUT"):
+                return self._neighbours_filter_post()
 
         # -- logs --
         if resource == "logs":
@@ -2588,14 +2606,28 @@ class WM1303API:
             except Exception:
                 pass
 
-    # -- neighbours (Issue #11.2) -----------------------------------------
+    # -- neighbours (v2.5.7) ------------------------------------------------
+
+    def _get_storage(self):
+        """Resolve the storage collector for neighbour persistence."""
+        eng = None
+        if hasattr(self, 'daemon') and self.daemon:
+            eng = (getattr(self.daemon, 'repeater_engine', None)
+                   or getattr(self.daemon, 'bridge_engine', None))
+        if eng is None:
+            be = _get_backend()
+            eng = (getattr(be, 'repeater_engine', None)
+                   or getattr(be, 'bridge_engine', None)) if be else None
+        if eng and hasattr(eng, 'storage') and eng.storage:
+            return eng.storage
+        return None
+
     def _neighbours_get(self):
         """Return the list of known mesh neighbours.
 
-        The data is sourced from ``engine.storage.get_neighbors()`` via the
-        active repeater_engine / bridge_engine attached to the daemon. Each
-        entry is normalized so the UI receives a stable shape regardless of
-        how the storage layer keys its dict.
+        v2.5.7: includes contact_type / node_type, GPS coordinates,
+        last_channel, channels_heard, and duplicate_count. RSSI/SNR
+        samples are persisted to SQLite so history survives restarts.
 
         Response::
 
@@ -2603,39 +2635,38 @@ class WM1303API:
               "status": "ok",
               "timestamp": <unix-ts>,
               "count": N,
+              "repeater_location": {"lat": ..., "lon": ...},
               "neighbours": [
                 {
                   "node_id": "hex...",
                   "friendly_name": "...",
-                  "last_seen": <unix-ts>,   # may be 0 if unknown
+                  "last_seen": <unix-ts>,
                   "rssi": <float|null>,
                   "snr": <float|null>,
                   "advert_count": <int>,
                   "channel": "...",
+                  "last_channel": "...",
+                  "channels_heard": "A,B,...",
+                  "contact_type": "...",
+                  "node_type": "chat_node|repeater|room_server|unknown",
+                  "latitude": <float|0>,
+                  "longitude": <float|0>,
+                  "has_gps": <bool>,
+                  "duplicate_count": <int>,
                   "path_len": <int|null>,
-                  ...other engine-provided fields
+                  ...
                 },
                 ...
               ]
             }
         """
         neighbours = []
+        storage = self._get_storage()
         try:
-            eng = None
-            if hasattr(self, 'daemon') and self.daemon:
-                eng = (getattr(self.daemon, 'repeater_engine', None)
-                       or getattr(self.daemon, 'bridge_engine', None))
-            if eng is None:
-                be = _get_backend()
-                eng = (getattr(be, 'repeater_engine', None)
-                       or getattr(be, 'bridge_engine', None)) if be else None
             raw = {}
-            if eng is not None:
+            if storage:
                 try:
-                    if hasattr(eng, 'storage') and eng.storage:
-                        raw = eng.storage.get_neighbors() or {}
-                    elif hasattr(eng, 'get_neighbors'):
-                        raw = eng.get_neighbors() or {}
+                    raw = storage.get_neighbors() or {}
                 except Exception as _e:
                     logger.debug("_neighbours_get: storage.get_neighbors failed: %s", _e)
             if isinstance(raw, dict):
@@ -2648,14 +2679,28 @@ class WM1303API:
                 entry = {}
                 if isinstance(item, dict):
                     entry.update(item)
-                # Ensure node_id always present
                 if "node_id" not in entry:
                     entry["node_id"] = str(key)
-                # Normalize common timestamp aliases
                 if "last_seen" not in entry:
                     entry["last_seen"] = entry.get("last_seen_ts") or entry.get("last_seen_at") or 0
+
+                # v2.5.7: derive node_type from contact_type for UI display
+                ct = str(entry.get("contact_type", "")).lower()
+                if "repeater" in ct:
+                    entry["node_type"] = "repeater"
+                elif "room" in ct:
+                    entry["node_type"] = "room_server"
+                elif "chat" in ct:
+                    entry["node_type"] = "chat_node"
+                else:
+                    entry["node_type"] = "unknown"
+
+                # v2.5.7: GPS availability flag
+                lat = entry.get("latitude") or 0
+                lon = entry.get("longitude") or 0
+                entry["has_gps"] = bool(lat != 0 or lon != 0)
+
                 neighbours.append(entry)
-            # Sort by last_seen DESC so freshest first
             try:
                 neighbours.sort(key=lambda x: x.get("last_seen") or 0, reverse=True)
             except Exception:
@@ -2665,8 +2710,7 @@ class WM1303API:
             return _j({"status": "error", "error": str(e),
                        "neighbours": [], "count": 0})
 
-        # Pack 3: append each neighbour's current snapshot to its history
-        # so the UI can render a per-node RSSI/SNR line chart.
+        # Persist RSSI/SNR samples to SQLite + in-memory cache
         try:
             now = time.time()
             for n in neighbours:
@@ -2675,13 +2719,18 @@ class WM1303API:
                     continue
                 rssi = n.get("rssi") if n.get("rssi") is not None else n.get("rssi_last")
                 snr = n.get("snr") if n.get("snr") is not None else n.get("snr_last")
+                ch = n.get("last_channel") or n.get("channel") or n.get("channel_name") or ""
                 hist = _NEIGHBOURS_HISTORY.setdefault(nid, [])
-                # Avoid duplicate samples from rapid back-to-back calls.
                 if not hist or hist[-1][0] < now - 1.0:
                     hist.append((now, rssi, snr))
                     if len(hist) > _NEIGHBOURS_HISTORY_MAX:
                         del hist[:-_NEIGHBOURS_HISTORY_MAX]
-            # Periodically prune stale nodes (last sample > timeout ago).
+                    # Persist to SQLite
+                    if storage and hasattr(storage, 'record_neighbour_sample'):
+                        try:
+                            storage.record_neighbour_sample(nid, rssi, snr, ch)
+                        except Exception:
+                            pass
             _stale = [k for k, v in _NEIGHBOURS_HISTORY.items()
                       if v and (now - v[-1][0]) > _NEIGHBOURS_HISTORY_TIMEOUT_S]
             for k in _stale:
@@ -2689,34 +2738,136 @@ class WM1303API:
         except Exception as _e:
             logger.debug("_neighbours_get: history update failed: %s", _e)
 
+        # v2.5.7 Pack 8: optional test-node filter from UI config
+        rep_loc = {"lat": 0, "lon": 0}
+        nb_filter = {"test_nodes": [], "hide_test_nodes": False}
+        try:
+            ui = _load_ui()
+            rl = ui.get("repeater_location", {})
+            rep_loc = {"lat": float(rl.get("lat", 0)), "lon": float(rl.get("lon", 0))}
+            nf = ui.get("neighbours_filter", {})
+            if isinstance(nf, dict):
+                nb_filter = {
+                    "test_nodes": [str(p).lower() for p in (nf.get("test_nodes") or [])],
+                    "hide_test_nodes": bool(nf.get("hide_test_nodes", False)),
+                }
+        except Exception:
+            pass
+
+        # Apply hide-test-nodes filter (server-side) when enabled
+        total_before_filter = len(neighbours)
+        if nb_filter["hide_test_nodes"] and nb_filter["test_nodes"]:
+            _tn = set(nb_filter["test_nodes"])
+            neighbours = [
+                n for n in neighbours
+                if str(n.get("node_id", "")).lower() not in _tn
+            ]
+
         return _j({"status": "ok", "timestamp": time.time(),
-                   "count": len(neighbours), "neighbours": neighbours})
+                   "count": len(neighbours),
+                   "total_before_filter": total_before_filter,
+                   "neighbours": neighbours,
+                   "repeater_location": rep_loc,
+                   "neighbours_filter": nb_filter})
 
     def _neighbours_history_get(self, node_id):
-        """Return the in-memory RSSI/SNR history for a single neighbour.
+        """Return persistent RSSI/SNR history for a single neighbour.
 
-        Pack 3 (Issue #11.2): supports the per-node line chart in the
-        Neighbours detail modal. Samples are appended by `_neighbours_get()`
-        every time the tab refreshes; the buffer is in-memory only and is
-        cleared by a service restart.
-
-        Response::
-
-            {
-              "status": "ok",
-              "node_id": "...",
-              "count": N,
-              "samples": [{"ts": <unix-ts>, "rssi": <float|null>, "snr": <float|null>}, ...]
-            }
+        v2.5.7: reads from SQLite first (persistent), falls back to in-memory.
         """
         if not node_id:
             return _j({"status": "error", "error": "missing node_id",
                        "samples": [], "count": 0})
+        # Try persistent storage first
+        storage = self._get_storage()
+        if storage and hasattr(storage, 'get_neighbour_samples'):
+            try:
+                db_samples = storage.get_neighbour_samples(node_id, limit=200)
+                if db_samples:
+                    return _j({"status": "ok", "node_id": node_id,
+                               "count": len(db_samples), "samples": db_samples})
+            except Exception:
+                pass
+        # Fallback to in-memory
         hist = _NEIGHBOURS_HISTORY.get(node_id, [])
         samples = [{"ts": ts, "rssi": rssi, "snr": snr}
                    for (ts, rssi, snr) in hist]
         return _j({"status": "ok", "node_id": node_id,
                    "count": len(samples), "samples": samples})
+
+    def _neighbours_delete(self):
+        """Bulk-delete neighbours by pubkey list.
+
+        POST body: {"action": "delete", "pubkeys": ["abc...", "def..."]}
+        or DELETE with same body.
+        """
+        body = _body()
+        pubkeys = body.get("pubkeys", [])
+        if not pubkeys:
+            return _j({"status": "error", "error": "missing pubkeys list"})
+        storage = self._get_storage()
+        deleted = 0
+        if storage and hasattr(storage, 'delete_neighbours'):
+            deleted = storage.delete_neighbours(pubkeys)
+        # Also clean in-memory cache
+        for pk in pubkeys:
+            _NEIGHBOURS_HISTORY.pop(pk, None)
+        return _j({"status": "ok", "deleted": deleted})
+
+    def _repeater_location_get(self):
+        """Return the configured repeater location (lat, lon)."""
+        ui = _load_ui()
+        loc = ui.get("repeater_location", {"lat": 0, "lon": 0})
+        return _j({"status": "ok", "repeater_location": loc})
+
+    def _repeater_location_post(self):
+        """Save the repeater location to wm1303_ui.json.
+
+        Body: {"lat": <float>, "lon": <float>}
+        """
+        body = _body()
+        lat = float(body.get("lat", 0))
+        lon = float(body.get("lon", 0))
+        ui = _load_ui()
+        ui["repeater_location"] = {"lat": lat, "lon": lon}
+        _save_ui(ui)
+        return _j({"status": "ok", "repeater_location": {"lat": lat, "lon": lon}})
+
+    def _neighbours_filter_get(self):
+        """Return the neighbours_filter config (v2.5.7 Pack 8)."""
+        ui = _load_ui()
+        nf = ui.get("neighbours_filter", {})
+        return _j({
+            "status": "ok",
+            "neighbours_filter": {
+                "test_nodes": list(nf.get("test_nodes") or []),
+                "hide_test_nodes": bool(nf.get("hide_test_nodes", False)),
+            },
+        })
+
+    def _neighbours_filter_post(self):
+        """Save neighbours_filter to wm1303_ui.json (v2.5.7 Pack 8).
+
+        Body: {"test_nodes": ["pubkey1", "pubkey2", ...],
+               "hide_test_nodes": true|false}
+        """
+        body = _body()
+        test_nodes_raw = body.get("test_nodes", [])
+        if isinstance(test_nodes_raw, str):
+            # Allow comma-separated string from UI textarea
+            test_nodes_raw = [s.strip() for s in test_nodes_raw.split(",")]
+        test_nodes = [str(s).strip() for s in test_nodes_raw if str(s).strip()]
+        hide_flag = bool(body.get("hide_test_nodes", False))
+        ui = _load_ui()
+        ui["neighbours_filter"] = {
+            "test_nodes": test_nodes,
+            "hide_test_nodes": hide_flag,
+        }
+        _save_ui(ui)
+        return _j({
+            "status": "ok",
+            "neighbours_filter": ui["neighbours_filter"],
+        })
 
     # -- control -----------------------------------------------------------
     def _control(self):
