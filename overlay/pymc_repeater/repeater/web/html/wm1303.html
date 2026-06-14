@@ -2372,17 +2372,32 @@ function _nbSnrColor(v){
   return '#ef4444';
 }
 function _nbVal(n, k){
-  if (k === 'name') return (n.friendly_name || n.name || n.node_id || '').toLowerCase();
+  if (k === 'name') return (n.friendly_name || n.name || n.node_name || n.node_id || '').toLowerCase();
   if (k === 'last_seen') return n.last_seen || 0;
   if (k === 'rssi') return (n.rssi != null ? n.rssi : (n.rssi_last != null ? n.rssi_last : -999));
   if (k === 'snr') return (n.snr != null ? n.snr : (n.snr_last != null ? n.snr_last : -999));
   if (k === 'adverts') return (n.advert_count != null ? n.advert_count : (n.adverts || 0));
   return 0;
 }
-function _nbCh(n){ return n.channel || n.channel_name || ''; }
+function _nbCh(n){
+  // v2.5.7: backend stores last_channel (from adverts table); UI may also receive channel/channel_name
+  return n.channel || n.channel_name || n.last_channel || '';
+}
 function _nbName(n){
+  // v2.5.7: backend get_neighbors() returns node_name (from adverts table) — use it as the real name
+  // before falling back to truncated node_id hash
   var nid = n.node_id || '';
-  return n.friendly_name || n.name || ('Node ' + (nid.substring(0, 8) || '?'));
+  var nm = n.friendly_name || n.name || n.node_name;
+  if (nm && String(nm).trim().length > 0) return nm;
+  return 'Node ' + (nid.substring(0, 8) || '?');
+}
+function _nbPath(n){
+  // v2.5.7: adverts table has zero_hop boolean (1 = 0 hops, 0 = >0 hops, null = unknown)
+  if (n.path_len != null) return String(n.path_len);
+  if (n.path != null)     return String(n.path);
+  if (n.zero_hop === true  || n.zero_hop === 1) return '0';
+  if (n.zero_hop === false || n.zero_hop === 0) return '≥1'; // ≥1
+  return '—';
 }
 function _nbRssi(n){ return (n.rssi != null) ? n.rssi : (n.rssi_last != null ? n.rssi_last : null); }
 function _nbSnr(n){ return (n.snr != null) ? n.snr : (n.snr_last != null ? n.snr_last : null); }
@@ -2424,7 +2439,7 @@ function nbApplyFilters(){
   var now = Date.now()/1000;
   nbState.filtered = nbState.all.filter(function(n){
     if (q) {
-      var hay = ((n.friendly_name||'') + ' ' + (n.name||'') + ' ' + (n.node_id||'')).toLowerCase();
+      var hay = ((n.friendly_name||'') + ' ' + (n.name||'') + ' ' + (n.node_name||'') + ' ' + (n.node_id||'')).toLowerCase();
       if (hay.indexOf(q) < 0) return false;
     }
     if (lsCutoff) {
@@ -2503,7 +2518,7 @@ function nbRenderTable(){
   if (G('nbCount')) G('nbCount').textContent = list.length + ' node' + (list.length === 1 ? '' : 's');
   if (G('nbLastUpdate')) G('nbLastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">No neighbours match the current filters.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--txm);padding:18px">No neighbours match the current filters.</td></tr>';
     return;
   }
   var rows = list.map(function(n){
@@ -2513,18 +2528,20 @@ function nbRenderTable(){
     var snr  = _nbSnr(n);
     var ad   = n.advert_count != null ? n.advert_count : (n.adverts || 0);
     var ch   = _nbCh(n) || '\u2014';
-    var path = n.path_len != null ? n.path_len : (n.path != null ? n.path : '\u2014');
+    var path = _nbPath(n);
     var rssiStr = rssi != null ? rssi.toFixed(1) + ' dBm' : '\u2014';
     var snrStr  = snr  != null ? snr.toFixed(1)  + ' dB'  : '\u2014';
     var nidShort = nid ? '<code style="font-size:10px;color:var(--txm)">' + esc(nid) + '</code>' : '';
     var checked = nbState.selected.has(nid) ? ' checked' : '';
-    // v2.5.7 Pack 4: node_type badge
+    // v2.5.7 Pack 4: node_type badge (GPS now in its own column)
     var nt = (n.node_type || 'unknown').toLowerCase();
-    var typeBadge = _nbTypeBadge(nt, n.has_gps);
+    var typeBadge = _nbTypeBadge(nt);
+    var gpsCell   = _nbGpsCell(n);
     return '<tr style="border-bottom:1px solid var(--brd);cursor:pointer" onclick="nbShowDetail(\'' + esc(nid) + '\')">' +
       '<td style="padding:8px 6px;text-align:center" onclick="event.stopPropagation()"><input type="checkbox"' + checked + ' onchange="nbToggleRow(\'' + esc(nid) + '\', this.checked)"></td>' +
       '<td style="padding:8px 10px"><div style="font-weight:500;color:var(--tx)">' + esc(name) + '</div>' + nidShort + '</td>' +
       '<td style="padding:8px 10px;text-align:center">' + typeBadge + '</td>' +
+      '<td style="padding:8px 10px;text-align:center">' + gpsCell + '</td>' +
       '<td style="padding:8px 10px;color:var(--txm)">' + esc(_nbFmtTs(n.last_seen)) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;color:' + _nbRssiColor(rssi) + '">' + esc(rssiStr) + '</td>' +
       '<td style="padding:8px 10px;text-align:right;color:' + _nbSnrColor(snr) + '">' + esc(snrStr) + '</td>' +
@@ -2541,21 +2558,84 @@ function nbRenderTable(){
   if (selAll) selAll.checked = (nbState.selected.size === list.length && list.length > 0);
 }
 function nbSetView(view){
+  // v2.5.7 (post-feedback): expanded sub-tabs — table | map | topology | export | settings
   nbState.view = view;
-  var tBtn = G('nbViewTableBtn');
-  var pBtn = G('nbViewTopoBtn');
-  var mBtn = G('nbViewMapBtn');
-  if (tBtn) { tBtn.className = 'btn ' + (view === 'table' ? 'pri' : 'sec') + ' sm'; }
-  if (pBtn) { pBtn.className = 'btn ' + (view === 'topology' ? 'pri' : 'sec') + ' sm'; }
-  if (mBtn) { mBtn.className = 'btn ' + (view === 'map' ? 'pri' : 'sec') + ' sm'; }
-  if (G('nbTableView')) G('nbTableView').style.display = (view === 'table') ? '' : 'none';
-  if (G('nbTopoView'))  G('nbTopoView').style.display  = (view === 'topology') ? '' : 'none';
-  if (G('nbMapView'))   G('nbMapView').style.display   = (view === 'map') ? '' : 'none';
+  var btnMap = {
+    table:    'nbViewTableBtn',
+    map:      'nbViewMapBtn',
+    topology: 'nbViewTopoBtn',
+    export:   'nbViewExportBtn',
+    settings: 'nbViewSettingsBtn'
+  };
+  var viewMap = {
+    table:    'nbTableView',
+    map:      'nbMapView',
+    topology: 'nbTopoView',
+    export:   'nbExportView',
+    settings: 'nbSettingsView'
+  };
+  Object.keys(btnMap).forEach(function(k){
+    var b = G(btnMap[k]);
+    if (b) b.className = 'btn ' + (view === k ? 'pri' : 'sec') + ' sm';
+  });
+  Object.keys(viewMap).forEach(function(k){
+    var v = G(viewMap[k]);
+    if (v) v.style.display = (view === k) ? '' : 'none';
+  });
+  // Filter toolbar relevant for table/map/topology/export (Export uses filtered list);
+  // hidden only in Settings.
+  var fbar = G('nbFilterBar');
+  if (fbar) fbar.style.display = (view === 'settings') ? 'none' : '';
+  // Hint/info text under the toolbar
+  var info = G('nbInfo');
+  if (info) info.style.display = (view === 'export' || view === 'settings') ? 'none' : '';
   if (view === 'topology') nbRenderTopology();
   if (view === 'map') {
     nbInitMap();
     setTimeout(function(){ nbUpdateMapMarkers(); }, 50);
   }
+  if (view === 'export') nbRenderExportPreview();
+}
+// v2.5.7: render export preview (count + per-channel breakdown)
+function nbRenderExportPreview(){
+  var el = G('nbExportPreview');
+  if (!el) return;
+  var list = nbState.filtered || [];
+  var total = list.length;
+  var allTotal = (nbState.all || []).length;
+  var byCh = {};
+  list.forEach(function(n){
+    var ch = _nbCh(n) || '(none)';
+    byCh[ch] = (byCh[ch] || 0) + 1;
+  });
+  var withGps = list.filter(function(n){ return n.has_gps; }).length;
+  var rows = Object.keys(byCh).sort().map(function(k){
+    return '<li style="margin:2px 0">' + esc(k) + ': <strong>' + byCh[k] + '</strong></li>';
+  }).join('');
+  el.innerHTML =
+    '<div style="font-size:12px;line-height:1.55">' +
+      '<div><strong>' + total + '</strong> nodes match current filters' +
+        (total !== allTotal ? ' <span style="color:var(--txm)">(of ' + allTotal + ' total)</span>' : '') +
+      '</div>' +
+      '<div style="color:var(--txm)">' + withGps + ' with GPS coordinates</div>' +
+      (rows ? '<div style="margin-top:8px;color:var(--txm)">Per channel:</div><ul style="margin:4px 0 0 18px;padding:0">' + rows + '</ul>' : '') +
+    '</div>';
+}
+// v2.5.7: JSON export — full filtered list as pretty JSON
+function nbExportJson(){
+  var list = nbState.filtered;
+  var payload = {
+    exported_at: new Date().toISOString(),
+    count: list.length,
+    neighbours: list
+  };
+  var blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'neighbours-' + new Date().toISOString().replace(/[:.]/g,'-') + '.json';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
 }
 var _NB_CH_COLORS = ['#6366f1','#f59e0b','#10b981','#ef4444','#a78bfa','#06b6d4','#f97316','#ec4899'];
 function _nbChColor(ch){
@@ -2778,11 +2858,11 @@ function _nbUpdateChannelFilter(){
 }
 async function loadNeighbours(){
   var tbody = G('nbTbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>';
   try {
     var d = await api('GET', '/api/wm1303/neighbours');
     if (!d || d.error) {
-      if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String((d && d.error) || 'no response')) + '</td></tr>';
+      if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String((d && d.error) || 'no response')) + '</td></tr>';
       nbState.all = []; nbState.filtered = [];
       nbRenderStats();
       return;
@@ -2799,7 +2879,7 @@ async function loadNeighbours(){
     if (nbState.view === 'map') nbUpdateMapMarkers();
   } catch (e) {
     console.error('loadNeighbours failed:', e);
-    if (tbody) tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String(e && e.message ? e.message : e)) + '</td></tr>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#ef4444;padding:18px">Error: ' + esc(String(e && e.message ? e.message : e)) + '</td></tr>';
     nbState.all = []; nbState.filtered = [];
     nbRenderStats();
   }
@@ -2819,11 +2899,13 @@ async function pingNeighbour(nodeId){
 }
 
 // ── v2.5.7 Pack 4: node_type badge helper ────────────────────────────────
-function _nbTypeBadge(nodeType, hasGps){
+// v2.5.7 (post-feedback): GPS indicator moved to its own column (_nbGpsCell);
+// this helper now only returns the type badge.
+function _nbTypeBadge(nodeType, _hasGps_unused){
   var nt = (nodeType || 'unknown').toLowerCase();
-  var label = nt === 'repeater' ? 'REP'
-            : nt === 'room_server' ? 'ROOM'
-            : nt === 'chat_node' ? 'CHAT'
+  var label = nt === 'repeater' ? 'Repeater'
+            : nt === 'room_server' ? 'Room'
+            : nt === 'chat_node' ? 'Companion'
             : '?';
   var color = nt === 'repeater' ? '#10b981'
             : nt === 'room_server' ? '#a78bfa'
@@ -2833,8 +2915,17 @@ function _nbTypeBadge(nodeType, hasGps){
          : nt === 'room_server' ? 'rgba(167,139,250,0.18)'
          : nt === 'chat_node' ? 'rgba(59,130,246,0.18)'
          : 'rgba(128,128,128,0.18)';
-  var gpsDot = hasGps ? '<span title="GPS coords known" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-left:4px;vertical-align:middle"></span>' : '';
-  return '<span style="display:inline-block;padding:2px 8px;font-size:10px;font-weight:600;border-radius:4px;color:' + color + ';background:' + bg + ';border:1px solid ' + color + '">' + label + '</span>' + gpsDot;
+  return '<span style="display:inline-block;padding:2px 8px;font-size:10px;font-weight:600;border-radius:4px;color:' + color + ';background:' + bg + ';border:1px solid ' + color + '">' + label + '</span>';
+}
+// v2.5.7: dedicated GPS-availability cell — green dot when coords known, em-dash otherwise.
+function _nbGpsCell(n){
+  if (n.has_gps) {
+    var lat = n.latitude != null ? n.latitude : '';
+    var lon = n.longitude != null ? n.longitude : '';
+    var tt  = 'GPS coords: ' + lat + ', ' + lon;
+    return '<span title="' + esc(tt) + '" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#22c55e;border:1.5px solid #fff;box-shadow:0 0 2px rgba(0,0,0,0.4)"></span>';
+  }
+  return '<span style="color:var(--txm)">—</span>';
 }
 
 // ── v2.5.7 Pack 7: Leaflet map ───────────────────────────────────────────
@@ -2893,7 +2984,12 @@ function nbUpdateMapMarkers(){
     var name = _nbName(n);
     var rssi = _nbRssi(n);
     var snr = _nbSnr(n);
-    var typeStr = (n.node_type || 'unknown').toUpperCase();
+    // v2.5.7: human-friendly type labels (Repeater/Companion/Room) matching table badge
+    var _nt = String(n.node_type || 'unknown').toLowerCase();
+    var typeStr = _nt === 'repeater' ? 'Repeater'
+                : _nt === 'room_server' ? 'Room'
+                : _nt === 'chat_node' ? 'Companion'
+                : 'Unknown';
     var lastSeen = _nbFmtTs(n.last_seen);
     var popupHtml = '<div style="font-size:12px;min-width:180px">' +
       '<strong>' + esc(name) + '</strong><br>' +
@@ -5127,7 +5223,6 @@ function renderPmCrcChart(channels) {
         <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:4px;cursor:pointer">
           <input id="nbAutoRefresh" type="checkbox" onchange="nbToggleAutoRefresh()"> Auto-refresh (15s)
         </label>
-        <button class="btn sec sm" onclick="nbExportCsv()" style="padding:4px 12px;font-size:12px">&#8595; CSV</button>
         <button class="btn sec sm" onclick="nbBulkPing()" id="nbBulkPingBtn" disabled style="padding:4px 12px;font-size:12px">Ping selected</button>
         <button class="btn ber sm" onclick="nbBulkDelete()" id="nbBulkDeleteBtn" disabled style="padding:4px 12px;font-size:12px">Delete selected</button>
         <button class="btn pri sm" onclick="loadNeighbours()" style="padding:4px 12px;font-size:12px">&#8635; Refresh</button>
@@ -5135,7 +5230,7 @@ function renderPmCrcChart(channels) {
     </div>
 
     <!-- Pack 1+3: Toolbar (search + filters + view tabs) -->
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <div id="nbFilterBar" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
       <input id="nbSearch" type="text" placeholder="Search name or node-id..." oninput="nbApplyFilters()" style="flex:1;min-width:180px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
       <select id="nbLastSeenFilter" onchange="nbApplyFilters()" style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
         <option value="">All times</option>
@@ -5149,10 +5244,12 @@ function renderPmCrcChart(channels) {
       <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:4px;cursor:pointer">
         <input id="nbHideTestNodes" type="checkbox" onchange="saveNeighboursFilterUI()"> Hide test nodes
       </label>
-      <div style="display:flex;gap:4px">
+      <div style="display:flex;gap:4px;flex-wrap:wrap">
         <button id="nbViewTableBtn" class="btn pri sm" onclick="nbSetView('table')" style="padding:4px 12px;font-size:12px">Table</button>
         <button id="nbViewTopoBtn" class="btn sec sm" onclick="nbSetView('topology')" style="padding:4px 12px;font-size:12px">Topology</button>
         <button id="nbViewMapBtn" class="btn sec sm" onclick="nbSetView('map')" style="padding:4px 12px;font-size:12px">Map</button>
+        <button id="nbViewExportBtn" class="btn sec sm" onclick="nbSetView('export')" style="padding:4px 12px;font-size:12px">Export</button>
+        <button id="nbViewSettingsBtn" class="btn sec sm" onclick="nbSetView('settings')" style="padding:4px 12px;font-size:12px">&#9881; Settings</button>
       </div>
     </div>
 
@@ -5169,6 +5266,7 @@ function renderPmCrcChart(channels) {
               <th style="padding:8px 6px;border-bottom:1px solid var(--brd);width:24px;text-align:center"><input type="checkbox" id="nbSelectAll" onchange="nbToggleSelectAll(this.checked)"></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('name')">Name / Node-ID <span id="nbSortName" style="opacity:0.5"></span></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:center;width:74px">Type</th>
+              <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:center;width:44px" title="Node broadcasts GPS coordinates in its ADVERT">GPS</th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);cursor:pointer;user-select:none" onclick="nbSort('last_seen')">Last seen <span id="nbSortLast" style="opacity:0.5">&#9660;</span></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('rssi')">RSSI <span id="nbSortRssi" style="opacity:0.5"></span></th>
               <th style="padding:8px 10px;border-bottom:1px solid var(--brd);text-align:right;cursor:pointer;user-select:none" onclick="nbSort('snr')">SNR <span id="nbSortSnr" style="opacity:0.5"></span></th>
@@ -5179,7 +5277,7 @@ function renderPmCrcChart(channels) {
             </tr>
           </thead>
           <tbody id="nbTbody">
-            <tr><td colspan="10" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>
+            <tr><td colspan="11" style="text-align:center;color:var(--txm);padding:18px">Loading neighbours\u2026</td></tr>
           </tbody>
         </table>
       </div>
@@ -5200,29 +5298,45 @@ function renderPmCrcChart(channels) {
         Repeater origin is shown as a blue marker.
       </div>
     </div>
-  </div>
 
-  <!-- v2.5.7 Pack 6: Repeater location & filter config panel -->
-  <div class="gl" style="padding:18px;margin-bottom:16px">
-    <h4 style="margin:0 0 10px 0;font-size:13px;font-weight:600;color:var(--tx)">Repeater location &amp; filter config</h4>
-    <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <label style="font-size:11px;color:var(--txm)">Repeater latitude</label>
-        <input id="repLocLat" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+    <!-- EXPORT VIEW (v2.5.7 post-feedback) -->
+    <div id="nbExportView" style="display:none">
+      <h4 style="margin:0 0 10px 0;font-size:13px;font-weight:600;color:var(--tx)">Export filtered neighbours</h4>
+      <div id="nbExportPreview" style="margin-bottom:14px;padding:12px;background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:6px"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+        <button class="btn pri sm" onclick="nbExportCsv()" style="padding:6px 14px;font-size:12px">&#8595; Download CSV</button>
+        <button class="btn sec sm" onclick="nbExportJson()" style="padding:6px 14px;font-size:12px">&#8595; Download JSON</button>
+        <button class="btn sec sm" onclick="nbRenderExportPreview()" style="padding:6px 14px;font-size:12px">&#8635; Refresh preview</button>
       </div>
-      <div style="display:flex;flex-direction:column;gap:4px">
-        <label style="font-size:11px;color:var(--txm)">Repeater longitude</label>
-        <input id="repLocLon" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+      <div style="font-size:11px;color:var(--txm);line-height:1.5">
+        Exports respect the filters in the toolbar above (search, last-seen, channel, hide test nodes).
+        CSV is universally readable; JSON preserves all raw fields incl. GPS coords, hop info, and node_type.
       </div>
-      <button class="btn pri sm" onclick="saveRepeaterLocation()" style="padding:6px 14px;font-size:12px">Save location</button>
-      <div style="flex:1"></div>
-      <div style="display:flex;flex-direction:column;gap:4px;min-width:280px">
-        <label style="font-size:11px;color:var(--txm)">Test nodes (comma-separated pubkeys, hidden when filter is on)</label>
-        <input id="testNodesList" type="text" placeholder="abc123..., def456..." style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
-      </div>
-      <button class="btn sec sm" onclick="saveTestNodesList()" style="padding:6px 14px;font-size:12px">Save list</button>
     </div>
-    <div id="repLocStatus" style="margin-top:6px;font-size:11px;color:var(--txm)"></div>
+
+    <!-- SETTINGS VIEW (v2.5.7 post-feedback) — Repeater location + test-node list -->
+    <div id="nbSettingsView" style="display:none">
+      <h4 style="margin:0 0 10px 0;font-size:13px;font-weight:600;color:var(--tx)">Repeater location &amp; filter config</h4>
+      <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:11px;color:var(--txm)">Repeater latitude</label>
+          <input id="repLocLat" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:11px;color:var(--txm)">Repeater longitude</label>
+          <input id="repLocLon" type="number" step="0.000001" placeholder="0.0" style="width:140px;padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+        </div>
+        <button class="btn pri sm" onclick="saveRepeaterLocation()" style="padding:6px 14px;font-size:12px">Save location</button>
+      </div>
+      <div style="display:flex;align-items:end;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:4px;min-width:280px;flex:1">
+          <label style="font-size:11px;color:var(--txm)">Test nodes (comma-separated pubkeys, hidden when "Hide test nodes" filter is on)</label>
+          <input id="testNodesList" type="text" placeholder="abc123..., def456..." style="padding:6px 10px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+        </div>
+        <button class="btn sec sm" onclick="saveTestNodesList()" style="padding:6px 14px;font-size:12px">Save list</button>
+      </div>
+      <div id="repLocStatus" style="margin-top:8px;font-size:11px;color:var(--txm)"></div>
+    </div>
   </div>
 </div>
 

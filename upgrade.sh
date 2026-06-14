@@ -642,7 +642,7 @@ done
 
 # repeater/handler_helpers/ level files (v2.4.11+ overlays)
 mkdir -p "${RPT_DIR}/repeater/handler_helpers" >> "${LOG_FILE}" 2>&1
-for f in mesh_cli.py; do
+for f in mesh_cli.py advert.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/handler_helpers/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/handler_helpers/${f}" "${RPT_DIR}/repeater/handler_helpers/" >> "${LOG_FILE}" 2>&1
     fi

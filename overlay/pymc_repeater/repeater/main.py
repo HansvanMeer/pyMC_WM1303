@@ -1219,9 +1219,9 @@ class RepeaterDaemon:
             try:
                 _rssi = int(rssi) if rssi is not None else 0
                 _snr = float(snr) if snr is not None else 0.0
-                await self.advert_helper.process_advert_packet(pkt, _rssi, _snr)
-                logger.info("BridgeRepeaterHandler: processed ADVERT for neighbor tracking (rssi=%s, snr=%s)",
-                            _rssi, _snr)
+                await self.advert_helper.process_advert_packet(pkt, _rssi, _snr, origin_channel or "")
+                logger.info("BridgeRepeaterHandler: processed ADVERT for neighbor tracking (rssi=%s, snr=%s, channel=%s)",
+                            _rssi, _snr, origin_channel)
             except Exception as e:
                 logger.warning("BridgeRepeaterHandler: advert processing error: %s", e)
 

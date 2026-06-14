@@ -296,7 +296,9 @@ class PacketRouter:
             if self.daemon.advert_helper:
                 rssi = getattr(packet, "rssi", 0)
                 snr = getattr(packet, "snr", 0.0)
-                await self.daemon.advert_helper.process_advert_packet(packet, rssi, snr)
+                # v2.5.7: forward origin channel so neighbours table tracks per-channel info
+                channel = getattr(packet, "_origin_channel", "") or getattr(packet, "origin_channel", "") or ""
+                await self.daemon.advert_helper.process_advert_packet(packet, rssi, snr, channel)
             # Also feed adverts to companion bridges (for contact/path updates)
             for bridge in getattr(self.daemon, "companion_bridges", {}).values():
                 try:

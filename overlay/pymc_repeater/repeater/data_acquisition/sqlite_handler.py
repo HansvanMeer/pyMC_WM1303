@@ -793,6 +793,25 @@ class SQLiteHandler:
                     )
                     logger.info(f"Migration '{migration_name}' applied successfully")
 
+                # Migration 12: path_len column (v2.5.7).
+                # Stores the exact hop count of the ADVERT so the neighbours UI
+                # can show 0/1/2/... instead of only zero-hop vs multi-hop.
+                migration_name = "adverts_path_len_v257"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,),
+                ).fetchone()
+                if not existing:
+                    try:
+                        conn.execute("ALTER TABLE adverts ADD COLUMN path_len INTEGER")
+                    except Exception:
+                        logger.debug("Column path_len may already exist, skipping")
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time()),
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+
                 conn.commit()
 
         except Exception as e:
@@ -1101,7 +1120,8 @@ class SQLiteHandler:
                             contact_type = ?, latitude = ?, longitude = ?, last_seen = ?,
                             rssi = ?, snr = ?, advert_count = advert_count + 1, is_new_neighbor = 0,
                             zero_hop = ?, last_channel = ?, channels_heard = ?,
-                            duplicate_count = COALESCE(duplicate_count, 0) + ?
+                            duplicate_count = COALESCE(duplicate_count, 0) + ?,
+                            path_len = ?
                         WHERE pubkey = ?
                     """,
                         (
@@ -1119,6 +1139,7 @@ class SQLiteHandler:
                             incoming_channel,
                             channels_heard_str,
                             _dup_inc,
+                            record.get("path_len"),
                             record.get("pubkey", ""),
                         ),
                     )
@@ -1129,8 +1150,8 @@ class SQLiteHandler:
                         INSERT INTO adverts (
                             timestamp, pubkey, node_name, is_repeater, route_type, contact_type,
                             latitude, longitude, first_seen, last_seen, rssi, snr, advert_count,
-                            is_new_neighbor, zero_hop, last_channel, channels_heard
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            is_new_neighbor, zero_hop, last_channel, channels_heard, path_len
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             current_time,
@@ -1150,6 +1171,7 @@ class SQLiteHandler:
                             record.get("zero_hop", False),
                             incoming_channel,
                             incoming_channel,
+                            record.get("path_len"),
                         ),
                     )
 
@@ -1762,13 +1784,13 @@ class SQLiteHandler:
                     SELECT pubkey, node_name, is_repeater, route_type, contact_type,
                            latitude, longitude, first_seen, last_seen, rssi, snr,
                            advert_count, zero_hop, last_channel, channels_heard,
-                           duplicate_count
+                           duplicate_count, path_len
                     FROM (
                         SELECT
                             pubkey, node_name, is_repeater, route_type, contact_type,
                             latitude, longitude, first_seen, last_seen, rssi, snr,
                             advert_count, zero_hop, last_channel, channels_heard,
-                            duplicate_count,
+                            duplicate_count, path_len,
                             ROW_NUMBER() OVER (PARTITION BY pubkey ORDER BY last_seen DESC) AS rn
                         FROM adverts
                     ) latest

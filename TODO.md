@@ -1,7 +1,7 @@
 # TODO — pyMC WM1303 Bridge/Repeater
 
 > List of open and completed tasks with description of content and motivation.
-> Last updated: 2026-06-03
+> Last updated: 2026-06-14 (v2.5.7)
 
 ---
 
