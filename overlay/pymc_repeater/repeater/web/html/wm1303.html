@@ -3303,6 +3303,26 @@ function nbTopoRenderRadarD3(){
 
   // ── Auto-hide tooltip when the SVG loses pointer ─────────────────────────
   svg.on('mouseleave', hideTip);
+
+  // v2.5.9: hop-bucket count pills appended below the stats strip
+  var hopLabelsRadar = { 0:'Direct', 1:'1 hop', 2:'2 hops', 3:'3 hops', 4:'4 hops', 5:'5 hops', 6:'6 hops', 7:'7 hops', 8:'8+ hops' };
+  var legendHost = document.getElementById('nbTopoRadarHopStats');
+  if (!legendHost) {
+    legendHost = document.createElement('div');
+    legendHost.id = 'nbTopoRadarHopStats';
+    legendHost.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:11px;color:var(--txm)';
+    var statsEl = document.getElementById('nbTopoStats');
+    if (statsEl && statsEl.parentNode) statsEl.parentNode.insertBefore(legendHost, statsEl.nextSibling);
+  }
+  legendHost.innerHTML = '';
+  [0,1,2,3,4,5,6,7,8].forEach(function(k){
+    var n = (rings[k] || []).length;
+    if (n === 0) return;
+    var pill = document.createElement('span');
+    pill.style.cssText = 'padding:3px 8px;background:rgba(99,102,241,0.12);border:1px solid var(--brd);border-radius:12px';
+    pill.innerHTML = '<strong style="color:var(--tx)">' + hopLabelsRadar[k] + ':</strong> ' + n;
+    legendHost.appendChild(pill);
+  });
 }
 
 // ── Legacy force-directed fan-out (kept as an optional layout) ────────────
