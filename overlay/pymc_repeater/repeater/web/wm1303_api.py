@@ -2609,7 +2609,15 @@ class WM1303API:
     # -- neighbours (v2.5.7) ------------------------------------------------
 
     def _get_storage(self):
-        """Resolve the storage collector for neighbour persistence."""
+        """Resolve the storage collector for neighbour persistence.
+
+        v2.5.7 fix: when running inside the WM1303 daemon (no repeater_engine
+        / bridge_engine on the backend), fall back to a module-level
+        SQLiteHandler singleton pointing at the configured storage_dir.
+        SQLiteHandler exposes get_neighbors / record_neighbour_sample /
+        delete_neighbours / record_advert_duplicate, which is what the
+        neighbours API needs.
+        """
         eng = None
         if hasattr(self, 'daemon') and self.daemon:
             eng = (getattr(self.daemon, 'repeater_engine', None)
@@ -2620,7 +2628,30 @@ class WM1303API:
                    or getattr(be, 'bridge_engine', None)) if be else None
         if eng and hasattr(eng, 'storage') and eng.storage:
             return eng.storage
-        return None
+        # v2.5.7 fallback: direct SQLiteHandler singleton via config storage_dir
+        try:
+            cached = globals().get('_NEIGHBOURS_SQLITE_FALLBACK')
+            if cached is None:
+                from pathlib import Path as _Path
+                from ..data_acquisition.sqlite_handler import SQLiteHandler as _SH
+                _sdir = '/var/lib/pymc_repeater'
+                try:
+                    import yaml as _yaml
+                    with open('/etc/pymc_repeater/config.yaml') as _f:
+                        _cfg = _yaml.safe_load(_f) or {}
+                    _sdir = ((_cfg.get('storage') or {}).get('storage_dir')
+                             or _sdir)
+                except Exception:
+                    pass
+                cached = _SH(_Path(_sdir))
+                globals()['_NEIGHBOURS_SQLITE_FALLBACK'] = cached
+            return cached
+        except Exception as _e:
+            try:
+                logger.debug('_get_storage SQLite fallback failed: %s', _e)
+            except Exception:
+                pass
+            return None
 
     def _neighbours_get(self):
         """Return the list of known mesh neighbours.
