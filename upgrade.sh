@@ -2013,10 +2013,20 @@ sleep 2
 WEB_PORT=$(grep -oP '^\s*port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null | head -1)
 WEB_PORT=${WEB_PORT:-8000}
 if command -v curl &>/dev/null; then
-    if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
-        ok "Web interface responding on port ${WEB_PORT}"
+    # v2.5.6: retry loop (5x 2s = max 10s) to handle slow webserver startup
+    WEB_OK=0
+    WEB_TRY=0
+    for WEB_TRY in 1 2 3 4 5; do
+        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
+            WEB_OK=1
+            break
+        fi
+        sleep 2
+    done
+    if [ "${WEB_OK}" = "1" ]; then
+        ok "Web interface responding on port ${WEB_PORT} (ready after ${WEB_TRY} attempt(s))"
     else
-        ok "Web interface not yet responding (may need a few more seconds)"
+        warn "Web interface not responding after 5 attempts (10s) - check: journalctl -u pymc-repeater"
     fi
 fi
 
