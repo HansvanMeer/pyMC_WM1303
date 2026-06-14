@@ -2731,6 +2731,25 @@ class WM1303API:
                 lon = entry.get("longitude") or 0
                 entry["has_gps"] = bool(lat != 0 or lon != 0)
 
+                # v2.5.8: convert path BLOB to lowercase hex string so the
+                # topology UI can reconstruct mesh edges. One byte per hop =
+                # first byte of each repeater pubkey. Missing/empty path is
+                # left out so JSON stays compact and consumers can branch on
+                # presence. path_len_encoded is kept as int for diagnostics.
+                _path_val = entry.pop("path", None)
+                if isinstance(_path_val, (bytes, bytearray, memoryview)):
+                    _path_bytes = bytes(_path_val)
+                    if _path_bytes:
+                        entry["path"] = _path_bytes.hex()
+                        entry["path_hops"] = [
+                            "{:02x}".format(b) for b in _path_bytes
+                        ]
+
+                # v2.5.8 defensive: never let raw bytes reach JSON (_sanitize bytes->hex)
+                for _k in list(entry.keys()):
+                    _v = entry[_k]
+                    if isinstance(_v, (bytes, bytearray, memoryview)):
+                        entry[_k] = bytes(_v).hex()
                 neighbours.append(entry)
             try:
                 neighbours.sort(key=lambda x: x.get("last_seen") or 0, reverse=True)

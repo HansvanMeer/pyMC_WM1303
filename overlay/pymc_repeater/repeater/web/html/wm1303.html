@@ -85,6 +85,11 @@ select.ci option{background:#1e293b}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<!-- v2.5.8: vis-network for interactive force-directed Topology graph (feature B+C) -->
+<link rel="stylesheet" href="https://unpkg.com/vis-network@9.1.9/styles/vis-network.min.css" crossorigin="">
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js" crossorigin=""></script>
+<!-- v2.6.0 F2: D3.js 7 for Radar polar topology view -->
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
 </head>
 <body>
 <div id="toasts"></div>
@@ -2344,7 +2349,25 @@ var nbState = {
   topoChart: null,
   channels: new Set(),
   repeaterLocation: {lat: 0, lon: 0},                   // v2.5.7 Pack 6
-  serverFilter: {test_nodes: [], hide_test_nodes: false} // v2.5.7 Pack 8
+  serverFilter: {test_nodes: [], hide_test_nodes: false}, // v2.5.7 Pack 8
+  // v2.5.8: interactive force-directed Topology graph (vis-network) state
+  topoNet: null,         // vis.Network instance
+  topoNodes: null,       // vis.DataSet of nodes
+  topoEdges: null,       // vis.DataSet of edges
+  topoPhysics: true,     // physics on/off
+  topoClusterMode: 'hop', // v2.5.8 default: 'hop' (more discriminating than channel) | 'none' | 'channel'
+  topoClustered: false,  // whether clusters are currently applied
+  // v2.5.8 Pad 1+2: layout engine + relayed-node handling + mesh-graph
+  topoLayout: 'radar',   // v2.6.0 F2: 'radar' (default, D3 polar) | 'rings' (legacy hop-ring) | 'force' (legacy fan) | 'mesh' (multi-hop graph)
+  topoHideRelayed: false,// Pad 1: hide all relayed (path_len>0) nodes when true
+  topoShowRelayTable: false, // Pad 1: render relayed nodes as a table beneath the graph
+  topoYou: { lat: null, lon: null }, // local repeater coords (for mesh location heuristic)
+  topoHashIndex: null,   // Pad 2: Map<hashByte, [candidateNode,...]> for disambiguation
+  topoMeshInfo: null,    // Pad 2: last click-info payload (primary + alternatives)
+  // v2.6.0 F3: Mesh Graph v2 (relay-to-relay topology) extras
+  topoMeshClusterOn: undefined,  // F3: auto-collapse dense channel communities (init on first mesh render)
+  topoMeshMinimapOn: undefined,  // F3: show mini-map overlay (init on first mesh render)
+  _meshPathIndex: null           // F3: nodeId -> {nodes:{},edges:{}} for hover highlight
 };
 function _nbFmtTs(ts){
   if(!ts || ts <= 0) return 'never';
@@ -2459,28 +2482,270 @@ function nbApplyFilters(){
   nbApplySortAndRender();
   if (nbState.view === 'map') nbUpdateMapMarkers();
 }
+// ─── v2.6.0 F1: Quick Stats Strip ──────────────────────────────────────
+// Compact KPI row + 3 live mini-charts (sparkline / donut / hop-bar) +
+// status pill. Driven entirely from nbState.filtered — no extra API calls.
+function _nbHopOf(n){
+  // v2.6.0: clamp 0..8 (8 = "8+ hops" bucket).
+  if (n.path_len != null) return Math.min(8, Math.max(0, parseInt(n.path_len, 10) || 0));
+  if (n.zero_hop === true  || n.zero_hop === 1) return 0;
+  if (n.zero_hop === false || n.zero_hop === 0) return 1;
+  return -1; // unknown
+}
+function _nbChColorRgbSafe(ch){
+  try { return _nbChColorRgb(ch); } catch(e){ return '99,102,241'; }
+}
+function _nbBuildSparkBuckets(list){
+  // last_seen distribution over the last 60 minutes in 1-min buckets.
+  var now = Date.now()/1000;
+  var buckets = new Array(60).fill(0);
+  list.forEach(function(n){
+    var ls = n.last_seen || 0;
+    if (!ls) return;
+    var ageMin = (now - ls) / 60;
+    if (ageMin < 0 || ageMin >= 60) return;
+    var idx = 59 - Math.floor(ageMin); // 0 = 60 min ago, 59 = now
+    buckets[idx] += 1;
+  });
+  return buckets;
+}
+function _nbBuildChannelDist(list){
+  var m = {};
+  list.forEach(function(n){
+    var ch = _nbCh(n) || 'unknown';
+    m[ch] = (m[ch] || 0) + 1;
+  });
+  var labels = Object.keys(m).sort(function(a,b){ return m[b]-m[a]; });
+  var data = labels.map(function(k){ return m[k]; });
+  var colors = labels.map(function(k){ return 'rgb(' + (k==='unknown'?'148,163,184':_nbChColorRgbSafe(k)) + ')'; });
+  return { labels: labels, data: data, colors: colors };
+}
+function _nbBuildHopDist(list){
+  // v2.6.0: 0..7 + 8+ bucket + unknown.
+  var counts = { '0':0, '1':0, '2':0, '3':0, '4':0, '5':0, '6':0, '7':0, '8+':0, '?':0 };
+  list.forEach(function(n){
+    var h = _nbHopOf(n);
+    if (h < 0) counts['?']++;
+    else if (h >= 8) counts['8+']++;
+    else counts[String(h)]++;
+  });
+  return counts;
+}
+function _nbStatusRelTime(epoch){
+  if (!epoch) return '\u2014';
+  var ageS = (Date.now()/1000) - epoch;
+  if (ageS < 10) return 'just now';
+  if (ageS < 60) return Math.round(ageS) + 's ago';
+  if (ageS < 3600) return Math.round(ageS/60) + 'm ago';
+  return Math.round(ageS/3600) + 'h ago';
+}
+function _nbDestroyChart(key){
+  if (nbState[key]) { try { nbState[key].destroy(); } catch(e){} nbState[key] = null; }
+}
 function nbRenderStats(){
   var el = G('nbStats');
   if (!el) return;
-  var list = nbState.filtered;
+  var list = nbState.filtered || [];
   var now = Date.now()/1000;
+
+  // ── KPI numbers ────────────────────────────────────────────────────
   var total = list.length;
   var active = list.filter(function(n){ return n.last_seen && (now - n.last_seen) < 300; }).length;
   var rssiVals = list.map(_nbRssi).filter(function(v){ return v != null; });
   var strongest = rssiVals.length ? Math.max.apply(null, rssiVals) : null;
   var weakest   = rssiVals.length ? Math.min.apply(null, rssiVals) : null;
-  function card(label, val, color){
-    return '<div style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:8px;padding:12px">' +
-      '<div style="font-size:11px;color:var(--txm);margin-bottom:4px">' + esc(label) + '</div>' +
-      '<div style="font-size:18px;font-weight:600;color:' + (color||'var(--tx)') + '">' + esc(val) + '</div>' +
+  var strongestNode = null;
+  if (strongest != null) {
+    for (var i=0;i<list.length;i++){ if (_nbRssi(list[i]) === strongest) { strongestNode = list[i]; break; } }
+  }
+  var hopDist = _nbBuildHopDist(list);
+  var direct = hopDist['0'];
+  var lastEpoch = list.reduce(function(m,n){ return Math.max(m, n.last_seen || 0); }, 0);
+
+  // ── Build the strip layout (one-time) ──────────────────────────────
+  // If our markup is not yet present, render it. Otherwise just update values.
+  if (!el.querySelector('#nbStatStripRoot')) {
+    el.innerHTML = '' +
+      '<div id="nbStatStripRoot" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;width:100%">' +
+        // KPI tiles
+        '<div class="nbKpi" data-k="total"   style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Visible</div>' +
+          '<div class="nbKpiVal" style="font-size:18px;font-weight:600;color:var(--tx);line-height:1">\u2014</div>' +
+          '<div class="nbKpiSub" style="font-size:10px;color:var(--txm);margin-top:3px">\u2014 direct</div>' +
+        '</div>' +
+        '<div class="nbKpi" data-k="active"  style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Active &lt;5m</div>' +
+          '<div class="nbKpiVal" style="font-size:18px;font-weight:600;line-height:1">\u2014</div>' +
+          '<div class="nbKpiSub" style="font-size:10px;color:var(--txm);margin-top:3px">of total</div>' +
+        '</div>' +
+        '<div class="nbKpi" data-k="best"    style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Best RSSI</div>' +
+          '<div class="nbKpiVal" style="font-size:18px;font-weight:600;line-height:1">\u2014</div>' +
+          '<div class="nbKpiSub" style="font-size:10px;color:var(--txm);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\u2014</div>' +
+        '</div>' +
+        '<div class="nbKpi" data-k="worst"   style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">Worst RSSI</div>' +
+          '<div class="nbKpiVal" style="font-size:18px;font-weight:600;line-height:1">\u2014</div>' +
+          '<div class="nbKpiSub" style="font-size:10px;color:var(--txm);margin-top:3px">in filter</div>' +
+        '</div>' +
+        // Sparkline tile
+        '<div class="nbWidget" style="grid-column:span 2;background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;min-height:78px;position:relative">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center">' +
+            '<span>Last-seen activity \u00b7 60 min</span><span id="nbSparkPeak" style="font-weight:600;color:var(--tx);font-size:10px"></span>' +
+          '</div>' +
+          '<div style="position:relative;height:48px"><canvas id="nbStatSpark"></canvas></div>' +
+        '</div>' +
+        // Channel donut tile
+        '<div class="nbWidget" style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;min-height:78px;display:flex;gap:10px;align-items:center">' +
+          '<div style="width:64px;height:64px;flex-shrink:0;position:relative"><canvas id="nbStatChannelDonut"></canvas></div>' +
+          '<div id="nbStatChannelLegend" style="flex:1;font-size:10px;color:var(--txm);line-height:1.6;overflow:hidden"></div>' +
+        '</div>' +
+        // Hop bar tile
+        '<div class="nbWidget" style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;min-height:78px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Hop distribution</div>' +
+          '<div style="position:relative;height:56px"><canvas id="nbStatHopBar"></canvas></div>' +
+        '</div>' +
+        // Status pill tile
+        '<div class="nbWidget" style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:10px;padding:10px 12px;min-height:78px;display:flex;flex-direction:column;justify-content:center;gap:4px">' +
+          '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:0.5px">Last advert</div>' +
+          '<div id="nbStatLastAdvert" style="font-size:14px;font-weight:600;color:var(--tx)">\u2014</div>' +
+          '<div id="nbStatRefreshState" style="font-size:10px;color:var(--txm)">\u2014</div>' +
+        '</div>' +
       '</div>';
   }
-  el.innerHTML = [
-    card('Total visible', String(total), 'var(--tx)'),
-    card('Active (<5 min)', String(active), active > 0 ? '#22c55e' : 'var(--tx)'),
-    card('Strongest RSSI', strongest != null ? strongest.toFixed(1) + ' dBm' : '\u2014', _nbRssiColor(strongest)),
-    card('Weakest RSSI',   weakest   != null ? weakest.toFixed(1)   + ' dBm' : '\u2014', _nbRssiColor(weakest))
-  ].join('');
+
+  // ── Update KPI numbers ─────────────────────────────────────────────
+  function setKpi(k, val, sub, color){
+    var tile = el.querySelector('.nbKpi[data-k="' + k + '"]');
+    if (!tile) return;
+    var v = tile.querySelector('.nbKpiVal');
+    var s = tile.querySelector('.nbKpiSub');
+    if (v) { v.textContent = val; v.style.color = color || 'var(--tx)'; }
+    if (s && sub != null) s.textContent = sub;
+  }
+  setKpi('total',  String(total), direct + ' direct \u00b7 ' + (total - direct - hopDist['?']) + ' relayed');
+  setKpi('active', String(active), active > 0 ? Math.round(100*active/Math.max(1,total)) + '% of total' : 'no recent activity', active > 0 ? '#22c55e' : 'var(--tx)');
+  setKpi('best',   strongest != null ? strongest.toFixed(1) + ' dBm' : '\u2014',
+         strongestNode ? _nbName(strongestNode) : '\u2014', _nbRssiColor(strongest));
+  setKpi('worst',  weakest != null ? weakest.toFixed(1) + ' dBm' : '\u2014', null, _nbRssiColor(weakest));
+
+  // ── Update status pill ─────────────────────────────────────────────
+  var lp = el.querySelector('#nbStatLastAdvert');
+  if (lp) lp.textContent = _nbStatusRelTime(lastEpoch);
+  var rs = el.querySelector('#nbStatRefreshState');
+  if (rs) {
+    var auto = G('nbAutoRefresh');
+    rs.textContent = (auto && auto.checked) ? 'Auto-refresh \u00b7 15s' : 'Manual refresh';
+  }
+
+  // ── Sparkline ──────────────────────────────────────────────────────
+  var sparkCv = el.querySelector('#nbStatSpark');
+  if (sparkCv && typeof Chart !== 'undefined') {
+    var buckets = _nbBuildSparkBuckets(list);
+    var peak = Math.max.apply(null, buckets);
+    var pk = el.querySelector('#nbSparkPeak');
+    if (pk) pk.textContent = 'peak ' + peak;
+    if (!nbState.statSpark) {
+      nbState.statSpark = new Chart(sparkCv.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: buckets.map(function(_,i){ return ''; }),
+          datasets: [{
+            data: buckets,
+            borderColor: 'rgba(99,102,241,1)',
+            backgroundColor: 'rgba(99,102,241,0.18)',
+            borderWidth: 1.5,
+            fill: true,
+            tension: 0.35,
+            pointRadius: 0,
+            pointHoverRadius: 3
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip: {
+            callbacks: { title: function(items){
+              var i = items[0].dataIndex; var minsAgo = 59 - i;
+              return minsAgo === 0 ? 'now' : minsAgo + 'm ago';
+            }, label: function(item){ return item.raw + ' nodes'; } }
+          } },
+          scales: { x: { display: false }, y: { display: false, beginAtZero: true } }
+        }
+      });
+    } else {
+      nbState.statSpark.data.datasets[0].data = buckets;
+      nbState.statSpark.update('none');
+    }
+  }
+
+  // ── Channel donut ──────────────────────────────────────────────────
+  var donutCv = el.querySelector('#nbStatChannelDonut');
+  if (donutCv && typeof Chart !== 'undefined') {
+    var cd = _nbBuildChannelDist(list);
+    if (!nbState.statDonut) {
+      nbState.statDonut = new Chart(donutCv.getContext('2d'), {
+        type: 'doughnut',
+        data: { labels: cd.labels, datasets: [{ data: cd.data, backgroundColor: cd.colors, borderWidth: 0 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false, cutout: '62%',
+          plugins: { legend: { display: false }, tooltip: { callbacks: {
+            label: function(item){
+              var pct = total > 0 ? Math.round(100*item.raw/total) : 0;
+              return item.label + ': ' + item.raw + ' (' + pct + '%)';
+            }
+          } } }
+        }
+      });
+    } else {
+      nbState.statDonut.data.labels = cd.labels;
+      nbState.statDonut.data.datasets[0].data = cd.data;
+      nbState.statDonut.data.datasets[0].backgroundColor = cd.colors;
+      nbState.statDonut.update('none');
+    }
+    // Legend (compact, with click-to-filter)
+    var legend = el.querySelector('#nbStatChannelLegend');
+    if (legend) {
+      legend.innerHTML = cd.labels.slice(0, 4).map(function(lbl, i){
+        var pct = total > 0 ? Math.round(100*cd.data[i]/total) : 0;
+        return '<div style="display:flex;align-items:center;gap:5px">' +
+          '<span style="width:8px;height:8px;border-radius:50%;background:' + cd.colors[i] + ';display:inline-block"></span>' +
+          '<span style="color:var(--tx);font-weight:500">' + esc(lbl) + '</span>' +
+          '<span style="color:var(--txm)">' + cd.data[i] + ' (' + pct + '%)</span>' +
+        '</div>';
+      }).join('');
+      if (cd.labels.length > 4) {
+        legend.innerHTML += '<div style="color:var(--txm);font-size:9px;margin-top:2px">+' + (cd.labels.length - 4) + ' more</div>';
+      }
+    }
+  }
+
+  // ── Hop distribution bar ───────────────────────────────────────────
+  var hopCv = el.querySelector('#nbStatHopBar');
+  if (hopCv && typeof Chart !== 'undefined') {
+    // v2.6.0: 10 buckets — direct + 1..7 + 8+ + unknown
+    var hopLabels = ['Direct','1','2','3','4','5','6','7','8+','?'];
+    var hopData   = [hopDist['0'], hopDist['1'], hopDist['2'], hopDist['3'], hopDist['4'], hopDist['5'], hopDist['6'], hopDist['7'], hopDist['8+'], hopDist['?']];
+    var hopColors = ['rgba(34,197,94,0.90)','rgba(74,144,226,0.85)','rgba(99,102,241,0.85)','rgba(139,92,246,0.82)','rgba(168,85,247,0.80)','rgba(217,70,239,0.78)','rgba(245,158,11,0.78)','rgba(234,88,12,0.78)','rgba(239,68,68,0.85)','rgba(148,163,184,0.7)'];
+    if (!nbState.statHopBar) {
+      nbState.statHopBar = new Chart(hopCv.getContext('2d'), {
+        type: 'bar',
+        data: { labels: hopLabels, datasets: [{ data: hopData, backgroundColor: hopColors, borderWidth: 0, borderRadius: 3 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false, indexAxis: 'y',
+          plugins: { legend: { display: false }, tooltip: { callbacks: {
+            label: function(item){ return item.raw + ' nodes'; }
+          } } },
+          scales: {
+            x: { display: false, beginAtZero: true },
+            y: { ticks: { color: 'rgba(255,255,255,0.7)', font: { size: 10 } }, grid: { display: false } }
+          }
+        }
+      });
+    } else {
+      nbState.statHopBar.data.datasets[0].data = hopData;
+      nbState.statHopBar.update('none');
+    }
+  }
 }
 function nbUpdateBulkBtn(){
   var btn = G('nbBulkPingBtn');
@@ -2644,74 +2909,1676 @@ function _nbChColor(ch){
   for (var i=0;i<s.length;i++) idx = (idx*31 + s.charCodeAt(i)) & 0xffff;
   return _NB_CH_COLORS[idx % _NB_CH_COLORS.length];
 }
+// v2.5.8: same channel colour as an 'r,g,b' triplet (for rgba() with variable alpha).
+function _nbChColorRgb(ch){
+  var hex = _nbChColor(ch).replace('#','');
+  if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+  var r = parseInt(hex.substring(0,2),16);
+  var g = parseInt(hex.substring(2,4),16);
+  var b = parseInt(hex.substring(4,6),16);
+  return r + ',' + g + ',' + b;
+}
+// v2.5.8: RSSI strength buckets used for sub-clustering so a huge channel/hop
+// group is split into a handful of meaningful signal-strength rings instead of
+// one mega-bubble. Returns {key, label, order}.
+function _nbRssiBucket(rssi){
+  if (rssi == null)      return { key: 'na',    label: 'no RSSI',     order: 4 };
+  if (rssi > -70)        return { key: 'strong',label: 'strong >-70', order: 0 };
+  if (rssi > -85)        return { key: 'good',  label: 'good -70..-85',order: 1 };
+  if (rssi > -100)       return { key: 'weak',  label: 'weak -85..-100',order: 2 };
+  return                        { key: 'faint', label: 'faint <=-100', order: 3 };
+}
+// ── v2.5.8: interactive force-directed Topology graph (vis-network) ───────
+// Replaces the old Chart.js radial-scatter bubble chart with a star graph:
+//  • central fixed YOU node (this repeater)
+//  • one edge YOU->neighbour per heard node (no fabricated peer-to-peer edges,
+//    route data is not available)
+//  • edge width = RSSI strength, edge colour = channel colour
+//  • node size = SNR, node colour = channel colour
+//  • relayed nodes (path_len > 0) pushed to an outer ring; directly-heard
+//    nodes (path_len 0/null) kept closer in. Radial distance also reflects RSSI.
+//  • optional clustering by channel or by hop (feature C); auto-clusters when
+//    > 150 nodes are visible.
+var _NB_TOPO_AUTO_CLUSTER = 150;   // auto-cluster threshold
+function _nbTopoChKey(n){
+  var c = _nbCh(n);
+  return (c && String(c).trim().length) ? String(c) : 'unknown';
+}
+function _nbTopoHop(n){
+  // direct (0/null) vs relayed (>0)
+  if (n.path_len != null) return (n.path_len > 0) ? 1 : 0;
+  if (n.zero_hop === true  || n.zero_hop === 1) return 0;
+  if (n.zero_hop === false || n.zero_hop === 0) return 1;
+  return 0; // unknown -> treat as direct (closer in)
+}
+// v2.6.0 F2: dispatcher — picks the active layout engine (radar default, D3-driven).
 function nbRenderTopology(){
-  var canvas = G('nbTopoCanvas');
-  if (!canvas || typeof Chart === 'undefined') return;
-  var pts = nbState.filtered.map(function(n, i){
-    var rssi = _nbRssi(n);
-    var snr = _nbSnr(n);
-    var nrssi = rssi != null ? rssi : -130;
-    // Distance: stronger RSSI -> closer to center. Map [-130..-40] to [1..0.05]
-    var r = Math.max(0.05, Math.min(1.0, (-nrssi - 40) / 90));
-    var ang = (i * 137.508) * Math.PI / 180; // golden angle for distribution
-    return {
-      x: r * Math.cos(ang),
-      y: r * Math.sin(ang),
-      r: Math.max(4, Math.min(20, 6 + (snr != null ? snr/2 : 0))),
-      name: _nbName(n),
-      rssi: rssi,
-      snr: snr,
-      ch: _nbCh(n),
-      _n: n
-    };
+  var holder = G('nbTopoGraph');
+  if (!holder) return;
+  // Toggle the cluster selector visibility — only meaningful in 'force' layout.
+  var cw = G('nbTopoClusterWrap');
+  if (cw) cw.style.display = (nbState.topoLayout === 'force') ? 'flex' : 'none';
+  // v2.6.0 F3: Mesh-specific controls (cluster collapse + minimap) only in 'mesh' layout.
+  var mc = G('nbTopoMeshControls');
+  if (mc) mc.style.display = (nbState.topoLayout === 'mesh') ? 'flex' : 'none';
+  if (nbState.topoLayout !== 'mesh'){
+    var mm = G('nbTopoMinimap'); if (mm) mm.style.display = 'none';
+  }
+  // Radar is the v2.6.0 default — uses D3 and does not need vis-network.
+  if (nbState.topoLayout === 'radar') {
+    // Tear down any previous vis-network instance so the SVG can take over.
+    if (nbState.topoNet) { try { nbState.topoNet.destroy(); } catch(e){} nbState.topoNet = null; }
+    return nbTopoRenderRadarD3();
+  }
+  // Legacy / mesh views still need vis-network.
+  if (typeof vis === 'undefined' || !vis.Network) return;
+  if (nbState.topoLayout === 'mesh')  return nbTopoRenderMesh();
+  if (nbState.topoLayout === 'force') return nbTopoRenderForce();
+  return nbTopoRenderRings(); // legacy fallback
+}
+
+// ── v2.6.0 F2: Radar polar topology view (D3.js) ───────────────────────────
+// Concentric hop rings (0=direct innermost, 1, 2, 3+ outer). Each node is
+// placed at a deterministic angle derived from its pubkey/node_id hash so the
+// layout is stable between refreshes. Visual encoding:
+//   colour  = channel (channel_e orange, channel_f green, unknown grey)
+//   size    = SNR  (clamp 5..14 px)
+//   opacity = recency (1.0 if seen ≤5m, fades to 0.25 at 24h+)
+// Direct-ring spokes drawn from YOU to each direct node, stroke width = RSSI.
+// When a ring holds >50 nodes the relayed dots are dimmed and a 24-segment
+// density heat-wedge is overlaid so the user still sees "where the mesh is".
+function _nbTopoHashAngle(idStr){
+  // Deterministic FNV-1a-ish 32-bit hash → [0, 2π). Stable across refreshes.
+  var s = String(idStr || '');
+  var h = 2166136261 >>> 0;
+  for (var i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return ((h >>> 0) / 4294967295) * Math.PI * 2;
+}
+function _nbTopoRecencyOpacity(lastSeen){
+  if (!lastSeen) return 0.45;
+  var ageS = Date.now()/1000 - lastSeen;
+  if (ageS <= 300) return 1.0;          // ≤ 5 min: full
+  if (ageS <= 3600) return 0.85;        // ≤ 1 h
+  if (ageS <= 21600) return 0.65;       // ≤ 6 h
+  if (ageS <= 86400) return 0.45;       // ≤ 24 h
+  return 0.25;                          // > 24 h: heavily faded
+}
+function _nbTopoEnsureTooltip(){
+  var tt = document.getElementById('nbRadarTooltip');
+  if (!tt) {
+    tt = document.createElement('div');
+    tt.id = 'nbRadarTooltip';
+    tt.style.cssText = 'position:fixed;pointer-events:none;z-index:9999;background:rgba(15,23,42,0.96);' +
+      'border:1px solid rgba(99,102,241,0.6);border-radius:8px;padding:8px 10px;font-size:11px;' +
+      'color:#fff;font-family:Inter,sans-serif;max-width:260px;display:none;box-shadow:0 8px 24px rgba(0,0,0,0.4);' +
+      'line-height:1.5';
+    document.body.appendChild(tt);
+  }
+  return tt;
+}
+function nbTopoRenderRadarD3(){
+  var holder = G('nbTopoGraph');
+  if (!holder) return;
+  if (typeof d3 === 'undefined') {
+    holder.innerHTML = '<div style="padding:40px;text-align:center;color:var(--txm)">' +
+      '<div style="font-size:13px;margin-bottom:8px">⚠️ D3.js failed to load</div>' +
+      '<div style="font-size:11px">Falling back to legacy ring layout. Try refreshing the page.</div>' +
+      '</div>';
+    setTimeout(function(){
+      nbState.topoLayout = 'rings';
+      var sel = G('nbTopoLayout'); if (sel) sel.value = 'rings';
+      nbRenderTopology();
+    }, 50);
+    return;
+  }
+
+  // ── Pull from shared filtered list, honour local toggles ────────────────
+  var hideUnknown = !!(G('nbTopoHideUnknown') && G('nbTopoHideUnknown').checked);
+  var hideRelayed = !!nbState.topoHideRelayed;
+  var list = (nbState.filtered || []).filter(function(n){
+    if (hideUnknown && _nbTopoChKey(n) === 'unknown') return false;
+    if (hideRelayed) {
+      // v2.6.0 F3 step A3: use honest hop helper that returns null for relayed-
+      // with-unknown-distance (instead of optimistically defaulting to 1).
+      // null !== 0 evaluates true, so 'hide relayed' still correctly drops them.
+      var hop = nbTopoHopOf(n);
+      if (hop !== 0) return false; // keep direct only
+    }
+    return true;
   });
-  // Local node at center
-  var datasets = [
-    { label: 'Local', data: [{ x: 0, y: 0, r: 10, name: 'This repeater' }], backgroundColor: '#fff', borderColor: '#fff' }
-  ];
-  // Group by channel for legend
-  var byCh = {};
-  pts.forEach(function(p){
-    var k = p.ch || 'unknown';
-    if (!byCh[k]) byCh[k] = [];
-    byCh[k].push(p);
+
+  // Render shared stats + legend bars (reuse existing helpers)
+  if (typeof nbTopoRenderStats === 'function') nbTopoRenderStats(list);
+  if (typeof nbTopoRenderLegend === 'function') nbTopoRenderLegend(list);
+
+  // ── Group nodes per hop ring (v2.6.0 F3 step A3: 0..7 + 8+/unknown bucket) ─
+  // Use the honest hop helper (nbTopoHopOf) so relayed nodes with unknown
+  // distance get null instead of the optimistic 1. They land in the outer 8+
+  // bucket instead of falsely crowding the 1-hop ring with the ~837 relayed-
+  // unknown nodes seen on pi03 today. TODO: split into a dedicated '?' outer
+  // ring once we extend the renderer to support a 10th ring with its own
+  // radius/label without touching the existing 0..8 geometry.
+  var rings = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: [] };
+  list.forEach(function(n){
+    var hv = nbTopoHopOf(n);
+    if (hv === null || hv === undefined) hv = 8;  // unknown → outer 8+ bucket
+    if (hv >= 8) hv = 8;                           // 8+ bucket
+    rings[hv].push(n);
   });
-  Object.keys(byCh).forEach(function(k){
-    datasets.push({
-      label: k,
-      data: byCh[k],
-      backgroundColor: _nbChColor(k) + 'cc',
-      borderColor: _nbChColor(k)
-    });
-  });
-  if (nbState.topoChart) { nbState.topoChart.destroy(); nbState.topoChart = null; }
-  nbState.topoChart = new Chart(canvas.getContext('2d'), {
-    type: 'bubble',
-    data: { datasets: datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      scales: {
-        x: { min: -1.1, max: 1.1, display: false, grid: { color: 'rgba(255,255,255,0.04)' } },
-        y: { min: -1.1, max: 1.1, display: false, grid: { color: 'rgba(255,255,255,0.04)' } }
-      },
-      plugins: {
-        legend: { labels: { color: '#ddd' } },
-        tooltip: {
-          callbacks: {
-            label: function(ctx){
-              var p = ctx.raw;
-              if (!p) return '';
-              var bits = [p.name || ''];
-              if (p.rssi != null) bits.push('RSSI ' + p.rssi.toFixed(1) + ' dBm');
-              if (p.snr  != null) bits.push('SNR '  + p.snr.toFixed(1)  + ' dB');
-              if (p.ch)           bits.push('ch ' + p.ch);
-              return bits.join(' \u2022 ');
-            }
-          }
-        }
-      }
+
+  // ── SVG geometry ─────────────────────────────────────────────────────────
+  var w = holder.clientWidth || 800;
+  var h = 560;                       // a bit taller now we have 9 rings
+  var cx = w / 2, cy = h / 2;
+  var maxR = Math.min(w, h) / 2 - 36;
+  // 9 concentric ring radii, direct ring close in then evenly outward.
+  var ringR = {
+    0: maxR * 0.11, 1: maxR * 0.22, 2: maxR * 0.33, 3: maxR * 0.44,
+    4: maxR * 0.55, 5: maxR * 0.66, 6: maxR * 0.77, 7: maxR * 0.88,
+    8: maxR * 0.99
+  };
+  var ringLabel = { 0: 'Direct', 1: '1 hop', 2: '2 hops', 3: '3 hops',
+                    4: '4 hops', 5: '5 hops', 6: '6 hops', 7: '7 hops', 8: '8+ hops' };
+
+  // ── Clear & create root SVG ──────────────────────────────────────────────
+  d3.select(holder).selectAll('*').remove();
+  var svg = d3.select(holder).append('svg')
+    .attr('width', '100%')
+    .attr('height', h)
+    .attr('viewBox', '0 0 ' + w + ' ' + h)
+    .attr('preserveAspectRatio', 'xMidYMid meet')
+    .style('background', 'radial-gradient(circle at center, rgba(99,102,241,0.05) 0%, rgba(0,0,0,0.25) 60%, rgba(0,0,0,0.4) 100%)')
+    .style('border-radius', '8px')
+    .style('display', 'block');
+
+  var root = svg.append('g');
+
+  // Enable zoom & pan
+  var zoom = d3.zoom().scaleExtent([0.4, 4]).on('zoom', function(ev){ root.attr('transform', ev.transform); });
+  svg.call(zoom);
+  svg.on('dblclick.zoom', null); // disable dbl-click zoom (we want it free)
+
+  // ── Draw concentric hop rings ────────────────────────────────────────────
+  var ringG = root.append('g').attr('class', 'nb-radar-rings');
+  [0,1,2,3,4,5,6,7,8].forEach(function(r){
+    ringG.append('circle')
+      .attr('cx', cx).attr('cy', cy).attr('r', ringR[r])
+      .attr('fill', 'none')
+      .attr('stroke', 'rgba(255,255,255,0.10)')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', r === 0 ? 'none' : '2 4');
+    // Ring label (top of ring). Skip empty rings beyond 1 hop to reduce clutter.
+    if (r <= 1 || rings[r].length > 0) {
+      ringG.append('text')
+        .attr('x', cx).attr('y', cy - ringR[r] - 4)
+        .attr('text-anchor', 'middle')
+        .attr('font-size', '9px')
+        .attr('font-family', 'Inter, sans-serif')
+        .attr('fill', 'rgba(255,255,255,0.55)')
+        .text(ringLabel[r] + ' · ' + rings[r].length);
     }
   });
+
+  // ── Density wedges for outer rings when >50 nodes ────────────────────────
+  var SEGMENTS = 24;
+  [2,3,4,5,6,7,8].forEach(function(r){
+    if (rings[r].length <= 50) return;
+    var segCounts = new Array(SEGMENTS).fill(0);
+    rings[r].forEach(function(n){
+      var ang = _nbTopoHashAngle(n.node_id || _nbName(n));
+      var idx = Math.floor((ang / (Math.PI * 2)) * SEGMENTS) % SEGMENTS;
+      segCounts[idx]++;
+    });
+    var maxC = Math.max.apply(null, segCounts);
+    var rOuter = ringR[r] + 5;
+    var rInner = (r === 8) ? ringR[r] - 6 : (ringR[r-1] + (ringR[r] - ringR[r-1]) * 0.55);
+    var arc = d3.arc().innerRadius(rInner).outerRadius(rOuter)
+      .startAngle(function(d){ return d.idx * 2 * Math.PI / SEGMENTS; })
+      .endAngle(function(d){ return (d.idx + 1) * 2 * Math.PI / SEGMENTS; });
+    var wedgeG = root.append('g').attr('class', 'nb-radar-density').attr('transform', 'translate(' + cx + ',' + cy + ')');
+    wedgeG.selectAll('path')
+      .data(segCounts.map(function(c, i){ return { idx: i, count: c }; }))
+      .enter().append('path')
+      .attr('d', arc)
+      .attr('fill', function(d){
+        var t = maxC > 0 ? d.count / maxC : 0;
+        return 'rgba(99,102,241,' + (0.05 + t * 0.35).toFixed(3) + ')';
+      })
+      .attr('stroke', 'none')
+      .append('title')
+      .text(function(d){ return ringLabel[r] + ' sector ' + d.idx + ': ' + d.count + ' nodes'; });
+  });
+
+  // ── Direct-ring spokes (YOU → each direct node) ──────────────────────────
+  var spokeG = root.append('g').attr('class', 'nb-radar-spokes');
+  rings[0].forEach(function(n){
+    var ang = _nbTopoHashAngle(n.node_id || _nbName(n));
+    // For direct ring, spread evenly when count is small for cleaner look
+    if (rings[0].length <= 24) {
+      var idx0 = rings[0].indexOf(n);
+      ang = (idx0 / rings[0].length) * Math.PI * 2 - Math.PI/2;
+    }
+    var rssi = _nbRssi(n);
+    var sw = (rssi != null) ? Math.max(0.6, Math.min(4, (rssi + 130) / 18)) : 0.8;
+    var ch = _nbTopoChKey(n);
+    var col = (ch === 'unknown') ? '148,163,184' : _nbChColorRgbSafe(ch);
+    spokeG.append('line')
+      .attr('x1', cx).attr('y1', cy)
+      .attr('x2', cx + Math.cos(ang) * ringR[0])
+      .attr('y2', cy + Math.sin(ang) * ringR[0])
+      .attr('stroke', 'rgba(' + col + ',0.45)')
+      .attr('stroke-width', sw)
+      .attr('stroke-linecap', 'round');
+  });
+
+  // ── Plot nodes per ring ──────────────────────────────────────────────────
+  var tooltip = _nbTopoEnsureTooltip();
+  function showTip(ev, n){
+    var hop = _nbHopOf(n);
+    var rssi = _nbRssi(n), snr = _nbSnr(n);
+    var rows = [
+      '<div style="font-weight:600;color:#fff;margin-bottom:4px">' + esc(_nbName(n)) + '</div>'
+    ];
+    if (rssi != null) rows.push('<div>RSSI: <b style="color:' + _nbRssiColor(rssi) + '">' + rssi.toFixed(1) + ' dBm</b></div>');
+    if (snr  != null) rows.push('<div>SNR: <b style="color:' + _nbSnrColor(snr) + '">' + snr.toFixed(1) + ' dB</b></div>');
+    rows.push('<div>Channel: ' + esc(_nbCh(n) || 'unknown') + '</div>');
+    rows.push('<div>Hop: ' + (hop < 0 ? 'unknown' : (hop === 0 ? 'direct' : hop + (hop === 1 ? ' hop' : ' hops'))) + '</div>');
+    if (n.last_seen) rows.push('<div style="color:rgba(255,255,255,0.6);margin-top:3px">Seen ' + esc(_nbFmtTs(n.last_seen)) + '</div>');
+    rows.push('<div style="font-size:9px;color:rgba(255,255,255,0.4);margin-top:4px">Click to open details</div>');
+    tooltip.innerHTML = rows.join('');
+    tooltip.style.display = 'block';
+    tooltip.style.left = (ev.clientX + 14) + 'px';
+    tooltip.style.top  = (ev.clientY + 14) + 'px';
+  }
+  function hideTip(){ tooltip.style.display = 'none'; }
+
+  [0,1,2,3,4,5,6,7,8].forEach(function(r){
+    var nodesInRing = rings[r];
+    if (!nodesInRing || nodesInRing.length === 0) return;  // skip empty rings
+    var nodeG = root.append('g').attr('class', 'nb-radar-nodes nb-radar-ring-' + r);
+    var isHeat = (r >= 2) && (nodesInRing.length > 50);
+    // For direct ring with small count, lay out evenly so labels never collide.
+    var evenAngle = (r === 0 && nodesInRing.length <= 24);
+
+    nodeG.selectAll('circle.node')
+      .data(nodesInRing)
+      .enter().append('circle')
+      .attr('class', 'node')
+      .attr('cx', function(n, i){
+        var ang = evenAngle
+          ? (i / nodesInRing.length) * Math.PI * 2 - Math.PI/2
+          : _nbTopoHashAngle(n.node_id || _nbName(n));
+        return cx + Math.cos(ang) * ringR[r];
+      })
+      .attr('cy', function(n, i){
+        var ang = evenAngle
+          ? (i / nodesInRing.length) * Math.PI * 2 - Math.PI/2
+          : _nbTopoHashAngle(n.node_id || _nbName(n));
+        return cy + Math.sin(ang) * ringR[r];
+      })
+      .attr('r', function(n){
+        var snr = _nbSnr(n);
+        var s = (snr != null) ? Math.max(5, Math.min(14, 6 + snr/2)) : 5;
+        if (isHeat && r > 0) s = Math.max(3, s * 0.55); // dim in heat mode
+        return s;
+      })
+      .attr('fill', function(n){
+        var ch = _nbTopoChKey(n);
+        var col = (ch === 'unknown') ? '148,163,184' : _nbChColorRgbSafe(ch);
+        return 'rgb(' + col + ')';
+      })
+      .attr('fill-opacity', function(n){
+        var o = _nbTopoRecencyOpacity(n.last_seen);
+        if (isHeat && r > 0) o *= 0.6;
+        return o;
+      })
+      .attr('stroke', 'rgba(255,255,255,0.75)')
+      .attr('stroke-width', function(n){ return r === 0 ? 1.2 : 0.5; })
+      .style('cursor', 'pointer')
+      .on('mouseover', function(ev, n){
+        d3.select(this).attr('stroke', '#ffffff').attr('stroke-width', 2);
+        showTip(ev, n);
+      })
+      .on('mousemove', function(ev, n){ showTip(ev, n); })
+      .on('mouseout', function(ev, n){
+        d3.select(this).attr('stroke', 'rgba(255,255,255,0.75)').attr('stroke-width', r === 0 ? 1.2 : 0.5);
+        hideTip();
+      })
+      .on('click', function(ev, n){
+        var nid = n.node_id;
+        if (nid && typeof nbShowDetail === 'function') nbShowDetail(nid);
+      });
+
+    // Labels: only for direct ring (hop 0) — never clutter outer rings
+    if (r === 0 && nodesInRing.length <= 24) {
+      nodeG.selectAll('text.lbl')
+        .data(nodesInRing)
+        .enter().append('text')
+        .attr('class', 'lbl')
+        .attr('x', function(n, i){
+          var ang = (i / nodesInRing.length) * Math.PI * 2 - Math.PI/2;
+          return cx + Math.cos(ang) * (ringR[0] + 16);
+        })
+        .attr('y', function(n, i){
+          var ang = (i / nodesInRing.length) * Math.PI * 2 - Math.PI/2;
+          return cy + Math.sin(ang) * (ringR[0] + 16) + 3;
+        })
+        .attr('text-anchor', function(n, i){
+          var ang = (i / nodesInRing.length) * Math.PI * 2 - Math.PI/2;
+          var cosA = Math.cos(ang);
+          return cosA > 0.3 ? 'start' : (cosA < -0.3 ? 'end' : 'middle');
+        })
+        .attr('font-size', '10px')
+        .attr('font-family', 'Inter, sans-serif')
+        .attr('fill', 'rgba(255,255,255,0.85)')
+        .attr('paint-order', 'stroke')
+        .attr('stroke', '#0f172a')
+        .attr('stroke-width', '3px')
+        .text(function(n){ return _nbName(n); });
+    }
+  });
+
+  // ── Central YOU node (drawn last so it overlays everything) ──────────────
+  var youG = root.append('g').attr('class', 'nb-radar-you');
+  // Soft pulsing halo
+  youG.append('circle')
+    .attr('cx', cx).attr('cy', cy).attr('r', 20)
+    .attr('fill', 'rgba(99,102,241,0.15)').attr('stroke', 'none');
+  youG.append('circle')
+    .attr('cx', cx).attr('cy', cy).attr('r', 13)
+    .attr('fill', '#ffffff')
+    .attr('stroke', '#6366f1').attr('stroke-width', 3);
+  youG.append('text')
+    .attr('x', cx).attr('y', cy + 28)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '12px').attr('font-weight', '600')
+    .attr('font-family', 'Inter, sans-serif')
+    .attr('fill', '#ffffff')
+    .attr('paint-order', 'stroke')
+    .attr('stroke', '#0f172a').attr('stroke-width', '4px')
+    .text('YOU');
+
+  // ── Auto-hide tooltip when the SVG loses pointer ─────────────────────────
+  svg.on('mouseleave', hideTip);
+}
+
+// ── Legacy force-directed fan-out (kept as an optional layout) ────────────
+function nbTopoRenderForce(){
+  var holder = G('nbTopoGraph');
+  if (!holder || typeof vis === 'undefined' || !vis.Network) return;
+
+  var hideUnknown = !!(G('nbTopoHideUnknown') && G('nbTopoHideUnknown').checked);
+  // Build working list from the shared filtered set, honouring the local
+  // hide-unknown toggle (filter integration: nbState.filtered already respects
+  // search / time / channel / hide-test-node filters).
+  var list = (nbState.filtered || []).filter(function(n){
+    if (hideUnknown && _nbTopoChKey(n) === 'unknown') return false;
+    return true;
+  });
+
+  // Render stats + legend regardless of graph state.
+  nbTopoRenderStats(list);
+  nbTopoRenderLegend(list);
+
+  var nodes = [];
+  var edges = [];
+  var nNodes = list.length;
+  // Central YOU node — large, bright, fixed at origin with heavy mass so the
+  // physics solver pushes every other node away and YOU never ends up under a
+  // cluster. It is also explicitly excluded from every clustering joinCondition.
+  nodes.push({
+    id: '__you__',
+    label: 'YOU',
+    title: 'This repeater (local node)',
+    shape: 'dot',
+    size: 30,
+    fixed: { x: true, y: true },
+    x: 0, y: 0,
+    mass: 14,
+    color: { background: '#ffffff', border: '#6366f1', highlight: { background: '#ffffff', border: '#818cf8' } },
+    font: { color: '#ffffff', size: 18, face: 'Inter', strokeWidth: 5, strokeColor: '#0f172a', vadjust: 0 },
+    borderWidth: 4,
+    _you: true
+  });
+
+  // Cluster='None' shows the raw fan-out: dim the nodes/edges so heavy
+  // overplotting stays readable. Clustered modes use solid colours.
+  var rawMode = (nbState.topoClusterMode === 'none') && (nNodes <= _NB_TOPO_AUTO_CLUSTER);
+  var nodeAlpha = rawMode ? 0.55 : 0.9;
+  var edgeAlpha = rawMode ? 0.18 : 0.5;
+
+  list.forEach(function(n, i){
+    var nid = n.node_id || ('node_' + i + '_' + Math.random().toString(36).slice(2));
+    var rssi = _nbRssi(n);
+    var snr  = _nbSnr(n);
+    var ch   = _nbTopoChKey(n);
+    var baseCol = (ch === 'unknown') ? '148,163,184' : _nbChColorRgb(ch);
+    var col  = 'rgba(' + baseCol + ',' + nodeAlpha + ')';
+    var hop  = _nbTopoHop(n);
+    var bkt  = _nbRssiBucket(rssi);
+    // Node size from SNR: map [-10..15] dB -> [8..26] px.
+    var sz   = (snr != null) ? Math.max(8, Math.min(26, 14 + snr)) : 10;
+    // Edge width from RSSI: map [-130..-40] dBm -> [1..8] px.
+    var ew   = (rssi != null) ? Math.max(1, Math.min(8, (rssi + 130) / 11)) : 1.2;
+    // Radial distance: stronger RSSI -> closer; relayed -> outer ring.
+    var base = (rssi != null) ? Math.max(150, Math.min(560, (-rssi) * 3.4)) : 380;
+    var dist = base + (hop ? 240 : 0);
+    // Pre-seed a radial start position (golden-angle spread) so the solver
+    // starts from a sensible fan instead of piling everything onto (0,0).
+    var ang = i * 2.39996323;
+    var sx = Math.cos(ang) * dist;
+    var sy = Math.sin(ang) * dist;
+
+    var titleBits = [_nbName(n)];
+    if (rssi != null) titleBits.push('RSSI ' + rssi.toFixed(1) + ' dBm');
+    if (snr  != null) titleBits.push('SNR ' + snr.toFixed(1) + ' dB');
+    titleBits.push('Channel ' + ch);
+    titleBits.push('Path ' + _nbPath(n) + (hop ? ' (relayed)' : ' (direct)'));
+
+    nodes.push({
+      id: nid,
+      label: rawMode ? undefined : _nbName(n),
+      title: titleBits.join('\n'),
+      shape: 'dot',
+      size: sz,
+      x: sx, y: sy,
+      color: { background: col, border: 'rgba(' + baseCol + ',' + Math.min(1, nodeAlpha + 0.15) + ')',
+               highlight: { background: 'rgba(' + baseCol + ',1)', border: '#ffffff' } },
+      font: { color: 'rgba(255,255,255,0.82)', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: '#0f172a' },
+      borderWidth: 1.5,
+      _ch: ch,
+      _hop: hop,
+      _bkt: bkt,
+      _dist: dist
+    });
+    edges.push({
+      id: 'e_' + nid,
+      from: '__you__',
+      to: nid,
+      width: ew,
+      color: { color: 'rgba(' + baseCol + ',' + edgeAlpha + ')', highlight: '#ffffff', hover: '#ffffff' },
+      smooth: false,
+      length: dist
+    });
+  });
+
+  // (Re)build datasets.
+  nbState.topoNodes = new vis.DataSet(nodes);
+  nbState.topoEdges = new vis.DataSet(edges);
+
+  var physicsOn = !!nbState.topoPhysics;
+  var options = {
+    autoResize: true,
+    interaction: { hover: true, tooltipDelay: 120, zoomView: true, dragView: true, navigationButtons: false },
+    nodes: { scaling: { min: 8, max: 34 } },
+    edges: { selectionWidth: 2 },
+    physics: {
+      enabled: physicsOn,
+      solver: 'forceAtlas2Based',
+      // Stronger repulsion + a little central gravity keeps the fan open and
+      // the heavy YOU node clears space around itself.
+      forceAtlas2Based: { gravitationalConstant: -120, centralGravity: 0.006, springLength: 200, springConstant: 0.045, damping: 0.6, avoidOverlap: 0.7 },
+      stabilization: { enabled: true, iterations: 260, fit: true }
+    },
+    layout: { improvedLayout: false }
+  };
+
+  // Destroy any previous network before re-creating.
+  if (nbState.topoNet) { try { nbState.topoNet.destroy(); } catch(e){} nbState.topoNet = null; }
+  nbState.topoClustered = false;
+  nbState.topoNet = new vis.Network(holder, { nodes: nbState.topoNodes, edges: nbState.topoEdges }, options);
+
+  // Click a node -> open detail panel + highlight its direct link.
+  nbState.topoNet.on('click', function(params){
+    if (params.nodes && params.nodes.length) {
+      var id = params.nodes[0];
+      // Expand a cluster on click (feature C).
+      if (nbState.topoNet.isCluster(id)) {
+        nbState.topoNet.openCluster(id);
+        return;
+      }
+      if (id && id !== '__you__') nbShowDetail(id);
+    }
+  });
+
+  // Apply clustering when requested or when the mesh is large.
+  nbState.topoNet.once('stabilizationIterationsDone', function(){
+    if (physicsOn) { try { nbState.topoNet.setOptions({ physics: { enabled: false } }); } catch(e){} }
+    nbTopoApplyClustering();
+    try { nbState.topoNet.fit({ animation: false }); } catch(e){}
+  });
+  // If physics is already off there is no stabilization event — cluster now.
+  if (!physicsOn) {
+    nbTopoApplyClustering();
+    try { nbState.topoNet.fit({ animation: false }); } catch(e){}
+  }
+}
+
+// Decide and apply clustering based on the selected mode / auto threshold.
+// v2.5.8: NEVER produce one mega-bubble. Every primary group (channel or hop)
+// is further split by RSSI-strength bucket, so a 850-node 'unknown' channel
+// becomes several meaningful signal-strength groups. The local YOU node is
+// always excluded from clustering and stays a free, central, labelled node.
+function nbTopoApplyClustering(){
+  if (!nbState.topoNet || !nbState.topoNodes) return;
+  var mode = nbState.topoClusterMode || 'none';
+  var count = nbState.topoNodes.length - 1; // minus YOU
+  // Auto-cluster large meshes by hop (more discriminating than channel here).
+  if (mode === 'none' && count > _NB_TOPO_AUTO_CLUSTER) mode = 'hop';
+  if (mode === 'none') return;
+
+  // Build the list of (primaryKey, primaryLabel, primaryColorRgb) groups.
+  function primaryOf(nd){
+    if (mode === 'hop') {
+      return nd._hop === 0
+        ? { key: 'direct',  label: 'Direct',  rgb: '34,197,94' }
+        : { key: 'relayed', label: 'Relayed', rgb: '245,158,11' };
+    }
+    // channel mode
+    var ch = nd._ch;
+    return { key: 'ch_' + ch, label: ch, rgb: (ch === 'unknown') ? '148,163,184' : _nbChColorRgb(ch) };
+  }
+
+  // Group every non-YOU node into primary -> bucket buckets.
+  var groups = {}; // gkey -> {primary, bucket, count}
+  nbState.topoNodes.forEach(function(nd){
+    if (nd._you) return;
+    var p = primaryOf(nd);
+    var b = nd._bkt || { key: 'na', label: 'no RSSI', order: 4 };
+    var gkey = p.key + '|' + b.key;
+    if (!groups[gkey]) groups[gkey] = { primary: p, bucket: b, count: 0 };
+    groups[gkey].count++;
+  });
+
+  var gkeys = Object.keys(groups);
+  // Order clusters: primary first, then strength (inner = strong).
+  gkeys.sort(function(a, b){
+    var ga = groups[a], gb = groups[b];
+    if (ga.primary.label !== gb.primary.label) return ga.primary.label < gb.primary.label ? -1 : 1;
+    return ga.bucket.order - gb.bucket.order;
+  });
+
+  // Create one cluster per group.
+  gkeys.forEach(function(gkey){
+    var g = groups[gkey];
+    var alpha = [0.95, 0.8, 0.62, 0.45, 0.5][g.bucket.order] || 0.7;
+    var bg = 'rgba(' + g.primary.rgb + ',' + alpha + ')';
+    nbState.topoNet.cluster({
+      joinCondition: function(nd){
+        if (nd._you) return false;
+        var p = primaryOf(nd);
+        var b = nd._bkt || { key: 'na' };
+        return (p.key + '|' + b.key) === gkey;
+      },
+      clusterNodeProperties: {
+        id: 'cl_' + gkey,
+        label: g.primary.label + ' · ' + g.bucket.label + '\n(' + g.count + ')',
+        title: g.primary.label + ' / ' + g.bucket.label + ' — ' + g.count + ' nodes (click to expand)',
+        shape: 'dot',
+        size: Math.max(24, Math.min(54, 18 + Math.sqrt(g.count) * 2.2)),
+        color: { background: bg, border: '#ffffff' },
+        font: { color: '#fff', size: 12, strokeWidth: 4, strokeColor: '#0f172a' },
+        borderWidth: 2.5,
+        _cluster: true,
+        _border: g.bucket.order
+      }
+    });
+  });
+
+  // Lay the clusters out radially around YOU: ring radius from RSSI bucket
+  // (inner = strong), angle spread evenly. Keeps YOU clear and centred.
+  var nG = gkeys.length;
+  gkeys.forEach(function(gkey, i){
+    var g = groups[gkey];
+    var radius = 220 + (g.bucket.order * 150);
+    var ang = (i / Math.max(1, nG)) * Math.PI * 2;
+    try { nbState.topoNet.moveNode('cl_' + gkey, Math.cos(ang) * radius, Math.sin(ang) * radius); } catch(e){}
+  });
+  // Make sure YOU is pinned dead-centre after clustering.
+  try { nbState.topoNodes.update({ id: '__you__', x: 0, y: 0, fixed: { x: true, y: true } }); } catch(e){}
+  nbState.topoClustered = true;
+}
+
+function nbTopoSetCluster(mode){
+  nbState.topoClusterMode = mode || 'none';
+  nbRenderTopology(); // full rebuild keeps state simple & correct
+}
+function nbTopoTogglePhysics(on){
+  nbState.topoPhysics = !!on;
+  if (nbState.topoNet) {
+    try { nbState.topoNet.setOptions({ physics: { enabled: !!on } }); } catch(e){}
+  }
+}
+function nbTopoFit(){
+  if (nbState.topoNet) { try { nbState.topoNet.fit({ animation: { duration: 300 } }); } catch(e){} }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// v2.5.8 Pad 1 — HOP-RING layout + relayed-node handling
+// ════════════════════════════════════════════════════════════════════════
+var _NB_RING_GAP = 170;          // px between concentric hop rings
+var _NB_RING_R0  = 150;          // px radius of the first (direct/hop-0) ring
+var _NB_UNKNOWN_RING_EXTRA = 120;// extra gap before the 'unknown hop' ring
+
+// True integer hop distance: 0 = directly heard, >0 = relayed, null = unknown.
+function nbTopoHopOf(n){
+  if (n.path_len != null && !isNaN(n.path_len)) return Math.max(0, parseInt(n.path_len, 10));
+  if (n.zero_hop === true  || n.zero_hop === 1) return 0;
+  if (n.zero_hop === false || n.zero_hop === 0) return null; // relayed but distance unknown
+  return null; // fully unknown
+}
+
+function nbTopoSetLayout(mode){
+  nbState.topoLayout = (mode === 'force' || mode === 'mesh') ? mode : 'rings';
+  nbRenderTopology();
+}
+function nbTopoSetHideRelayed(on){
+  nbState.topoHideRelayed = !!on;
+  nbRenderTopology();
+}
+function nbTopoSetRelayTable(on){
+  nbState.topoShowRelayTable = !!on;
+  var box = G('nbTopoRelayTableBox');
+  if (box) box.style.display = nbState.topoShowRelayTable ? 'block' : 'none';
+  nbTopoRenderRelayTable();
+}
+
+// Shared working list honouring hide-unknown + hide-relayed toggles.
+function _nbTopoWorkingList(){
+  var hideUnknown = !!(G('nbTopoHideUnknown') && G('nbTopoHideUnknown').checked);
+  return (nbState.filtered || []).filter(function(n){
+    if (hideUnknown && _nbTopoChKey(n) === 'unknown') return false;
+    if (nbState.topoHideRelayed){ var h = nbTopoHopOf(n); if (h === null || h > 0) return false; }
+    return true;
+  });
+}
+
+// ── Concentric hop-ring renderer (default view) ──────────────────────────
+//  • central fixed YOU node
+//  • ring 0 = directly-heard nodes (labelled), rings 1..N = relayed by hop,
+//    a final 'unknown' ring for nodes with no hop distance
+//  • each ring gets a count badge drawn on the ring (afterDrawing canvas hook)
+//  • only directly-heard nodes carry visible labels; relayed nodes are dots
+//    with hover tooltips; label-collision is avoided by even angular spacing
+//    with a minimum gap and per-ring rotation offset.
+function nbTopoRenderRings(){
+  var holder = G('nbTopoGraph');
+  if (!holder || typeof vis === 'undefined' || !vis.Network) return;
+  var list = _nbTopoWorkingList();
+  nbTopoRenderStats(list);
+  nbTopoRenderLegend(list);
+
+  // Bucket nodes by hop ring key: 0,1,2,... or 'u' (unknown).
+  var rings = {};            // ringKey -> [node,...]
+  list.forEach(function(n){
+    var h = nbTopoHopOf(n);
+    var key = (h === null) ? 'u' : String(h);
+    (rings[key] = rings[key] || []).push(n);
+  });
+  // Ordered ring keys: numeric ascending, 'u' last.
+  var numKeys = Object.keys(rings).filter(function(k){ return k !== 'u'; })
+                  .map(Number).sort(function(a,b){ return a-b; });
+  var ringOrder = numKeys.map(String);
+  if (rings['u']) ringOrder.push('u');
+
+  // Radius per ring key (for both node placement and the canvas ring draw).
+  var maxNum = numKeys.length ? numKeys[numKeys.length-1] : 0;
+  function ringRadius(key){
+    if (key === 'u') return _NB_RING_R0 + (maxNum + 1) * _NB_RING_GAP + _NB_UNKNOWN_RING_EXTRA;
+    return _NB_RING_R0 + Number(key) * _NB_RING_GAP;
+  }
+
+  var nodes = [];
+  var edges = [];
+  // Central YOU node — fixed, prominent, heavy, never clustered/overlapped.
+  nodes.push({
+    id: '__you__', label: 'YOU', title: 'This repeater (local node)',
+    shape: 'dot', size: 30, fixed: { x: true, y: true }, x: 0, y: 0, mass: 20,
+    color: { background: '#ffffff', border: '#6366f1', highlight: { background: '#ffffff', border: '#818cf8' } },
+    font: { color: '#ffffff', size: 18, face: 'Inter', strokeWidth: 5, strokeColor: '#0f172a' },
+    borderWidth: 4, _you: true
+  });
+
+  // Place each ring's nodes evenly around the circle. Direct ring (0) gets a
+  // rotation offset and wider min-gap so its labels don't collide.
+  ringOrder.forEach(function(key, ringIdx){
+    var members = rings[key];
+    var R = ringRadius(key);
+    var cnt = members.length;
+    // Per-ring angular offset (golden-angle * ringIdx) so adjacent rings don't
+    // line their nodes up radially.
+    var offset = ringIdx * 2.39996323;
+    // Sort members by RSSI desc so the strongest sits at a stable angle.
+    members.sort(function(a,b){ return (_nbRssi(b)||-999) - (_nbRssi(a)||-999); });
+    members.forEach(function(n, i){
+      var nid = n.node_id || ('node_' + key + '_' + i + '_' + Math.random().toString(36).slice(2));
+      var hop = nbTopoHopOf(n);
+      var isDirect = (hop === 0);
+      var rssi = _nbRssi(n), snr = _nbSnr(n);
+      var ch = _nbTopoChKey(n);
+      var baseCol = (ch === 'unknown') ? '148,163,184' : _nbChColorRgb(ch);
+      var sz = isDirect ? ((snr != null) ? Math.max(10, Math.min(26, 14 + snr)) : 12) : 7;
+      var ang = offset + (i / Math.max(1, cnt)) * Math.PI * 2;
+      var x = Math.cos(ang) * R, y = Math.sin(ang) * R;
+      var titleBits = [_nbName(n)];
+      if (rssi != null) titleBits.push('RSSI ' + rssi.toFixed(1) + ' dBm');
+      if (snr  != null) titleBits.push('SNR ' + snr.toFixed(1) + ' dB');
+      titleBits.push('Channel ' + ch);
+      titleBits.push('Hop ' + (hop === null ? 'unknown' : hop) + (isDirect ? ' (direct)' : ' (relayed)'));
+      nodes.push({
+        id: nid,
+        // Labels ONLY for directly-heard nodes; relayed -> tooltip only.
+        label: isDirect ? _nbName(n) : undefined,
+        title: titleBits.join('\n'),
+        shape: 'dot', size: sz, x: x, y: y, fixed: { x: true, y: true },
+        color: { background: 'rgba(' + baseCol + ',' + (isDirect ? 0.95 : 0.6) + ')',
+                 border: 'rgba(' + baseCol + ',1)',
+                 highlight: { background: 'rgba(' + baseCol + ',1)', border: '#ffffff' } },
+        font: { color: 'rgba(255,255,255,0.9)', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: '#0f172a' },
+        borderWidth: isDirect ? 1.5 : 1,
+        _ch: ch, _hop: hop
+      });
+      // Only draw a YOU->node spoke for the direct ring; relayed nodes have no
+      // real per-hop route here, so spokes would be fabricated. Faint guide for
+      // direct nodes only.
+      if (isDirect){
+        var ew = (rssi != null) ? Math.max(1, Math.min(6, (rssi + 130) / 13)) : 1;
+        edges.push({ id: 'e_' + nid, from: '__you__', to: nid, width: ew,
+          color: { color: 'rgba(' + baseCol + ',0.35)', highlight: '#ffffff', hover: '#ffffff' },
+          smooth: false });
+      }
+    });
+  });
+
+  nbState.topoNodes = new vis.DataSet(nodes);
+  nbState.topoEdges = new vis.DataSet(edges);
+  if (nbState.topoNet) { try { nbState.topoNet.destroy(); } catch(e){} nbState.topoNet = null; }
+  nbState.topoClustered = false;
+  var options = {
+    autoResize: true,
+    interaction: { hover: true, tooltipDelay: 120, zoomView: true, dragView: true },
+    physics: { enabled: false },   // rings are explicitly positioned, no solver
+    layout: { improvedLayout: false }
+  };
+  nbState.topoNet = new vis.Network(holder, { nodes: nbState.topoNodes, edges: nbState.topoEdges }, options);
+
+  // Draw the concentric ring guides + count badges behind the nodes.
+  var ringDraw = ringOrder.map(function(key){
+    return { key: key, R: ringRadius(key), count: rings[key].length,
+             label: (key === 'u') ? 'Unknown hop' : (key === '0' ? 'Direct (hop 0)' : 'Hop ' + key) };
+  });
+  nbState.topoNet.on('beforeDrawing', function(ctx){
+    ringDraw.forEach(function(r){
+      ctx.beginPath();
+      ctx.arc(0, 0, r.R, 0, Math.PI * 2);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = (r.key === 'u') ? 'rgba(148,163,184,0.28)' : 'rgba(99,102,241,0.28)';
+      ctx.setLineDash([4, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    });
+  });
+  nbState.topoNet.on('afterDrawing', function(ctx){
+    ringDraw.forEach(function(r){
+      // Count badge at the top of each ring (angle -90deg).
+      var bx = 0, by = -r.R;
+      var txt = r.label + ' \u00b7 ' + r.count;
+      ctx.font = '600 12px Inter, sans-serif';
+      var w = ctx.measureText(txt).width + 14;
+      ctx.fillStyle = (r.key === 'u') ? 'rgba(148,163,184,0.92)' : 'rgba(99,102,241,0.92)';
+      _nbRoundRect(ctx, bx - w/2, by - 11, w, 22, 11);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(txt, bx, by);
+    });
+  });
+
+  nbState.topoNet.on('click', function(params){
+    if (params.nodes && params.nodes.length){
+      var id = params.nodes[0];
+      if (id && id !== '__you__') nbShowDetail(id);
+    }
+  });
+  try { nbState.topoNet.fit({ animation: false }); } catch(e){}
+  nbTopoRenderRelayTable();
+}
+
+function _nbRoundRect(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// Relayed-node table beneath the graph (optional). Shows hop, channel, RSSI,
+// last-seen for every relayed (hop>0 or unknown) node — these have no label in
+// the graph, so the table is the readable index for them.
+function nbTopoRenderRelayTable(){
+  var box = G('nbTopoRelayTableBox');
+  if (!box) return;
+  if (!nbState.topoShowRelayTable){ box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  var hideUnknown = !!(G('nbTopoHideUnknown') && G('nbTopoHideUnknown').checked);
+  var relayed = (nbState.filtered || []).filter(function(n){
+    if (hideUnknown && _nbTopoChKey(n) === 'unknown') return false;
+    var h = nbTopoHopOf(n); return (h === null || h > 0);
+  });
+  relayed.sort(function(a,b){
+    var ha = nbTopoHopOf(a), hb = nbTopoHopOf(b);
+    ha = (ha === null) ? 9999 : ha; hb = (hb === null) ? 9999 : hb;
+    if (ha !== hb) return ha - hb;
+    return (_nbRssi(b)||-999) - (_nbRssi(a)||-999);
+  });
+  if (!relayed.length){
+    box.innerHTML = '<div style="font-size:11px;color:var(--txm);padding:10px">No relayed nodes.</div>';
+    return;
+  }
+  var rows = relayed.map(function(n){
+    var h = nbTopoHopOf(n);
+    var rssi = _nbRssi(n), snr = _nbSnr(n);
+    return '<tr style="border-bottom:1px solid var(--brd)">' +
+      '<td style="padding:5px 8px;cursor:pointer;color:var(--lnk)" onclick="nbShowDetail(\'' + esc(n.node_id||'') + '\')">' + esc(_nbName(n)) + '</td>' +
+      '<td style="padding:5px 8px;text-align:center">' + (h === null ? '?' : h) + '</td>' +
+      '<td style="padding:5px 8px">' + esc(_nbTopoChKey(n)) + '</td>' +
+      '<td style="padding:5px 8px;text-align:right;color:' + _nbRssiColor(rssi) + '">' + (rssi != null ? rssi.toFixed(1) : '\u2014') + '</td>' +
+      '<td style="padding:5px 8px;text-align:right;color:' + _nbSnrColor(snr) + '">' + (snr != null ? snr.toFixed(1) : '\u2014') + '</td>' +
+      '<td style="padding:5px 8px;font-size:10px;color:var(--txm)">' + esc(_nbFmtTs(n.last_seen)) + '</td>' +
+      '</tr>';
+  }).join('');
+  box.innerHTML =
+    '<div style="font-size:11px;color:var(--txm);margin:10px 0 6px">Relayed nodes (' + relayed.length + ') \u2014 not labelled in the graph</div>' +
+    '<div style="max-height:240px;overflow:auto;border:1px solid var(--brd);border-radius:8px">' +
+    '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+    '<thead><tr style="position:sticky;top:0;background:var(--bg)">' +
+    '<th style="padding:6px 8px;text-align:left">Name</th>' +
+    '<th style="padding:6px 8px;text-align:center">Hop</th>' +
+    '<th style="padding:6px 8px;text-align:left">Channel</th>' +
+    '<th style="padding:6px 8px;text-align:right">RSSI</th>' +
+    '<th style="padding:6px 8px;text-align:right">SNR</th>' +
+    '<th style="padding:6px 8px;text-align:left">Last seen</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// v2.5.8 Pad 2 — MESH GRAPH (multi-hop edges + 1-byte-hash disambiguation)
+// ════════════════════════════════════════════════════════════════════════
+// path data is a variable-length sequence of 1-byte hop hashes (first byte of
+// each relay's pubkey). It is inherently ambiguous: many nodes can share the
+// same first byte. We reconstruct the most-likely route YOU -> hop -> ... ->
+// source, disambiguating each hop byte with a heuristic, and we expose every
+// alternative candidate transparently in the click-info panel.
+
+// First pubkey byte (0..255) for a node, or null.
+function _nbHashByte(n){
+  var id = (n.node_id || '').replace(/^0x/i, '');
+  if (id.length >= 2){ var v = parseInt(id.substring(0,2), 16); if (!isNaN(v)) return v; }
+  return null;
+}
+function _nbHasGps(n){
+  var la = n.latitude, lo = n.longitude;
+  return (la != null && lo != null && !(la === 0 && lo === 0) && !isNaN(la) && !isNaN(lo));
+}
+function _nbIsRepeater(n){
+  var t = (n.node_type || n.contact_type || '').toString().toLowerCase();
+  return t.indexOf('repeat') >= 0 || n.is_repeater === 1 || n.is_repeater === true;
+}
+// Great-circle-ish planar distance (deg) — fine for ranking, not navigation.
+function _nbGeoDist(aLat, aLon, bLat, bLon){
+  var dLat = aLat - bLat, dLon = (aLon - bLon) * Math.cos((aLat + bLat) / 2 * Math.PI / 180);
+  return Math.sqrt(dLat*dLat + dLon*dLon);
+}
+
+// Build hashByte -> [candidate nodes] index once per render.
+function nbTopoBuildHashIndex(list){
+  var idx = {};
+  list.forEach(function(n){
+    var b = _nbHashByte(n);
+    if (b === null) return;
+    (idx[b] = idx[b] || []).push(n);
+  });
+  nbState.topoHashIndex = idx;
+  return idx;
+}
+
+// Pick the most-likely candidate for a hop hash byte, given the route context.
+// Returns { node, reason, alternatives:[{node,reason}] }.
+//  prevLL = {lat,lon} of the previous hop (or YOU), srcLL = source coords.
+function nbTopoDisambiguate(hashByte, prevLL, srcLL){
+  var idx = nbState.topoHashIndex || {};
+  var cands = (idx[hashByte] || []).slice();
+  if (!cands.length) return { node: null, reason: 'no known node with this hash', alternatives: [] };
+
+  function score(n){
+    var s = 0, why = [];
+    // (1) directly-heard neighbour — strongest signal
+    if (nbTopoHopOf(n) === 0){ s += 1000; why.push('directly heard'); }
+    // (2) geographically plausible: on the YOU->source line, closer to YOU
+    if (prevLL && srcLL && _nbHasGps(n)){
+      var dPrev = _nbGeoDist(n.latitude, n.longitude, prevLL.lat, prevLL.lon);
+      var dSrc  = _nbGeoDist(n.latitude, n.longitude, srcLL.lat, srcLL.lon);
+      var dDirect = _nbGeoDist(prevLL.lat, prevLL.lon, srcLL.lat, srcLL.lon) || 0.0001;
+      // closer to prev than the whole leg, and between prev and source
+      var between = (dPrev < dDirect && dSrc < dDirect);
+      if (between){ s += 400; why.push('geographically on path'); }
+      s += Math.max(0, 200 - dPrev * 400); // nearer to previous hop scores higher
+    }
+    // (3) repeater contact type
+    if (nbTopoIsRepeaterLike(n)){ s += 120; why.push('repeater'); }
+    // (4) recency / activity
+    var adv = (n.advert_count != null) ? n.advert_count : 0;
+    s += Math.min(60, adv);
+    var age = (Date.now()/1000) - (n.last_seen || 0);
+    if (age < 7200) { s += 40; why.push('recently seen'); }
+    return { s: s, why: why.length ? why.join(', ') : 'hash match only' };
+  }
+  var scored = cands.map(function(n){ var r = score(n); return { node: n, score: r.s, reason: r.why }; });
+  scored.sort(function(a,b){ return b.score - a.score; });
+  var primary = scored[0];
+  return {
+    node: primary.node,
+    reason: primary.reason,
+    alternatives: scored.slice(1).map(function(c){ return { node: c.node, reason: c.reason }; })
+  };
+}
+function nbTopoIsRepeaterLike(n){ return _nbIsRepeater(n); }
+
+// ─── v2.6.0 F3: Mesh Graph v2 helpers ──────────────────────────────────────
+// Aggregate per-node degree and per-edge weight from the reconstructed path
+// list. pathList[i] = { srcId, hopIds:[...nids], advertCount }.
+// Returns: { degreeById:{nid:count}, edgeAgg:{key:{from,to,weight,key}} }.
+// v2.6.0 F3: 'kind' on each path item controls edge synthesis:
+//   'direct'   → solid YOU→node spoke (zero_hop neighbour)
+//   'blob'     → reconstructed relay chain YOU→hop1→…→node (real path BLOB)
+//   'inferred' → BLOB-less relayed node: NO solid spoke (drawn as a dashed
+//                inferred link + hop-ring position in pass 2/3), degree only.
+function _nbTopoBuildEdgeAggregation(pathList){
+  var degreeById = {};
+  var edgeAgg = {};
+  function bump(id){ if (id !== '__you__') degreeById[id] = (degreeById[id] || 0) + 1; }
+  pathList.forEach(function(p){
+    var chain = ['__you__'].concat(p.hopIds).concat([p.srcId]);
+    for (var i = 1; i < chain.length; i++){ bump(chain[i]); }
+    // Inferred-ring nodes (no real path data) get no synthesized YOU edge —
+    // drawing one would falsely imply a directly-heard link.
+    if (p.kind === 'inferred') return;
+    for (var j = 0; j + 1 < chain.length; j++){
+      var key = chain[j] + '->' + chain[j+1];
+      if (!edgeAgg[key]) edgeAgg[key] = { from: chain[j], to: chain[j+1], weight: 0, key: key };
+      edgeAgg[key].weight += Math.max(1, p.advertCount || 1);
+    }
+  });
+  return { degreeById: degreeById, edgeAgg: edgeAgg };
+}
+
+// Build a back-to-YOU path index per node so hovers can light up the whole
+// chain. Result: pathByNodeId[nid] = { nodes:{nid:true}, edges:{key:true} }.
+function _nbTopoBuildPathIndex(pathList){
+  var pathByNodeId = {};
+  pathList.forEach(function(p){
+    var chain = ['__you__'].concat(p.hopIds).concat([p.srcId]);
+    for (var i = 1; i < chain.length; i++){
+      var nid = chain[i];
+      var entry = pathByNodeId[nid] || { nodes: {}, edges: {} };
+      for (var j = 0; j <= i; j++){
+        entry.nodes[chain[j]] = true;
+        if (j + 1 <= i) entry.edges[chain[j] + '->' + chain[j+1]] = true;
+      }
+      pathByNodeId[nid] = entry;
+    }
+  });
+  return pathByNodeId;
+}
+
+// Apply hover highlight: keep path-to-YOU vivid, dim everything else.
+// First call snapshots the original colours/widths so blurNode can restore.
+function _nbTopoApplyMeshHighlight(nodeId){
+  if (!nbState.topoNodes || !nbState.topoEdges) return;
+  var idx = nbState._meshPathIndex || {};
+  var entry = idx[nodeId];
+  if (!entry) return;
+  if (!nbState._meshHighlightSnap){
+    var snap = { nodes: {}, edges: {} };
+    nbState.topoNodes.forEach(function(n){ snap.nodes[n.id] = { color: n.color, borderWidth: n.borderWidth }; });
+    nbState.topoEdges.forEach(function(e){ snap.edges[e.id] = { color: e.color, width: e.width }; });
+    nbState._meshHighlightSnap = snap;
+  }
+  var snap = nbState._meshHighlightSnap;
+  var nodeUpdates = [];
+  nbState.topoNodes.forEach(function(n){
+    var lit = !!entry.nodes[n.id];
+    var orig = snap.nodes[n.id] || { color: n.color, borderWidth: n.borderWidth };
+    if (lit){
+      nodeUpdates.push({ id: n.id, color: orig.color, borderWidth: (orig.borderWidth || 1.0) + 0.8 });
+    } else {
+      nodeUpdates.push({ id: n.id, color: { background: 'rgba(80,90,110,0.15)', border: 'rgba(120,130,150,0.25)' }, borderWidth: orig.borderWidth });
+    }
+  });
+  nbState.topoNodes.update(nodeUpdates);
+  var edgeUpdates = [];
+  nbState.topoEdges.forEach(function(e){
+    var lit = !!entry.edges[e.from + '->' + e.to];
+    var s = snap.edges[e.id] || { color: e.color, width: e.width };
+    if (lit){
+      edgeUpdates.push({ id: e.id, color: { color: '#ffffff', highlight: '#ffffff' }, width: Math.max(2.5, (s.width || 1.6) + 1.2) });
+    } else {
+      edgeUpdates.push({ id: e.id, color: { color: 'rgba(80,90,110,0.10)', highlight: '#94a3b8' }, width: Math.max(0.4, (s.width || 1.6) * 0.5) });
+    }
+  });
+  nbState.topoEdges.update(edgeUpdates);
+}
+
+function _nbTopoClearMeshHighlight(){
+  if (!nbState._meshHighlightSnap || !nbState.topoNodes || !nbState.topoEdges) return;
+  var snap = nbState._meshHighlightSnap;
+  var nodeUpdates = [], edgeUpdates = [];
+  Object.keys(snap.nodes).forEach(function(id){
+    var s = snap.nodes[id];
+    nodeUpdates.push({ id: id, color: s.color, borderWidth: s.borderWidth });
+  });
+  Object.keys(snap.edges).forEach(function(id){
+    var s = snap.edges[id];
+    edgeUpdates.push({ id: id, color: s.color, width: s.width });
+  });
+  try { nbState.topoNodes.update(nodeUpdates); } catch(e){}
+  try { nbState.topoEdges.update(edgeUpdates); } catch(e){}
+}
+
+// Mini-map renderer: paint all node positions as tiny dots and overlay a
+// viewport rectangle showing the main canvas extent.
+function _nbTopoDrawMinimap(){
+  var canvas = G('nbTopoMinimap');
+  if (!canvas || canvas.style.display === 'none' || !nbState.topoNet) return;
+  var ctx;
+  try { ctx = canvas.getContext('2d'); } catch(e){ return; }
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(15,23,42,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  var positions;
+  try { positions = nbState.topoNet.getPositions(); } catch(e){ return; }
+  var ids = Object.keys(positions);
+  if (!ids.length) return;
+  var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  ids.forEach(function(id){
+    var p = positions[id];
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  });
+  var pad = 14;
+  var rngX = (maxX - minX) || 1, rngY = (maxY - minY) || 1;
+  function sx(x){ return pad + (x - minX) / rngX * (W - 2*pad); }
+  function sy(y){ return pad + (y - minY) / rngY * (H - 2*pad); }
+  var nodeMap = {};
+  nbState.topoNodes.forEach(function(n){ nodeMap[n.id] = n; });
+  ids.forEach(function(id){
+    var p = positions[id], n = nodeMap[id];
+    if (!n) return;
+    if (n._you){
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 3, 0, 2*Math.PI); ctx.fill();
+    } else if (n._ghost){
+      ctx.fillStyle = 'rgba(148,163,184,0.55)';
+      ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 1.0, 0, 2*Math.PI); ctx.fill();
+    } else {
+      var ch = n._ch || 'unknown';
+      var rgb = (ch === 'unknown') ? '148,163,184' : (typeof _nbChColorRgb === 'function' ? _nbChColorRgb(ch) : '129,140,248');
+      ctx.fillStyle = 'rgba(' + rgb + ',0.7)';
+      ctx.beginPath(); ctx.arc(sx(p.x), sy(p.y), 1.4, 0, 2*Math.PI); ctx.fill();
+    }
+  });
+  try {
+    var vp = nbState.topoNet.getViewPosition();
+    var scale = nbState.topoNet.getScale() || 1;
+    var rect = nbState.topoNet.body.container.getBoundingClientRect();
+    var cw = rect.width / 2 / scale, chh = rect.height / 2 / scale;
+    var x1 = sx(vp.x - cw), y1 = sy(vp.y - chh);
+    var x2 = sx(vp.x + cw), y2 = sy(vp.y + chh);
+    x1 = Math.max(0, Math.min(W, x1)); x2 = Math.max(0, Math.min(W, x2));
+    y1 = Math.max(0, Math.min(H, y1)); y2 = Math.max(0, Math.min(H, y2));
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+  } catch(e){}
+  canvas._tx = { minX: minX, minY: minY, rngX: rngX, rngY: rngY, pad: pad, W: W, H: H };
+}
+
+// Channel-based cluster collapse for dense communities (>40 relayed nodes).
+// Each dense channel collapses into a single coloured bubble with a count
+// badge in its label. Clicking the cluster expands it (handled in render).
+function _nbTopoMeshCluster(net){
+  if (!net || !nbState.topoNodes) return;
+  // v2.6.0 F3 step A1: only the physics-driven core can be clustered.
+  // Inferred ring-nodes are pinned (physics:false + fixed) onto concentric hop
+  // rings; vis-network silently refuses to collapse fixed nodes, so counting
+  // them produced dense channels that never actually clustered (Bug B). The
+  // ring itself is already the visual grouping for those nodes.
+  var counts = {};
+  nbState.topoNodes.forEach(function(n){
+    if (n._you || n._ghost) return;
+    if (n._hop === 0) return;            // never collapse direct-heard
+    if (n._kind === 'inferred') return;  // ring-pinned, not clusterable
+    var ch = n._ch || 'unknown';
+    counts[ch] = (counts[ch] || 0) + 1;
+  });
+  // v2.6.0 F3 step A2: lowered from 40 → 15 so channel-based clustering also
+  // activates with the current live data, where path-BLOB coverage is sparse
+  // (~29/866 nodes). After A1 filtered out inferred ring-nodes, channel_e is
+  // expected to drop from 46 to ~20-30 physics-driven nodes; DENSE=15 keeps
+  // small channels (channel_a/local-test) from being clustered while still
+  // letting channel_e collapse into a single cluster when applicable.
+  var DENSE = 15;
+  // v2.6.0 F3 step A4: bypass vis-network's net.cluster() entirely. With sparse
+  // path-BLOB data the blob-nodes form no inter-node edges (all edges go
+  // YOU↔blob), and vis-network's clustering silently refuses to merge such
+  // disconnected sets even when joinCondition matches every candidate.
+  // Manual approach: hide the members and inject a synthetic cluster-node +
+  // YOU→cluster edge directly into the DataSets. Uncluster is automatic — the
+  // toggle-off path calls nbRenderTopology() which rebuilds the mesh from
+  // scratch, so we don't need an explicit reverse pass here.
+  Object.keys(counts).forEach(function(ch){
+    if (counts[ch] < DENSE) return;
+    var clusterId = 'mesh_cl_' + ch;
+    var rgb = (ch === 'unknown') ? '148,163,184' : (typeof _nbChColorRgb === 'function' ? _nbChColorRgb(ch) : '129,140,248');
+    try {
+      // Idempotent: skip if cluster already injected this render.
+      if (net.body.data.nodes.get(clusterId)) return;
+      // Re-collect members from the live DataSet, mirroring the joinCondition
+      // we used for the abandoned net.cluster() call.
+      var memberIds = [];
+      net.body.data.nodes.forEach(function(n){
+        if (n._cluster) return;
+        if (n._you || n._ghost) return;
+        if (n._hop === 0) return;
+        if (n._kind === 'inferred') return;
+        if (n._ch === ch) memberIds.push(n.id);
+      });
+      if (memberIds.length < DENSE) return; // race-condition safety
+      // Hide member nodes (keeps them in the DataSet for clean unclustering).
+      var hideUpdates = memberIds.map(function(id){ return { id: id, hidden: true }; });
+      net.body.data.nodes.update(hideUpdates);
+      // Inject synthetic cluster node.
+      net.body.data.nodes.add({
+        id: clusterId,
+        label: (ch === 'unknown' ? 'Unknown channel' : ch) + ' (' + memberIds.length + ')',
+        shape: 'dot',
+        size: Math.min(48, 22 + Math.log2(memberIds.length) * 4),
+        color: { background: 'rgba(' + rgb + ',0.85)', border: 'rgba(' + rgb + ',1)' },
+        font: { color: '#ffffff', size: 13, face: 'Inter', strokeWidth: 4, strokeColor: '#0f172a' },
+        borderWidth: 2.5, shapeProperties: { borderDashes: false },
+        _cluster: true, _ch: ch, _clusterMembers: memberIds
+      });
+      // YOU → cluster spoke so the cluster has a visible attachment to YOU.
+      net.body.data.edges.add({
+        id: clusterId + '_edge',
+        from: '__you__', to: clusterId,
+        color: { color: 'rgba(' + rgb + ',0.45)' },
+        width: 1.6,
+        _clusterEdge: true
+      });
+    } catch(e){ if (typeof console !== 'undefined' && console.warn) console.warn('[mesh-cluster] manual fail for ch=' + ch, e); }
+  });
+}
+
+// UI bridge: toggle cluster-collapse for the active mesh render.
+function nbTopoMeshSetCluster(on){
+  nbState.topoMeshClusterOn = !!on;
+  if (nbState.topoLayout === 'mesh') nbRenderTopology();
+}
+
+// UI bridge: toggle mini-map visibility.
+function nbTopoMeshSetMinimap(on){
+  nbState.topoMeshMinimapOn = !!on;
+  var c = G('nbTopoMinimap');
+  if (c) c.style.display = on ? 'block' : 'none';
+  if (on && nbState.topoLayout === 'mesh' && nbState.topoNet) _nbTopoDrawMinimap();
+}
+
+// ─── Mesh-graph renderer (v2.6.0 F3) ──────────────────────────────────────
+// Reconstructs real relay-to-relay edges from packet.path BLOBs, sizes nodes
+// by degree (paths through), aggregates edge weights by advert count, dims
+// off-path elements on hover, supports channel-based cluster collapse for
+// dense communities, and draws a navigation mini-map for large graphs.
+function nbTopoRenderMesh(){
+  var holder = G('nbTopoGraph');
+  if (!holder || typeof vis === 'undefined' || !vis.Network) return;
+  var list = _nbTopoWorkingList();
+  nbTopoRenderStats(list);
+  nbTopoRenderLegend(list);
+  nbTopoBuildHashIndex(nbState.filtered || []); // index over ALL nodes
+
+  // Initialize F3 toggles on first render based on graph size.
+  if (typeof nbState.topoMeshClusterOn === 'undefined'){
+    // v2.6.0 F3 step B: default cluster OFF so the concentric hop-rings are
+    // visible on first render. Clustering remains an opt-in toggle until the
+    // cluster step (Bug B / step A) reliably collapses dense channels.
+    nbState.topoMeshClusterOn = false;
+    var togCl = G('nbTopoMeshClusterOn'); if (togCl) togCl.checked = nbState.topoMeshClusterOn;
+  }
+  if (typeof nbState.topoMeshMinimapOn === 'undefined'){
+    nbState.topoMeshMinimapOn = (list.length > 80);
+    var togMm = G('nbTopoMeshMinimapOn'); if (togMm) togMm.checked = nbState.topoMeshMinimapOn;
+  }
+  // Reset highlight snapshot since topology is being rebuilt.
+  nbState._meshHighlightSnap = null;
+
+  var youLL = (nbState.topoYou && nbState.topoYou.lat != null)
+    ? { lat: nbState.topoYou.lat, lon: nbState.topoYou.lon }
+    : (nbState.repeaterLocation && nbState.repeaterLocation.lat)
+      ? { lat: nbState.repeaterLocation.lat, lon: nbState.repeaterLocation.lon } : null;
+
+  // Per-node disambiguation record for the click-info panel (v2.5.8 retained).
+  nbState._meshResolved = {};
+
+  // ── PASS 1: walk every neighbour's path, collect raw structures ──
+  var pathList = [];     // [{ srcId, hopIds:[...], advertCount }, ...]
+  var nodeRefs = {};     // nid -> nbItem (for real nodes only)
+  var ghostMeta = {};    // nid -> { byte }
+  var ghostSeq = 0;
+  function uniqueGhostId(byte){ return 'ghost_' + byte + '_' + (ghostSeq++); }
+
+  list.forEach(function(n){
+    var srcId = n.node_id || ('n_' + (ghostSeq++));
+    nodeRefs[srcId] = n;
+    var srcLL = _nbHasGps(n) ? { lat: n.latitude, lon: n.longitude } : null;
+    var pathHex = (typeof n.path === 'string') ? n.path.replace(/^0x/i, '') : '';
+    var bytes = [];
+    if (pathHex && pathHex.length >= 2){
+      for (var k = 0; k + 1 < pathHex.length; k += 2){
+        var bv = parseInt(pathHex.substring(k, k+2), 16);
+        if (!isNaN(bv)) bytes.push(bv);
+      }
+    }
+    var hopIds = [];
+    var hopRecords = [];
+    var prevLL = youLL;
+    bytes.forEach(function(b){
+      var res = nbTopoDisambiguate(b, prevLL, srcLL);
+      var hopId;
+      if (res.node){
+        hopId = res.node.node_id || uniqueGhostId(b);
+        nodeRefs[hopId] = res.node;
+        if (_nbHasGps(res.node)) prevLL = { lat: res.node.latitude, lon: res.node.longitude };
+      } else {
+        hopId = uniqueGhostId(b);
+        ghostMeta[hopId] = { byte: b };
+      }
+      hopIds.push(hopId);
+      hopRecords.push({ byte: b, primary: res.node, reason: res.reason, alternatives: res.alternatives });
+    });
+    nbState._meshResolved[srcId] = { name: _nbName(n), hops: hopRecords };
+    // v2.6.0 F3: classify node so the aggregator/positioner can treat it correctly.
+    //  'blob'     — real path BLOB → reconstructed relay chain (solid edges)
+    //  'direct'   — zero_hop=true neighbour → solid YOU→node spoke
+    //  'inferred' — relayed but no path BLOB → ring position, dashed inferred link
+    var _meshHop = nbTopoHopOf(n);
+    var _meshKind;
+    if (hopIds.length > 0)        _meshKind = 'blob';
+    else if (_meshHop === 0)      _meshKind = 'direct';
+    else                          _meshKind = 'inferred';
+    pathList.push({
+      srcId: srcId,
+      hopIds: hopIds,
+      advertCount: (n.advert_count || 1),
+      kind: _meshKind,
+      hop: _meshHop  // 0 / >0 / null — used for ring placement of inferred nodes
+    });
+  });
+
+  // ── AGGREGATE: degrees + edge weights + path-back index ──
+  var agg = _nbTopoBuildEdgeAggregation(pathList);
+  var degreeById = agg.degreeById;
+  var edgeAgg = agg.edgeAgg;
+  nbState._meshPathIndex = _nbTopoBuildPathIndex(pathList);
+
+  // ── PASS 2: materialise vis nodes ──
+  var nodes = [];
+  nodes.push({
+    id: '__you__', label: 'YOU', title: 'This repeater (local node)',
+    shape: 'dot', size: 30, fixed: { x: true, y: true }, x: 0, y: 0, mass: 20,
+    color: { background: '#ffffff', border: '#6366f1' },
+    font: { color: '#ffffff', size: 18, face: 'Inter', strokeWidth: 5, strokeColor: '#0f172a' },
+    borderWidth: 4, _you: true
+  });
+
+  var nowSec = Date.now() / 1000;
+
+  // ── v2.6.0 F3: plan ring positions for inferred (BLOB-less) relayed nodes ──
+  // The MeshCore advert stream usually carries only a hop counter for relayed
+  // packets, not the full path BLOB. Without BLOB we cannot reconstruct the
+  // real chain, but we CAN show the node at its known/unknown hop distance.
+  // Inferred nodes get fixed radial positions on concentric rings around the
+  // force-driven 'core' (direct + blob-path nodes), making the layout honest
+  // about uncertainty without falling back to a misleading YOU→node spoke.
+  var _meshKindByNid = {};
+  pathList.forEach(function(p){ _meshKindByNid[p.srcId] = p.kind; });
+  var _meshInferredRings = {}; // ringKey -> [nid]
+  function _meshRingKey(hop){ return (hop === null) ? 'u' : String(Math.min(hop, 3)); }
+  pathList.forEach(function(p){
+    if (p.kind !== 'inferred') return;
+    var k = _meshRingKey(p.hop);
+    if (!_meshInferredRings[k]) _meshInferredRings[k] = [];
+    _meshInferredRings[k].push(p.srcId);
+  });
+  var _meshInferredPos = {};
+  var _INF_BASE = 360, _INF_STEP = 110, _INF_BAND = 70;
+  Object.keys(_meshInferredRings).forEach(function(k){
+    var rlist = _meshInferredRings[k];
+    var hopVal = (k === 'u') ? null : parseInt(k, 10);
+    var ringR = _INF_BASE + ((hopVal === null) ? 4 : Math.min(hopVal, 3)) * _INF_STEP;
+    var total = Math.max(1, rlist.length);
+    rlist.forEach(function(nid, idx){
+      var rOff = ((idx * 37) % _INF_BAND) - _INF_BAND / 2; // slight radial scatter
+      var r = ringR + rOff;
+      var angle = (idx / total) * 2 * Math.PI;
+      _meshInferredPos[nid] = { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+    });
+  });
+
+  Object.keys(nodeRefs).forEach(function(nid){
+    var n = nodeRefs[nid];
+    var ch = _nbTopoChKey(n), baseCol = (ch === 'unknown') ? '148,163,184' : _nbChColorRgb(ch);
+    var hop = nbTopoHopOf(n), isDirect = (hop === 0);
+    var rssi = _nbRssi(n), snr = _nbSnr(n);
+    // Recency-based opacity (fresh = 1.0, 24h+ ≈ 0.30)
+    var ageSec = nowSec - (n.last_seen || 0);
+    var rec = 1.0;
+    if (ageSec > 300){ rec = Math.max(0.30, 1.0 - (ageSec - 300) / (86400 - 300) * 0.70); }
+    // Degree-driven size; direct nodes get an SNR floor.
+    var deg = degreeById[nid] || 1;
+    var degSize = Math.max(8, Math.min(30, 6 + Math.log2(deg + 1) * 4));
+    var snrFloor = (snr != null) ? Math.max(10, Math.min(24, 14 + snr)) : 12;
+    var sz = isDirect ? Math.max(degSize, snrFloor) : degSize;
+    var title = [_nbName(n)];
+    if (rssi != null) title.push('RSSI ' + rssi.toFixed(1) + ' dBm');
+    title.push('Channel ' + ch);
+    title.push('Hop ' + (hop === null ? 'unknown' : hop));
+    title.push('Paths through node: ' + deg);
+    if (n.last_seen) title.push('Last seen: ' + _nbFmtTs(n.last_seen));
+    if (_nbHasGps(n)) title.push('GPS ' + n.latitude.toFixed(4) + ', ' + n.longitude.toFixed(4));
+    title.push('(click for path candidates)');
+    var _meshKind = _meshKindByNid[nid] || (isDirect ? 'direct' : 'blob');
+    var _meshNodeObj = {
+      id: nid,
+      label: isDirect ? _nbName(n) : (deg >= 4 ? _nbName(n) : undefined),
+      title: title.join('\n'),
+      shape: 'dot', size: sz,
+      color: {
+        background: 'rgba(' + baseCol + ',' + (isDirect ? Math.max(0.65, rec) : Math.max(0.25, rec * 0.80)) + ')',
+        border: 'rgba(' + baseCol + ',' + Math.max(0.40, rec) + ')',
+        highlight: { background: 'rgba(' + baseCol + ',1)', border: '#ffffff' }
+      },
+      font: { color: 'rgba(255,255,255,' + Math.max(0.55, rec) + ')', size: 11, face: 'Inter', strokeWidth: 3, strokeColor: '#0f172a' },
+      borderWidth: isDirect ? 1.8 : 1.0,
+      _ch: ch, _hop: hop, _deg: deg, _kind: _meshKind
+    };
+    // v2.6.0 F3: inferred-ring nodes get a fixed radial position so they form
+    // visible concentric hop layers around the force-driven core mesh, instead
+    // of being dragged into a misleading YOU→node star.
+    if (_meshKind === 'inferred' && _meshInferredPos[nid]){
+      _meshNodeObj.x = _meshInferredPos[nid].x;
+      _meshNodeObj.y = _meshInferredPos[nid].y;
+      _meshNodeObj.physics = false;
+      _meshNodeObj.fixed = { x: true, y: true };
+    }
+    nodes.push(_meshNodeObj);
+  });
+  // Ghost nodes (unknown hash)
+  Object.keys(ghostMeta).forEach(function(gid){
+    var b = ghostMeta[gid].byte;
+    var hex = '0x' + ('0' + b.toString(16)).slice(-2).toUpperCase();
+    var deg = degreeById[gid] || 1;
+    var gsz = Math.max(6, Math.min(14, 6 + Math.log2(deg + 1) * 2));
+    nodes.push({
+      id: gid,
+      label: hex + '?',
+      title: 'Unresolved hop (hash ' + hex + ') — no known node has this hash.\nPaths through this ghost: ' + deg,
+      shape: 'dot', size: gsz,
+      color: { background: 'rgba(100,116,139,0.45)', border: 'rgba(148,163,184,0.7)' },
+      font: { color: 'rgba(203,213,225,0.8)', size: 10, strokeWidth: 2, strokeColor: '#0f172a' },
+      borderWidth: 1, shapeProperties: { borderDashes: [3,3] },
+      _ghost: true, _hop: null, _ch: 'unknown', _deg: deg
+    });
+  });
+
+  // ── PASS 3: materialise edges with advert-weighted thickness ──
+  var edges = [];
+  Object.keys(edgeAgg).forEach(function(key){
+    var e = edgeAgg[key];
+    var w = e.weight;
+    var width = Math.max(0.8, Math.min(6, 0.8 + Math.log2(w + 1) * 0.6));
+    // Edge colour = destination channel (visual flow into receiver).
+    var col = 'rgba(129,140,248,0.55)';
+    var dst = nodeRefs[e.to];
+    if (dst){
+      var dch = _nbTopoChKey(dst);
+      if (dch !== 'unknown'){
+        var rgb = _nbChColorRgb(dch);
+        col = 'rgba(' + rgb + ',0.55)';
+      }
+    }
+    edges.push({
+      id: 'me_' + key, from: e.from, to: e.to,
+      width: width, dashes: false,
+      color: { color: col, highlight: '#ffffff' },
+      smooth: { type: 'dynamic' }, arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+      title: 'Adverts traversed: ' + w
+    });
+  });
+
+  // ── v2.6.0 F3: dashed YOU→node 'inferred' edges for BLOB-less relayed nodes ──
+  // Visually distinct from the solid reconstructed edges above so users can
+  // tell which paths are real (solid arrowed) vs positional inferences
+  // (faint dashed, no arrow). physics:false keeps them from pulling the core.
+  pathList.forEach(function(p){
+    if (p.kind !== 'inferred') return;
+    var n2 = nodeRefs[p.srcId];
+    var dch2 = n2 ? _nbTopoChKey(n2) : 'unknown';
+    var rgb2 = (dch2 === 'unknown') ? '148,163,184' : _nbChColorRgb(dch2);
+    edges.push({
+      id: 'mi_' + p.srcId, from: '__you__', to: p.srcId,
+      width: 0.6, dashes: [2, 6],
+      color: { color: 'rgba(' + rgb2 + ',0.20)', highlight: 'rgba(' + rgb2 + ',0.60)' },
+      smooth: { type: 'continuous' },
+      arrows: { to: { enabled: false } },
+      physics: false,
+      title: 'Inferred link (no path BLOB, hop=' + (p.hop === null ? 'unknown' : p.hop) + ')'
+    });
+  });
+
+  // ── Build network ──
+  nbState.topoNodes = new vis.DataSet(nodes);
+  nbState.topoEdges = new vis.DataSet(edges);
+  if (nbState.topoNet){ try { nbState.topoNet.destroy(); } catch(e){} nbState.topoNet = null; }
+  var physicsOn = !!nbState.topoPhysics;
+  var options = {
+    autoResize: true,
+    interaction: { hover: true, tooltipDelay: 120, zoomView: true, dragView: true },
+    physics: { enabled: physicsOn, solver: 'forceAtlas2Based',
+      forceAtlas2Based: { gravitationalConstant: -90, centralGravity: 0.01, springLength: 140, springConstant: 0.05, damping: 0.6, avoidOverlap: 0.6 },
+      stabilization: { enabled: true, iterations: 220, fit: true } },
+    layout: { improvedLayout: false }
+  };
+  nbState.topoNet = new vis.Network(holder, { nodes: nbState.topoNodes, edges: nbState.topoEdges }, options);
+
+  function afterStable(){
+    try { nbState.topoNet.setOptions({ physics: { enabled: false } }); } catch(e){}
+    try { nbState.topoNet.fit({ animation: false }); } catch(e){}
+    if (nbState.topoMeshClusterOn) _nbTopoMeshCluster(nbState.topoNet);
+    if (nbState.topoMeshMinimapOn){
+      var c = G('nbTopoMinimap'); if (c) c.style.display = 'block';
+      _nbTopoDrawMinimap();
+    } else {
+      var c2 = G('nbTopoMinimap'); if (c2) c2.style.display = 'none';
+    }
+  }
+  // v2.6.0 F3 Bug-B fix: large meshes with many fixed-position inferred nodes
+  // can take >2 s to stabilize — or the event can be missed entirely if the
+  // solver short-circuits. Use a once-guard so afterStable runs exactly once,
+  // triggered by whichever fires first: the event OR a 1800 ms fallback. This
+  // guarantees the cluster-collapse + mini-map are always activated.
+  if (physicsOn){
+    var _meshStableFired = false;
+    var _afterStableOnce = function(){
+      if (_meshStableFired) return;
+      _meshStableFired = true;
+      afterStable();
+    };
+    nbState.topoNet.once('stabilizationIterationsDone', _afterStableOnce);
+    setTimeout(_afterStableOnce, 1800);
+  } else {
+    afterStable();
+  }
+
+  // Hover-highlight: light the path back to YOU, dim everything else.
+  nbState.topoNet.on('hoverNode', function(params){
+    if (params.node === '__you__') return;
+    _nbTopoApplyMeshHighlight(params.node);
+  });
+  nbState.topoNet.on('blurNode', function(){ _nbTopoClearMeshHighlight(); });
+
+  nbState.topoNet.on('click', function(params){
+    if (params.nodes && params.nodes.length){
+      var id = params.nodes[0];
+      // Cluster expansion on click
+      try {
+        if (nbState.topoNet.isCluster && nbState.topoNet.isCluster(id)){
+          nbState.topoNet.openCluster(id);
+          setTimeout(function(){ _nbTopoDrawMinimap(); }, 60);
+          return;
+        }
+      } catch(e){}
+      if (id === '__you__'){
+        var b0 = G('nbTopoMeshInfoBox'); if(b0) b0.style.display = 'none';
+        return;
+      }
+      nbTopoShowMeshInfo(id);
+    }
+  });
+
+  // Mini-map redraw on pan/zoom (debounced)
+  var mmTimer = null;
+  function scheduleMinimap(){
+    if (mmTimer) clearTimeout(mmTimer);
+    mmTimer = setTimeout(function(){ _nbTopoDrawMinimap(); mmTimer = null; }, 80);
+  }
+  nbState.topoNet.on('dragEnd', scheduleMinimap);
+  nbState.topoNet.on('zoom', scheduleMinimap);
+  nbState.topoNet.on('animationFinished', scheduleMinimap);
+
+  // Mini-map click → pan main view to that location
+  var canvas = G('nbTopoMinimap');
+  if (canvas && !canvas._mmBound){
+    canvas._mmBound = true;
+    canvas.addEventListener('click', function(ev){
+      var tx = canvas._tx;
+      if (!tx || !nbState.topoNet) return;
+      var rect = canvas.getBoundingClientRect();
+      var cx = ev.clientX - rect.left, cy = ev.clientY - rect.top;
+      var worldX = tx.minX + (cx - tx.pad) / (tx.W - 2*tx.pad) * tx.rngX;
+      var worldY = tx.minY + (cy - tx.pad) / (tx.H - 2*tx.pad) * tx.rngY;
+      try { nbState.topoNet.moveTo({ position: { x: worldX, y: worldY }, animation: { duration: 280, easingFunction: 'easeInOutQuad' } }); } catch(e){}
+      setTimeout(function(){ _nbTopoDrawMinimap(); }, 300);
+    });
+  }
+
+  var b = G('nbTopoMeshInfoBox'); if (b){ b.style.display = 'none'; b.innerHTML = ''; }
+  nbTopoRenderRelayTable();
+}
+// Click-info panel: primary candidate clearly marked + alternatives listed
+// underneath with the reason each is less likely.
+function nbTopoShowMeshInfo(nodeId){
+  var box = G('nbTopoMeshInfoBox');
+  if (!box) return;
+  var rec = (nbState._meshResolved || {})[nodeId];
+  // Resolve a friendly node name for the header.
+  var node = (nbState.filtered || []).find(function(n){ return (n.node_id || '') === nodeId; });
+  var html = '<div style="font-size:13px;font-weight:600;color:var(--tx);margin-bottom:8px">' +
+             esc(node ? _nbName(node) : nodeId) + ' \u2014 reconstructed path</div>';
+  if (!rec || !rec.hops || !rec.hops.length){
+    html += '<div style="font-size:12px;color:var(--txm)">No multi-hop path data for this node (directly heard or path unavailable).</div>';
+    box.innerHTML = html; box.style.display = 'block'; return;
+  }
+  rec.hops.forEach(function(h, i){
+    var hex = '0x' + ('0' + h.byte.toString(16)).slice(-2).toUpperCase();
+    html += '<div style="margin-bottom:10px;padding:8px;border:1px solid var(--brd);border-radius:6px;background:rgba(0,0,0,0.15)">';
+    html += '<div style="font-size:11px;color:var(--txm);margin-bottom:4px">Hop ' + (i+1) + ' \u2014 hash ' + hex + '</div>';
+    if (h.primary){
+      var pk = (h.primary.node_id || '');
+      html += '<div style="font-size:12px;color:#22c55e;font-weight:600">\u2713 ' + esc(_nbName(h.primary)) +
+              ' <span style="font-weight:400;color:var(--txm)">(' + esc(pk.substring(0,8)) + '\u2026) \u2014 selected: ' + esc(h.reason) + '</span></div>';
+    } else {
+      html += '<div style="font-size:12px;color:#94a3b8">\u2713 Unresolved (no known node with hash ' + hex + ')</div>';
+    }
+    if (h.alternatives && h.alternatives.length){
+      html += '<div style="font-size:11px;color:var(--txm);margin-top:4px">Other candidates with hash ' + hex + ':</div><ul style="margin:3px 0 0;padding-left:16px">';
+      h.alternatives.slice(0, 8).forEach(function(alt){
+        var ak = (alt.node.node_id || '');
+        html += '<li style="font-size:11px;color:var(--txs);margin:2px 0">' + esc(_nbName(alt.node)) +
+                ' <span style="color:var(--txm)">(' + esc(ak.substring(0,8)) + '\u2026) \u2014 ' + esc(alt.reason) + '</span></li>';
+      });
+      html += '</ul>';
+    } else {
+      html += '<div style="font-size:11px;color:var(--txm);margin-top:4px">No other candidates with this hash.</div>';
+    }
+    html += '</div>';
+  });
+  html += '<div style="font-size:10px;color:var(--txm);font-style:italic">1-byte hashes are ambiguous; candidates are ranked by direct-hear &gt; geography &gt; repeater &gt; recency. Transparency over false confidence.</div>';
+  box.innerHTML = html; box.style.display = 'block';
+}
+
+// Stats bar above the graph: strongest / weakest / median RSSI, best SNR, total.
+function nbTopoRenderStats(list){
+  var el = G('nbTopoStats');
+  if (!el) return;
+  var rssis = list.map(_nbRssi).filter(function(v){ return v != null; }).sort(function(a,b){ return a-b; });
+  var snrs  = list.map(_nbSnr).filter(function(v){ return v != null; });
+  var strong = rssis.length ? rssis[rssis.length-1] : null;
+  var weak   = rssis.length ? rssis[0] : null;
+  var median = rssis.length ? rssis[Math.floor((rssis.length-1)/2)] : null;
+  var bestSnr = snrs.length ? Math.max.apply(null, snrs) : null;
+  // Names for strongest/weakest.
+  function nameForRssi(v){
+    if (v == null) return '';
+    var hit = list.find(function(n){ var r=_nbRssi(n); return r != null && Math.abs(r - v) < 0.001; });
+    return hit ? _nbName(hit) : '';
+  }
+  function card(label, val, sub, color){
+    return '<div style="background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:8px;padding:8px 10px">' +
+      '<div style="font-size:10px;color:var(--txm);text-transform:uppercase;letter-spacing:.5px">' + esc(label) + '</div>' +
+      '<div style="font-size:15px;font-weight:600;color:' + (color||'var(--tx)') + '">' + esc(val) + '</div>' +
+      (sub ? '<div style="font-size:10px;color:var(--txm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(sub) + '</div>' : '') +
+      '</div>';
+  }
+  el.innerHTML = [
+    card('Total nodes', String(list.length), '', 'var(--tx)'),
+    card('Strongest', strong != null ? strong.toFixed(1) + ' dBm' : '\u2014', nameForRssi(strong), _nbRssiColor(strong)),
+    card('Weakest', weak != null ? weak.toFixed(1) + ' dBm' : '\u2014', nameForRssi(weak), _nbRssiColor(weak)),
+    card('Median RSSI', median != null ? median.toFixed(1) + ' dBm' : '\u2014', '', _nbRssiColor(median)),
+    card('Best SNR', bestSnr != null ? bestSnr.toFixed(1) + ' dB' : '\u2014', '', _nbSnrColor(bestSnr))
+  ].join('');
+}
+
+// Channel legend with per-channel counts, e.g. 'channel_e (1)', 'unknown (855)'.
+function nbTopoRenderLegend(list){
+  var el = G('nbTopoLegend');
+  if (!el) return;
+  var byCh = {};
+  list.forEach(function(n){ var k = _nbTopoChKey(n); byCh[k] = (byCh[k]||0)+1; });
+  var keys = Object.keys(byCh).sort(function(a,b){ return byCh[b]-byCh[a]; });
+  if (!keys.length) { el.innerHTML = '<span style="font-size:11px;color:var(--txm)">No nodes to display.</span>'; return; }
+  el.innerHTML = keys.map(function(k){
+    var col = (k === 'unknown') ? 'rgba(148,163,184,0.9)' : _nbChColor(k);
+    return '<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--txs);background:rgba(255,255,255,0.04);border:1px solid var(--brd);border-radius:14px;padding:3px 10px">' +
+      '<span style="width:10px;height:10px;border-radius:50%;background:' + col + ';display:inline-block"></span>' +
+      esc(k) + ' (' + byCh[k] + ')</span>';
+  }).join('');
 }
 function nbToggleAutoRefresh(){
   var on = (G('nbAutoRefresh') && G('nbAutoRefresh').checked);
@@ -5211,7 +7078,8 @@ function renderPmCrcChart(channels) {
 <!-- Issue #11.2: Neighbours tab (Pack 1+2+3) - Mesh neighbours with sort/filter/topology/history -->
 <div id="tab-neighbours" class="tp">
   <!-- Pack 1: Stats cards -->
-  <div id="nbStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
+  <!-- v2.6.0 F1: Quick Stats Strip (KPIs + sparkline + donut + hop-bar + status pill) -->
+  <div id="nbStats" style="margin-bottom:16px"></div>
 
   <div class="gl" style="padding:18px;margin-bottom:16px">
     <!-- Header -->
@@ -5283,10 +7151,73 @@ function renderPmCrcChart(channels) {
       </div>
     </div>
 
-    <!-- TOPOLOGY VIEW (Pack 3) -->
+    <!-- TOPOLOGY VIEW (v2.5.8 feature B+C) - interactive force-directed graph (vis-network) -->
     <div id="nbTopoView" style="display:none">
-      <div style="position:relative;height:480px"><canvas id="nbTopoCanvas"></canvas></div>
-      <div style="font-size:11px;color:var(--txm);margin-top:8px">Radial scatter: distance from center is signal strength (closer = stronger). Bubble color = channel; bubble size = SNR. Hover for details.</div>
+      <!-- Topology controls -->
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px">
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px">Layout
+          <select id="nbTopoLayout" onchange="nbTopoSetLayout(this.value)" style="padding:4px 8px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+            <option value="radar" selected>Radar (default, D3)</option>
+            <option value="rings">Hop rings (legacy)</option>
+            <option value="force">Force fan-out (legacy)</option>
+            <option value="mesh">Mesh graph</option>
+          </select>
+        </label>
+        <label id="nbTopoClusterWrap" style="font-size:11px;color:var(--txm);display:none;align-items:center;gap:6px">Cluster
+          <select id="nbTopoCluster" onchange="nbTopoSetCluster(this.value)" style="padding:4px 8px;background:var(--bg);border:1px solid var(--brd);border-radius:6px;color:var(--tx);font-size:12px">
+            <option value="none">None (full fan-out)</option>
+            <option value="hop" selected>By hop (default)</option>
+            <option value="channel">By channel</option>
+          </select>
+        </label>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoPhysics" type="checkbox" checked onchange="nbTopoTogglePhysics(this.checked)"><span class="tsl"></span></span> Physics
+        </label>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoHideUnknown" type="checkbox" onchange="nbRenderTopology()"><span class="tsl"></span></span> Hide unknown channel
+        </label>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoHideRelayed" type="checkbox" onchange="nbTopoSetHideRelayed(this.checked)"><span class="tsl"></span></span> Hide relayed
+        </label>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoRelayTable" type="checkbox" onchange="nbTopoSetRelayTable(this.checked)"><span class="tsl"></span></span> Relay table
+        </label>
+        <button class="btn sec sm" onclick="nbTopoFit()" style="padding:3px 10px;font-size:11px">&#9974; Fit view</button>
+        <button class="btn sec sm" onclick="nbRenderTopology()" style="padding:3px 10px;font-size:11px">&#8635; Rebuild</button>
+      </div>
+      <!-- Topology stats bar -->
+      <div id="nbTopoStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px"></div>
+      <!-- Channel legend -->
+      <div id="nbTopoLegend" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px"></div>
+      <!-- v2.6.0 F3: Mesh-specific controls (hidden unless mesh layout active) -->
+      <div id="nbTopoMeshControls" style="display:none;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:8px;padding:6px 10px;background:rgba(99,102,241,0.06);border:1px solid var(--brd);border-radius:6px">
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoMeshClusterOn" type="checkbox" onchange="nbTopoMeshSetCluster(this.checked)"><span class="tsl"></span></span>
+          Cluster dense channels
+        </label>
+        <label style="font-size:11px;color:var(--txm);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span class="tgl"><input id="nbTopoMeshMinimapOn" type="checkbox" onchange="nbTopoMeshSetMinimap(this.checked)"><span class="tsl"></span></span>
+          Show mini-map
+        </label>
+        <span style="font-size:11px;color:var(--txm);font-style:italic">Hover a node to highlight its path back to YOU. Click to inspect candidates.</span>
+      </div>
+      <!-- The graph (v2.6.0 F3: wrapped for minimap overlay) -->
+      <div id="nbTopoGraphWrap" style="position:relative">
+        <div id="nbTopoGraph" style="height:520px;border-radius:8px;border:1px solid var(--brd);background:rgba(0,0,0,0.25)"></div>
+        <canvas id="nbTopoMinimap" width="200" height="150" style="display:none;position:absolute;right:8px;bottom:8px;width:200px;height:150px;border-radius:6px;border:1px solid rgba(148,163,184,0.5);background:rgba(15,23,42,0.85);cursor:crosshair"></canvas>
+      </div>
+      <div style="font-size:11px;color:var(--txm);margin-top:8px;line-height:1.5">
+        Relay-aware mesh: the bright central <strong>YOU</strong> node is this repeater. <strong>Solid arrowed edges</strong> are real relay paths
+        reconstructed from each advert's <code>path</code> BLOB (edge thickness = adverts traversed, edge colour = destination channel). <strong>Faint
+        dashed lines</strong> mark <em>inferred</em> links — relayed nodes whose hop count is known but whose intermediate path is not; those sit on
+        concentric hop rings around the force-driven core. Node colour = channel, node size = degree (paths-through-node). Hover a node to highlight
+        its path back to YOU; drag to reposition, scroll to zoom, click a node to inspect candidates. Use the cluster selector to group large meshes
+        by channel or hop; click a cluster to expand it. Toggle physics off to freeze the layout for a screenshot.
+      </div>
+      <!-- v2.5.8 Pad 2: mesh-graph click-info (primary candidate + alternatives) -->
+      <div id="nbTopoMeshInfoBox" style="display:none;margin-top:10px;border:1px solid var(--brd);border-radius:8px;background:rgba(99,102,241,0.05);padding:12px"></div>
+      <!-- v2.5.8 Pad 1: optional relayed-node table -->
+      <div id="nbTopoRelayTableBox" style="display:none"></div>
     </div>
 
     <!-- MAP VIEW (v2.5.7 Pack 7) - Leaflet + OSM tiles -->

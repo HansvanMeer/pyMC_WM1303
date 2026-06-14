@@ -812,6 +812,36 @@ class SQLiteHandler:
                     )
                     logger.info(f"Migration '{migration_name}' applied successfully")
 
+                # Migration 13: path BLOB column (v2.5.8).
+                # Stores the raw advert path bytes (1 byte per hop, first byte
+                # of each repeater pubkey) so the topology UI can render real
+                # mesh edges with disambiguated repeater identities. Also
+                # stores path_len_encoded (raw header byte from the advert)
+                # for multipath statistics and audit. Both columns nullable so
+                # legacy rows survive without changes.
+                migration_name = "add_path_blob_to_adverts"
+                existing = conn.execute(
+                    "SELECT migration_name FROM migrations WHERE migration_name = ?",
+                    (migration_name,),
+                ).fetchone()
+                if not existing:
+                    for col_def in [
+                        "path BLOB",
+                        "path_len_encoded INTEGER",
+                    ]:
+                        col_name = col_def.split()[0]
+                        try:
+                            conn.execute(f"ALTER TABLE adverts ADD COLUMN {col_def}")
+                        except Exception:
+                            logger.debug(
+                                "Column %s may already exist, skipping", col_name
+                            )
+                    conn.execute(
+                        "INSERT INTO migrations (migration_name, applied_at) VALUES (?, ?)",
+                        (migration_name, time.time()),
+                    )
+                    logger.info(f"Migration '{migration_name}' applied successfully")
+
                 conn.commit()
 
         except Exception as e:
@@ -1113,6 +1143,15 @@ class SQLiteHandler:
                     )
                     _dup_inc = 1 if _is_duplicate else 0
 
+                    # v2.5.8: path BLOB + path_len_encoded — defensive get so
+                    # legacy callers without these keys keep working (NULL).
+                    _incoming_path = record.get("path")
+                    if _incoming_path is not None and not isinstance(
+                        _incoming_path, (bytes, bytearray, memoryview)
+                    ):
+                        _incoming_path = None
+                    _incoming_path_len_encoded = record.get("path_len_encoded")
+
                     conn.execute(
                         """
                         UPDATE adverts
@@ -1121,7 +1160,7 @@ class SQLiteHandler:
                             rssi = ?, snr = ?, advert_count = advert_count + 1, is_new_neighbor = 0,
                             zero_hop = ?, last_channel = ?, channels_heard = ?,
                             duplicate_count = COALESCE(duplicate_count, 0) + ?,
-                            path_len = ?
+                            path_len = ?, path = ?, path_len_encoded = ?
                         WHERE pubkey = ?
                     """,
                         (
@@ -1140,18 +1179,28 @@ class SQLiteHandler:
                             channels_heard_str,
                             _dup_inc,
                             record.get("path_len"),
+                            _incoming_path,
+                            _incoming_path_len_encoded,
                             record.get("pubkey", ""),
                         ),
                     )
                 else:
                     incoming_channel = record.get("channel", "")
+                    # v2.5.8: path BLOB + path_len_encoded — defensive.
+                    _incoming_path = record.get("path")
+                    if _incoming_path is not None and not isinstance(
+                        _incoming_path, (bytes, bytearray, memoryview)
+                    ):
+                        _incoming_path = None
+                    _incoming_path_len_encoded = record.get("path_len_encoded")
                     conn.execute(
                         """
                         INSERT INTO adverts (
                             timestamp, pubkey, node_name, is_repeater, route_type, contact_type,
                             latitude, longitude, first_seen, last_seen, rssi, snr, advert_count,
-                            is_new_neighbor, zero_hop, last_channel, channels_heard, path_len
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            is_new_neighbor, zero_hop, last_channel, channels_heard, path_len,
+                            path, path_len_encoded
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                         (
                             current_time,
@@ -1172,6 +1221,8 @@ class SQLiteHandler:
                             incoming_channel,
                             incoming_channel,
                             record.get("path_len"),
+                            _incoming_path,
+                            _incoming_path_len_encoded,
                         ),
                     )
 
@@ -1779,18 +1830,22 @@ class SQLiteHandler:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
 
+                # v2.5.8: select path BLOB and path_len_encoded so the topology
+                # UI can render real mesh edges with disambiguated repeater
+                # identities. path_len is also surfaced in the dict (was missing
+                # before — latent bug for path_len consumers).
                 neighbors = conn.execute(
                     """
                     SELECT pubkey, node_name, is_repeater, route_type, contact_type,
                            latitude, longitude, first_seen, last_seen, rssi, snr,
                            advert_count, zero_hop, last_channel, channels_heard,
-                           duplicate_count, path_len
+                           duplicate_count, path_len, path, path_len_encoded
                     FROM (
                         SELECT
                             pubkey, node_name, is_repeater, route_type, contact_type,
                             latitude, longitude, first_seen, last_seen, rssi, snr,
                             advert_count, zero_hop, last_channel, channels_heard,
-                            duplicate_count, path_len,
+                            duplicate_count, path_len, path, path_len_encoded,
                             ROW_NUMBER() OVER (PARTITION BY pubkey ORDER BY last_seen DESC) AS rn
                         FROM adverts
                     ) latest
@@ -1801,6 +1856,17 @@ class SQLiteHandler:
 
                 result = {}
                 for row in neighbors:
+                    # path is BLOB; keep raw bytes here. JSON encoders downstream
+                    # convert to hex.  Tolerate sqlite3.Row missing column via
+                    # try/except so this still loads on a DB before migration 13.
+                    try:
+                        _path_blob = row["path"]
+                    except Exception:
+                        _path_blob = None
+                    try:
+                        _path_len_encoded = row["path_len_encoded"]
+                    except Exception:
+                        _path_len_encoded = None
                     result[row["pubkey"]] = {
                         "node_name": row["node_name"],
                         "is_repeater": bool(row["is_repeater"]),
@@ -1817,6 +1883,9 @@ class SQLiteHandler:
                         "last_channel": row["last_channel"] or "",
                         "channels_heard": row["channels_heard"] or "",
                         "duplicate_count": row["duplicate_count"] or 0,
+                        "path_len": row["path_len"],
+                        "path": _path_blob,
+                        "path_len_encoded": _path_len_encoded,
                     }
 
                 self._neighbors_cache = {"timestamp": now, "value": result}
@@ -2091,7 +2160,8 @@ class SQLiteHandler:
             return {"rx_total": 0, "tx_total": 0, "drop_total": 0, "type_counts": {}}
 
     def get_adverts_by_contact_type(
-        self, contact_type: str, limit: Optional[int] = None, hours: Optional[int] = None
+        self, contact_type: str, limit: Optional[int] = None, hours: Optional[int] = None,
+        offset: Optional[int] = None
     ) -> List[dict]:
 
         try:
@@ -2120,6 +2190,10 @@ class SQLiteHandler:
                 if limit is not None:
                     query += " LIMIT ?"
                     params.append(limit)
+
+                if offset is not None and offset > 0:
+                    query += " OFFSET ?"
+                    params.append(offset)
 
                 rows = conn.execute(query, params).fetchall()
 

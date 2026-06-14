@@ -618,14 +618,36 @@ class AdvertHelper:
             else:
                 is_new_neighbor = False
             
-            # Determine zero-hop: direct routes are always zero-hop,
-            # flood routes are zero-hop if path_len <= 1 (received directly)
-            path_len = len(packet.path) if packet.path else 0
+            # Determine zero-hop and hop count.
+            # v2.5.8 bug fix: packet.path_len is the encoded header byte
+            # (bits 0-5 hop count, bits 6-7 hash size - 1). len(packet.path)
+            # equals the hop count only when hash size is 1 byte; with 2- or
+            # 3-byte hashes it returns hop_count * hash_size and overstates
+            # the path length. Use the protocol helper which decodes the
+            # encoded byte correctly for any hash size.
+            try:
+                path_len = packet.get_path_hash_count()
+            except Exception:
+                # Defensive fallback if the helper is unavailable.
+                path_len = len(packet.path) if packet.path else 0
             zero_hop = path_len == 0
-            
+
+            # v2.5.8: carry the raw path blob and the encoded path_len byte
+            # to the storage layer so the topology UI can render real mesh
+            # edges (one byte per hop = first byte of each repeater pubkey).
+            # Both are nullable; downstream defaults to NULL when absent.
+            path_bytes_blob = bytes(packet.path) if packet.path else None
+            try:
+                path_len_encoded_val = (
+                    int(packet.path_len) if packet.path_len is not None else None
+                )
+            except Exception:
+                path_len_encoded_val = None
+
             # Build advert record
             # v2.5.7: include channel + path_len so neighbours table can show
             # which channel an ADVERT was heard on and the exact hop count.
+            # v2.5.8: include raw path blob + encoded path_len byte.
             advert_record = {
                 "timestamp": current_time,
                 "pubkey": pubkey,
@@ -641,6 +663,8 @@ class AdvertHelper:
                 "zero_hop": zero_hop,
                 "path_len": path_len,
                 "channel": channel or "",
+                "path": path_bytes_blob,
+                "path_len_encoded": path_len_encoded_val,
             }
             
             # Store to database (run in thread so event loop stays responsive;
