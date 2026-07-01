@@ -84,5 +84,5 @@ WiFi power-save mode can cause SSH disconnects and network instability on wirele
 
 ## Known Limitations
 
-- **Pi01 self-visibility**: The repeater's own identity does not appear as a discovered node in the companion app (requires internal self-ADVERT injection — planned for future release).
+- **the reference device self-visibility**: The repeater's own identity does not appear as a discovered node in the companion app (requires internal self-ADVERT injection — planned for future release).
 - **Self heard-repeat**: The repeater cannot hear its own RF transmission, so self-heard-repeats are not shown (requires internal loopback — planned for future release).

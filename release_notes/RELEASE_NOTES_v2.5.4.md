@@ -90,7 +90,7 @@ via the system Python (no hard-coded paths).
 safety net, so this is a robustness/cleanliness improvement, not a behavioural
 dependency.
 
-**Verified on pi03 (`pyMC-WM1303-01`):**
+**Verified on the test device (`the repeater node`):**
 - Before: `import systemd.daemon` → `ModuleNotFoundError` in venv.
 - After symlink: `import systemd.daemon` → **OK** (native binding active).
 - Service restarted → `active (running)`, `Type=notify`, `WatchdogUSec=60s`.

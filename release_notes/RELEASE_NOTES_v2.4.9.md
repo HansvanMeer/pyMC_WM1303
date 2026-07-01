@@ -431,7 +431,7 @@ The `sync_word` field in `chan_Lora_std` (Channel F) and `lora_rx` (Channel E SX
 - [x] **Overlay deployment scripts** — all overlay files in install.sh/upgrade.sh copy loops.
 - [x] **Upstream tag sync** — automatic in install.sh and upgrade.sh for correct version resolution.
 - [x] **Region dropdown fix** — REGIONS import corrected.
-- [x] **Deploy + smoke test on pi01** — completed successfully.
+- [x] **Deploy + smoke test on the reference device** — completed successfully.
 - [ ] **UI ↔ config parameter completeness audit** — deferred to follow-up release.
 
 ---

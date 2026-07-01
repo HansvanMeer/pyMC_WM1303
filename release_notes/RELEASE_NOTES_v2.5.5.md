@@ -112,7 +112,7 @@ After upgrade, **hard-refresh the browser** (`Ctrl + Shift + R` / `Cmd + Shift +
 
 ## Tested On
 
-- pi01 (192.168.101.52) — Raspberry Pi OS Lite — bootstrap upgrade verified
-- pi03 (192.168.101.80) — Raspberry Pi OS Lite — bootstrap upgrade verified
+- the reference device (the reference repeater) — Raspberry Pi OS Lite — bootstrap upgrade verified
+- the test device (the test repeater) — Raspberry Pi OS Lite — bootstrap upgrade verified
 
 Both devices verified active service, version 2.5.5, and working endpoints (`status`, `neighbours`, `spectrum`).

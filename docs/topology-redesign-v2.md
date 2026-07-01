@@ -24,7 +24,7 @@ The current Topology tab (v2.5.8) offers 5 layout modes (`rings`, `force-hop`, `
 
 ### 1.1 What good looks like (success criteria)
 
-The redesigned Topology tab must satisfy the following — measurable on the real pi03 data set (862 neighbours, ~17 direct-heard, ~845 relayed):
+The redesigned Topology tab must satisfy the following — measurable on the real the test device data set (862 neighbours, ~17 direct-heard, ~845 relayed):
 
 1. **Within 5 seconds** of opening the tab, the user can answer: *"How many neighbours can I hear directly right now, on which channels, and how strong?"*
 2. **Within 10 seconds**, the user can identify the **3 strongest links** by name.

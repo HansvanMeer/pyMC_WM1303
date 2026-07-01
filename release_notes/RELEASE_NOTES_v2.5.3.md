@@ -131,5 +131,5 @@ Both root-cause analyses, the exact source-line locations, and the proposed fixe
 
 ## Resolved from v2.5.2 "Known Limitations"
 
-- **Self-visibility** (was v2.5.2 "Pi01 self-visibility"): resolved by the self-ADVERT injection added in this release. The repeater's own identity now appears as a discovered node in the companion app's contact list.
+- **Self-visibility** (was v2.5.2 "the reference device self-visibility"): resolved by the self-ADVERT injection added in this release. The repeater's own identity now appears as a discovered node in the companion app's contact list.
 - **Self heard-repeat** (was v2.5.2 "Self heard-repeat"): resolved by the self-TX loopback added in this release. Every successful TX (the repeater's own ADVERT and every forwarded neighbour packet) now appears in the companion's live activity log as a heard-repeat 0x88 frame.

@@ -61,14 +61,14 @@ Total diff: 2 files, +14 -4 lines.
 
 ## Verification
 
-Deployed via bootstrap on pi01 and pi03:
+Deployed via bootstrap on the reference device and the test device:
 
 | Device | Phase 11.4 Result | Service | Version Endpoint |
 |---|---|---|---|
-| **pi01** (192.168.101.52) | `ready after 1 attempt(s)` | active | 2.5.6 |
-| **pi03** (192.168.101.80) | `warn after 5 attempts (10s)` | active (started ~12 s after Phase 11.4 check) | 2.5.6 |
+| **the reference device** (the reference repeater) | `ready after 1 attempt(s)` | active | 2.5.6 |
+| **the test device** (the test repeater) | `warn after 5 attempts (10s)` | active (started ~12 s after Phase 11.4 check) | 2.5.6 |
 
-Pi03 demonstrates exactly the failure mode the fix targets: the warn is **accurate** (the web server was indeed not responding within 10 s) and **actionable** (`journalctl -u pymc-repeater`), while the service did eventually start successfully. Under v2.5.5 this same situation would have logged a misleading `ok`.
+the test device demonstrates exactly the failure mode the fix targets: the warn is **accurate** (the web server was indeed not responding within 10 s) and **actionable** (`journalctl -u pymc-repeater`), while the service did eventually start successfully. Under v2.5.5 this same situation would have logged a misleading `ok`.
 
 ---
 

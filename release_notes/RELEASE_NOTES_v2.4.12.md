@@ -51,7 +51,7 @@ This complements the pre-save IF range validation that already exists for UI-dri
 
 ## Install and upgrade script hardening
 
-Three defensive improvements applied to both `install.sh` and `upgrade.sh`, prompted by edge cases observed during the v2.4.11 dev-branch upgrade on pi01:
+Three defensive improvements applied to both `install.sh` and `upgrade.sh`, prompted by edge cases observed during the v2.4.11 dev-branch upgrade on the reference device:
 
 ### Robust `git` update flow
 
