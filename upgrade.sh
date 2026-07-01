@@ -497,7 +497,16 @@ update_repo() {
     sudo -u ${PI_USER} git reset --hard "origin/${branch}" >> "${LOG_FILE}" 2>&1
     sudo -u ${PI_USER} git clean -fd >> "${LOG_FILE}" 2>&1 || true
 
-    # Sync upstream tags so setuptools-scm computes correct version numbers
+    # Sync upstream tags so setuptools-scm computes correct version numbers.
+    # Note: the official upstream of pyMC_core and pyMC_Repeater has moved to
+    # the openhop-dev GitHub organization:
+    #   - https://github.com/openhop-dev/openhop_core      (was pyMC-dev/pymc-core)
+    #   - https://github.com/openhop-dev/openhop_repeater  (was pyMC-dev/pymc-repeater)
+    # The Hans van Meer forks (HansvanMeer/pyMC_core, HansvanMeer/pyMC_Repeater)
+    # remain the WM1303 source of truth and are kept in sync with upstream.
+    # The rightup mirrors below are used purely for setuptools-scm tag resolution
+    # and may be swapped for openhop-dev URLs if those repos start shipping
+    # version tags. See docs/repositories.md for the full relationship.
     local upstream_url=""
     case "${name}" in
         pyMC_Repeater) upstream_url="https://github.com/rightup/pyMC_Repeater.git" ;;

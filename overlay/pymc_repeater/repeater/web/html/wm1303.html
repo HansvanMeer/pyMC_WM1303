@@ -127,6 +127,7 @@ select.ci option{background:#1e293b}
       <button class="tab-btn" onclick="showTab('bridge',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M4 9h16M4 15h16M7 3v18M17 3v18"/></svg>Bridge Rules</button>
       <button class="tab-btn" onclick="showTab('tracing',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>Tracing</button>
       <button class="tab-btn" onclick="showTab('neighbours',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><path d="M3 21v-2a4 4 0 014-4h4a4 4 0 014 4v2"/><circle cx="17" cy="7" r="3"/><path d="M21 21v-2a4 4 0 00-3-3.87"/></svg>Neighbours</button>
+      <button class="tab-btn" onclick="showTab('invalid-packets',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>Invalid Packets</button>
       <button class="tab-btn" onclick="showTab('logs',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>Logs</button>
       <button class="tab-btn" onclick="showTab('adv-config',this)"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Adv. Config</button>
     </div>
@@ -3058,7 +3059,7 @@ function nbTopoRenderRadarD3(){
   // Use the honest hop helper (nbTopoHopOf) so relayed nodes with unknown
   // distance get null instead of the optimistic 1. They land in the outer 8+
   // bucket instead of falsely crowding the 1-hop ring with the ~837 relayed-
-  // unknown nodes seen on pi03 today. TODO: split into a dedicated '?' outer
+  // unknown nodes seen on the test device today. TODO: split into a dedicated '?' outer
   // ring once we extend the renderer to support a 10th ring with its own
   // radius/label without touching the existing 0..8 geometry.
   var rings = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: [] };
@@ -5122,6 +5123,107 @@ showTab = function(name, btn) {
   }
 };
 
+</script>
+
+<div id="tab-invalid-packets" class="tp">
+  <div style="padding:16px">
+    <h2 style="margin-top:0">Invalid Packets &mdash; protocol-validator forensics</h2>
+    <p style="color:#94a3b8;font-size:13px">
+      Packets dropped by the central MeshCore protocol validator (Layer 2).
+      Forensics retained 8 days.
+    </p>
+    <div id="ip-tiles" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0">
+      <div class="ip-tile"><div class="ip-tile-label">Total (24h)</div><div id="ip-total" class="ip-tile-value">&mdash;</div></div>
+      <div class="ip-tile"><div class="ip-tile-label">Drops / hour</div><div id="ip-rate" class="ip-tile-value">&mdash;</div></div>
+      <div class="ip-tile"><div class="ip-tile-label">Top reason</div><div id="ip-reason" class="ip-tile-value" style="font-size:14px">&mdash;</div></div>
+      <div class="ip-tile"><div class="ip-tile-label">Top offender</div><div id="ip-offender" class="ip-tile-value" style="font-size:14px">&mdash;</div></div>
+    </div>
+    <h3>Top offenders</h3>
+    <div style="overflow-x:auto">
+    <table id="ip-offenders" style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr><th>Offender</th><th>Reason</th><th>Count</th><th>First seen</th><th>Last seen</th><th>Channels</th><th>Max hops</th></tr></thead>
+      <tbody><tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:12px">Loading&hellip;</td></tr></tbody>
+    </table>
+    </div>
+    <h3 style="margin-top:24px">Recent invalid packets</h3>
+    <div style="overflow-x:auto">
+    <table id="ip-recent" style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr><th>Time</th><th>Channel</th><th>Reason</th><th>Route</th><th>Hash</th><th>Hops</th><th>Path</th><th>Len</th><th>RSSI</th><th>SNR</th><th>Offender hint</th></tr></thead>
+      <tbody><tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:12px">Loading&hellip;</td></tr></tbody>
+    </table>
+    </div>
+    <div style="margin-top:24px;display:flex;align-items:center;gap:12px">
+      <button onclick="ipRefresh()" style="background:#3b82f6;color:white;padding:8px 16px;border:none;border-radius:4px;cursor:pointer">Refresh now</button>
+      <button onclick="ipClear()" style="background:#ef4444;color:white;padding:8px 16px;border:none;border-radius:4px;cursor:pointer">Clear all (admin)</button>
+      <span id="ip-status" style="color:#94a3b8;font-size:12px"></span>
+    </div>
+  </div>
+</div>
+<style>
+.ip-tile{background:#1e293b;border:1px solid #334155;border-radius:6px;padding:12px}
+.ip-tile-label{font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em}
+.ip-tile-value{font-size:24px;font-weight:600;margin-top:4px;color:#e2e8f0}
+#tab-invalid-packets table th{text-align:left;padding:6px 8px;border-bottom:1px solid #334155;font-weight:600;font-size:11px;text-transform:uppercase;color:#94a3b8;letter-spacing:0.04em}
+#tab-invalid-packets table td{padding:6px 8px;border-bottom:1px solid #1e293b;font-family:ui-monospace,monospace;color:#cbd5e1;white-space:nowrap}
+#tab-invalid-packets table tr:hover td{background:#0f172a}
+</style>
+<script>
+(function(){
+  function fmtTs(t){ try{ return new Date((t||0)*1000).toLocaleString(); }catch(e){ return ''; } }
+  function fmtT(t){ try{ return new Date((t||0)*1000).toLocaleTimeString(); }catch(e){ return ''; } }
+  function esc(s){ if(s===null||s===undefined) return ''; return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  async function jget(u){ const r=await fetch(u); return r.json(); }
+  window.loadInvalidPackets = async function(){
+    try{
+      const [stats, off, rec] = await Promise.all([
+        jget('/api/wm1303/invalid_packets_stats'),
+        jget('/api/wm1303/invalid_packets_offenders?limit=20'),
+        jget('/api/wm1303/invalid_packets_recent?limit=100')
+      ]);
+      document.getElementById('ip-total').textContent = stats.total_24h ?? 0;
+      document.getElementById('ip-rate').textContent = (stats.rate_per_hour ?? 0) + ' /h';
+      const tr = (stats.per_reason && stats.per_reason[0]) ? (stats.per_reason[0].reason + ' (' + stats.per_reason[0].count + ')') : '\u2014';
+      document.getElementById('ip-reason').textContent = tr;
+      const to = stats.top_offender ? (stats.top_offender + ' (' + stats.top_offender_count + ')') : '\u2014';
+      document.getElementById('ip-offender').textContent = to;
+      const offTb = document.querySelector('#ip-offenders tbody');
+      const offRows = (off.offenders||[]).map(o => '<tr><td>'+esc(o.offender||'\u2014')+'</td><td>'+esc(o.drop_reason)+'</td><td>'+esc(o.occurrences)+'</td><td>'+esc(fmtTs(o.first_seen))+'</td><td>'+esc(fmtTs(o.last_seen))+'</td><td>'+esc(o.channels||'')+'</td><td>'+esc(o.max_hops??'')+'</td></tr>').join('');
+      offTb.innerHTML = offRows || '<tr><td colspan="7" style="text-align:center;color:#94a3b8;padding:12px">No offenders yet</td></tr>';
+      const recTb = document.querySelector('#ip-recent tbody');
+      const recRows = (rec.packets||[]).map(p => '<tr><td>'+esc(fmtT(p.timestamp))+'</td><td>'+esc(p.channel||'')+'</td><td>'+esc(p.drop_reason)+'</td><td>'+esc(p.route_type_name||'')+'</td><td>'+esc(p.hash_size??'')+'</td><td>'+esc(p.hop_count??'')+'</td><td>'+esc(p.path_hex||'')+'</td><td>'+esc(p.packet_length||'')+'</td><td>'+esc(p.rssi??'')+'</td><td>'+esc(p.snr??'')+'</td><td>'+esc(p.source_pubkey_hint||'')+'</td></tr>').join('');
+      recTb.innerHTML = recRows || '<tr><td colspan="11" style="text-align:center;color:#94a3b8;padding:12px">No invalid packets yet</td></tr>';
+      document.getElementById('ip-status').textContent = 'Last update: ' + new Date().toLocaleTimeString();
+    }catch(e){
+      console.error('loadInvalidPackets failed:', e);
+      document.getElementById('ip-status').textContent = 'Load error: ' + e.message;
+    }
+  };
+  window.ipRefresh = function(){ window.loadInvalidPackets(); };
+  window.ipClear = async function(){
+    if(!confirm('Delete ALL invalid_packets records? This cannot be undone.')) return;
+    try{
+      const r = await jget('/api/wm1303/invalid_packets_clear?confirm=yes');
+      document.getElementById('ip-status').textContent = r.ok ? ('Cleared '+r.deleted+' records') : ('Clear failed: '+(r.error||'unknown'));
+      window.loadInvalidPackets();
+    }catch(e){
+      document.getElementById('ip-status').textContent = 'Clear error: ' + e.message;
+    }
+  };
+  // Auto-refresh every 30s if this tab is active
+  setInterval(function(){
+    var tab = document.getElementById('tab-invalid-packets');
+    if (tab && tab.classList.contains('active')) window.loadInvalidPackets();
+  }, 30000);
+  // Initial load when tab button is clicked
+  document.addEventListener('DOMContentLoaded', function(){
+    document.querySelectorAll('.tab-btn').forEach(function(b){
+      var oc = b.getAttribute('onclick') || '';
+      if (oc.indexOf('invalid-packets') !== -1) {
+        b.addEventListener('click', function(){ setTimeout(window.loadInvalidPackets, 50); });
+      }
+    });
+  });
+})();
 </script>
 
 <div id="tab-spectrum" class="tp">

@@ -414,8 +414,66 @@ class SQLiteHandler:
                     "CREATE INDEX IF NOT EXISTS idx_sx1261_health_type ON sx1261_health_events(event_type)"
                 )
 
+                # Invalid packets (Layer 3 forensics; see protocol_validator.py).
+                # Records every packet dropped by the MeshCore protocol validator
+                # so the WM1303 Manager UI can show what was rejected, from whom,
+                # on which channel, with what hop layout.  Retention 8 days is
+                # enforced by metrics_retention.py.
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS invalid_packets (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp REAL NOT NULL,
+                        channel TEXT,
+                        drop_reason TEXT NOT NULL,
+                        route_type INTEGER,
+                        route_type_name TEXT,
+                        path_len_byte INTEGER,
+                        hash_size INTEGER,
+                        hop_count INTEGER,
+                        path_hex TEXT,
+                        header_hex TEXT,
+                        transport_codes_hex TEXT,
+                        payload_first_16_hex TEXT,
+                        packet_length INTEGER,
+                        source_pubkey_hint TEXT,
+                        raw_packet_hex TEXT,
+                        rssi REAL,
+                        snr REAL
+                    )
+                """)
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_invalid_packets_ts ON invalid_packets(timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_invalid_packets_reason ON invalid_packets(drop_reason)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_invalid_packets_offender ON invalid_packets(source_pubkey_hint)")
+                conn.execute("""
+                    CREATE VIEW IF NOT EXISTS invalid_packet_offenders AS
+                    SELECT
+                        source_pubkey_hint AS offender,
+                        drop_reason,
+                        COUNT(*) AS occurrences,
+                        MIN(timestamp) AS first_seen,
+                        MAX(timestamp) AS last_seen,
+                        AVG(rssi) AS avg_rssi,
+                        AVG(snr) AS avg_snr,
+                        GROUP_CONCAT(DISTINCT channel) AS channels,
+                        MAX(hop_count) AS max_hops
+                    FROM invalid_packets
+                    GROUP BY source_pubkey_hint, drop_reason
+                    ORDER BY occurrences DESC
+                """)
+
                 conn.commit()
                 logger.info(f"SQLite database initialized: {self.sqlite_path}")
+
+                # Self-register storage callback with protocol_validator (Layer 3
+                # forensics).  Any integration site that calls validate_and_record()
+                # will now have invalid packets persisted into invalid_packets.
+                try:
+                    from repeater.protocol_validator import set_invalid_packet_store
+                    set_invalid_packet_store(self.store_invalid_packet)
+                    logger.info("Protocol validator storage hook registered")
+                except Exception as _hook_err:  # noqa: BLE001
+                    logger.debug(
+                        "protocol_validator hook skipped (non-fatal): %s", _hook_err)
 
         except Exception as e:
             logger.error(f"Failed to initialize SQLite: {e}")
@@ -2527,6 +2585,151 @@ class SQLiteHandler:
             conn.commit()
 
         return {"applied_nodes": len(ordered), "generated_keys": generated_keys}
+
+    def store_invalid_packet(self, record: dict) -> None:
+        """Persist one packet dropped by the MeshCore protocol validator.
+
+        Fire-and-forget: failure to write is logged but never raised, since
+        recording must not impact RX/TX timing (see project design principles).
+        """
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO invalid_packets (
+                        timestamp, channel, drop_reason,
+                        route_type, route_type_name,
+                        path_len_byte, hash_size, hop_count,
+                        path_hex, header_hex, transport_codes_hex,
+                        payload_first_16_hex, packet_length,
+                        source_pubkey_hint, raw_packet_hex, rssi, snr
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.get("timestamp"),
+                        record.get("channel"),
+                        record.get("drop_reason", "unknown"),
+                        record.get("route_type"),
+                        record.get("route_type_name"),
+                        record.get("path_len_byte"),
+                        record.get("hash_size"),
+                        record.get("hop_count"),
+                        record.get("path_hex"),
+                        record.get("header_hex"),
+                        record.get("transport_codes_hex"),
+                        record.get("payload_first_16_hex"),
+                        record.get("packet_length"),
+                        record.get("source_pubkey_hint"),
+                        record.get("raw_packet_hex"),
+                        record.get("rssi"),
+                        record.get("snr"),
+                    ),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"store_invalid_packet failed (non-fatal): {e}")
+
+    def fetch_invalid_packets_recent(self, limit: int = 200) -> list:
+        """Return the N most-recent invalid-packet rows for the UI table."""
+        try:
+            limit = max(1, min(int(limit), 2000))
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "SELECT timestamp, channel, drop_reason, route_type, "
+                    "route_type_name, path_len_byte, hash_size, hop_count, "
+                    "path_hex, header_hex, transport_codes_hex, "
+                    "payload_first_16_hex, packet_length, source_pubkey_hint, "
+                    "raw_packet_hex, rssi, snr "
+                    "FROM invalid_packets ORDER BY timestamp DESC LIMIT ?",
+                    (limit,),
+                )
+                columns = [d[0] for d in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.debug(f"fetch_invalid_packets_recent failed: {e}")
+            return []
+
+    def fetch_invalid_packet_offenders(self, limit: int = 50) -> list:
+        """Return top-N offenders aggregated from invalid_packet_offenders view."""
+        try:
+            limit = max(1, min(int(limit), 500))
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "SELECT offender, drop_reason, occurrences, first_seen, "
+                    "last_seen, avg_rssi, avg_snr, channels, max_hops "
+                    "FROM invalid_packet_offenders LIMIT ?",
+                    (limit,),
+                )
+                columns = [d[0] for d in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.debug(f"fetch_invalid_packet_offenders failed: {e}")
+            return []
+
+    def fetch_invalid_packet_stats_24h(self) -> dict:
+        """Return summary counters for the UI tiles (24h window)."""
+        try:
+            with self._connect() as conn:
+                cutoff_sql = "strftime('%s', 'now', '-1 day')"
+                total = conn.execute(
+                    f"SELECT COUNT(*) FROM invalid_packets WHERE timestamp >= {cutoff_sql}"
+                ).fetchone()[0]
+                per_reason = conn.execute(
+                    f"SELECT drop_reason, COUNT(*) FROM invalid_packets "
+                    f"WHERE timestamp >= {cutoff_sql} "
+                    f"GROUP BY drop_reason ORDER BY COUNT(*) DESC"
+                ).fetchall()
+                top_offender_row = conn.execute(
+                    f"SELECT source_pubkey_hint, COUNT(*) c FROM invalid_packets "
+                    f"WHERE timestamp >= {cutoff_sql} "
+                    f"GROUP BY source_pubkey_hint ORDER BY c DESC LIMIT 1"
+                ).fetchone()
+                return {
+                    "total_24h": total or 0,
+                    "per_reason": [
+                        {"reason": r, "count": c} for r, c in per_reason
+                    ],
+                    "top_offender": top_offender_row[0] if top_offender_row else None,
+                    "top_offender_count": top_offender_row[1] if top_offender_row else 0,
+                    "rate_per_hour": round((total or 0) / 24.0, 2),
+                }
+        except Exception as e:
+            logger.debug(f"fetch_invalid_packet_stats_24h failed: {e}")
+            return {"total_24h": 0, "per_reason": [], "top_offender": None,
+                    "top_offender_count": 0, "rate_per_hour": 0.0}
+
+    def fetch_invalid_packets_by_offender(self, hint: str,
+                                          limit: int = 500) -> list:
+        """Return invalid packets for a specific offender (drill-down view)."""
+        try:
+            limit = max(1, min(int(limit), 2000))
+            with self._connect() as conn:
+                cursor = conn.execute(
+                    "SELECT timestamp, channel, drop_reason, route_type_name, "
+                    "hash_size, hop_count, path_hex, packet_length, rssi, snr "
+                    "FROM invalid_packets WHERE source_pubkey_hint = ? "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (hint, limit),
+                )
+                columns = [d[0] for d in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.debug(f"fetch_invalid_packets_by_offender failed: {e}")
+            return []
+
+    def clear_invalid_packets(self) -> dict:
+        """Admin-only: delete all invalid_packets rows."""
+        try:
+            with self._connect() as conn:
+                before = conn.execute(
+                    "SELECT COUNT(*) FROM invalid_packets"
+                ).fetchone()[0]
+                conn.execute("DELETE FROM invalid_packets")
+                conn.commit()
+                return {"deleted": before or 0, "ok": True}
+        except Exception as e:
+            logger.debug(f"clear_invalid_packets failed: {e}")
+            return {"deleted": 0, "ok": False, "error": str(e)}
 
     def delete_advert(self, advert_id: int) -> bool:
         try:

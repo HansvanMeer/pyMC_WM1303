@@ -78,6 +78,16 @@ DATA_DIR="/var/lib/pymc_repeater"
 # PKTFWD_DIR and HAL_DIR are set after user detection (see below)
 
 # GitHub repositories (unmodified forks)
+#
+# Note: the official upstream of pyMC_core and pyMC_Repeater has moved to the
+# openhop-dev GitHub organization:
+#   - https://github.com/openhop-dev/openhop_core   (was pyMC-dev/pymc-core)
+#   - https://github.com/openhop-dev/openhop_repeater (was pyMC-dev/pymc-repeater)
+#
+# The Hans van Meer forks below remain the WM1303 source of truth: they are
+# kept in sync with the new upstream and apply any WM1303-specific patches
+# before this installer consumes them. See docs/repositories.md for the full
+# upstream/fork relationship.
 HAL_REPO="https://github.com/HansvanMeer/sx1302_hal.git"
 CORE_REPO="https://github.com/HansvanMeer/pyMC_core.git"
 REPEATER_REPO="https://github.com/HansvanMeer/pyMC_Repeater.git"

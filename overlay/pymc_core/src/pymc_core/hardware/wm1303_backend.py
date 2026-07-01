@@ -3592,6 +3592,57 @@ class WM1303Backend:
                     self._hourly_noise_discarded = getattr(self, '_hourly_noise_discarded', 0) + 1
                 return
 
+            # ── Layer 2 — central MeshCore protocol validator (pyMC_WM1303) ──
+            # Drops malformed packets (reserved hash_size=4 spammer, invalid
+            # route_type, truncated, length-implausible, etc.) BEFORE any
+            # consumer (raw_rx_callbacks, rx_callback/Dispatcher, virtual_radios,
+            # MQTT publish). Prevents mc-radar fantom-source accumulation.
+            # Forensics persisted to invalid_packets table via registered cb.
+            # Fire-and-forget: validator error NEVER blocks the RX path
+            # (project design principle: RX availability is #1).
+            #
+            # Channel resolution: match freq+SF against virtual_radios (A-D) and
+            # channel_e cache to record the friendly channel_id (e.g. "channel_a",
+            # "channel_e"). Fallback: "<freq>MHz <datr>" for unmatched noise.
+            _l2_channel = None
+            try:
+                for _l2_cid, _l2_radio in self.virtual_radios.items():
+                    _l2_ccfg = _l2_radio.channel_config
+                    _l2_ch_freq = int(_l2_ccfg.get('frequency', 0))
+                    _l2_ch_sf = int(_l2_ccfg.get('spreading_factor', 0))
+                    if abs(freq_hz - _l2_ch_freq) <= 50000 and (_l2_ch_sf == 0 or rx_sf == _l2_ch_sf):
+                        _l2_channel = _l2_cid
+                        break
+                if _l2_channel is None and hasattr(self, '_load_channel_e_cache'):
+                    _l2_ce_freq = self._load_channel_e_cache()
+                    if _l2_ce_freq and abs(freq_hz - _l2_ce_freq) <= 100000:
+                        _l2_channel = 'channel_e'
+            except Exception:
+                _l2_channel = None
+            if _l2_channel is None:
+                _l2_channel = '%.3fMHz %s' % (float(_rx_freq), datr)
+            try:
+                from repeater.protocol_validator import validate_and_record
+                _l2_rssi = float(_rx_rssi) if isinstance(_rx_rssi, (int, float)) else None
+                _l2_snr = float(_rx_lsnr) if isinstance(_rx_lsnr, (int, float)) else None
+                _l2_result = validate_and_record(
+                    payload,
+                    channel=_l2_channel,
+                    rssi=_l2_rssi,
+                    snr=_l2_snr)
+                if not _l2_result.is_valid:
+                    self._hourly_protocol_violation = getattr(
+                        self, '_hourly_protocol_violation', 0) + 1
+                    logger.warning(
+                        'WM1303Backend: dropping invalid RX (%d bytes, ch=%s, freq=%s) '
+                        '\u2014 protocol violation: %s',
+                        len(payload), _l2_channel, _rx_freq, _l2_result.reason)
+                    return  # block before any downstream consumer
+            except Exception as _l2_err:
+                logger.debug(
+                    'WM1303Backend: protocol_validator skipped (non-fatal): %s',
+                    _l2_err)
+
             # ── Pre-filter raw RX push to companion frame servers ──────────
             # Fire the BridgeEngine's raw RX callbacks BEFORE echo/dedup
             # filtering so companion apps receive ALL RF packets, including

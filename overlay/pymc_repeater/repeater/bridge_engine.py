@@ -1543,6 +1543,28 @@ class BridgeEngine:
             self.emit_received_trace(pkt_hash8, cid, pkt_type_name, len(data), rssi=_rx_rssi, snr=_rx_snr, noise_floor=_rx_nf)
             _trace(_pass_hash8, 'dedup_check', channel=cid, detail='Dedup check passed on %s' % self._dn(cid), status='ok')
 
+            # Layer 2 — central MeshCore protocol validator.
+            # Drops malformed packets (reserved hash_size=4 spammer, invalid
+            # route_type, truncated, length-implausible, etc.) BEFORE they
+            # reach the bridge inject path / MQTT publish.  Forensics are
+            # persisted to the invalid_packets table (Layer 3) automatically.
+            # Fire-and-forget: any validator error is logged but never blocks
+            # the RX path (project design principle: RX availability is #1).
+            try:
+                from repeater.protocol_validator import validate_and_record
+                _vresult = validate_and_record(
+                    data, channel=cid, rssi=_rx_rssi, snr=_rx_snr)
+                if not _vresult.is_valid:
+                    self.dropped_protocol_violation = getattr(
+                        self, 'dropped_protocol_violation', 0) + 1
+                    logger.warning(
+                        'BridgeEngine: dropping RX on %s \u2014 protocol violation: %s',
+                        cid, _vresult.reason)
+                    continue
+            except Exception as _val_err:
+                logger.debug(
+                    'protocol_validator skipped (non-fatal): %s', _val_err)
+
             # Emit `bridge_inject` to match channel_e trace flow (received -> dedup_check -> bridge_inject)
             _trace(pkt_hash8, 'bridge_inject', channel=cid, pkt_type=pkt_type_name, detail='Injected %d bytes from %s' % (len(data), self._dn(cid)))
 
@@ -1658,6 +1680,20 @@ class BridgeEngine:
         logger.info('BridgeEngine: reverse aliases: %s',
                     {k: sorted(v) for k, v in self._reverse_aliases.items()})
 
+    @staticmethod
+    def _json_safe(obj):
+        """Recursively convert bytes/bytearray to hex strings so any structure is
+        JSON-serializable. Reusable safeguard against bytes leaking into API
+        responses (e.g. bridge rules containing sync_word or match patterns).
+        """
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.hex()
+        if isinstance(obj, dict):
+            return {k: BridgeEngine._json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [BridgeEngine._json_safe(v) for v in obj]
+        return obj
+
     def get_stats(self) -> dict:
         return {
             'forwarded_packets': self.forwarded_packets,
@@ -1668,7 +1704,7 @@ class BridgeEngine:
             'dedup_events_buffered': len(self._dedup_events),
             'dedup_seen_active': len(self._seen),
             'channels': [getattr(r, 'channel_id', str(i)) for i, r in enumerate(self.radios)],
-            'rules': self.rules,
+            'rules': self._json_safe(self.rules),
         }
 
     def get_origin_counts(self) -> dict:

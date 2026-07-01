@@ -4240,6 +4240,150 @@ class WM1303API:
             return _j({"error": str(e), "hours": h, "bucket_minutes": 1, "channels": []})
 
 
+    # ─────────────────────────────────────────────────────────────────
+    # Layer 4 \u2014 Invalid Packets API (protocol_validator forensics)
+    # Persisted by repeater.protocol_validator.validate_and_record() into
+    # the invalid_packets table.  See .notes/PROTOCOL_VALIDATOR_DESIGN.md.
+    # ─────────────────────────────────────────────────────────────────
+
+    @cherrypy.expose
+    def invalid_packets_recent(self, limit='200'):
+        """GET /api/wm1303/invalid_packets_recent - Recent invalid packets for UI table."""
+        import sqlite3, json
+        try:
+            lim = max(1, min(int(limit), 2000))
+        except Exception:
+            lim = 200
+        db_path = "/var/lib/pymc_repeater/repeater.db"
+        try:
+            with _db_conn(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT timestamp, channel, drop_reason, route_type, "
+                    "route_type_name, path_len_byte, hash_size, hop_count, "
+                    "path_hex, header_hex, transport_codes_hex, "
+                    "payload_first_16_hex, packet_length, source_pubkey_hint, "
+                    "raw_packet_hex, rssi, snr "
+                    "FROM invalid_packets ORDER BY timestamp DESC LIMIT ?",
+                    (lim,),
+                ).fetchall()
+                cherrypy.response.headers['Content-Type'] = 'application/json'
+                return json.dumps({"packets": [dict(r) for r in rows]}).encode()
+        except Exception as e:
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({"error": str(e), "packets": []}).encode()
+
+    @cherrypy.expose
+    def invalid_packets_offenders(self, limit='50'):
+        """GET /api/wm1303/invalid_packets_offenders - Top offenders aggregated."""
+        import sqlite3, json
+        try:
+            lim = max(1, min(int(limit), 500))
+        except Exception:
+            lim = 50
+        db_path = "/var/lib/pymc_repeater/repeater.db"
+        try:
+            with _db_conn(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT offender, drop_reason, occurrences, first_seen, "
+                    "last_seen, avg_rssi, avg_snr, channels, max_hops "
+                    "FROM invalid_packet_offenders LIMIT ?",
+                    (lim,),
+                ).fetchall()
+                cherrypy.response.headers['Content-Type'] = 'application/json'
+                return json.dumps({"offenders": [dict(r) for r in rows]}).encode()
+        except Exception as e:
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({"error": str(e), "offenders": []}).encode()
+
+    @cherrypy.expose
+    def invalid_packets_stats(self):
+        """GET /api/wm1303/invalid_packets_stats - 24h summary for tiles + histogram."""
+        import sqlite3, json
+        db_path = "/var/lib/pymc_repeater/repeater.db"
+        try:
+            with _db_conn(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cutoff = "strftime('%s','now','-1 day')"
+                total = conn.execute(
+                    f"SELECT COUNT(*) AS c FROM invalid_packets WHERE timestamp >= {cutoff}"
+                ).fetchone()["c"]
+                per_reason = [
+                    {"reason": r["drop_reason"], "count": r["c"]}
+                    for r in conn.execute(
+                        f"SELECT drop_reason, COUNT(*) AS c FROM invalid_packets "
+                        f"WHERE timestamp >= {cutoff} GROUP BY drop_reason ORDER BY c DESC"
+                    ).fetchall()
+                ]
+                top = conn.execute(
+                    f"SELECT source_pubkey_hint AS offender, COUNT(*) AS c FROM invalid_packets "
+                    f"WHERE timestamp >= {cutoff} GROUP BY source_pubkey_hint "
+                    f"ORDER BY c DESC LIMIT 1"
+                ).fetchone()
+                payload = {
+                    "total_24h": total or 0,
+                    "per_reason": per_reason,
+                    "top_offender": (top["offender"] if top else None),
+                    "top_offender_count": (top["c"] if top else 0),
+                    "rate_per_hour": round((total or 0) / 24.0, 2),
+                }
+                cherrypy.response.headers['Content-Type'] = 'application/json'
+                return json.dumps(payload).encode()
+        except Exception as e:
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({
+                "error": str(e), "total_24h": 0, "per_reason": [],
+                "top_offender": None, "top_offender_count": 0,
+                "rate_per_hour": 0.0,
+            }).encode()
+
+    @cherrypy.expose
+    def invalid_packets_by_pubkey(self, hint='', limit='500'):
+        """GET /api/wm1303/invalid_packets_by_pubkey - Drill-down per offender."""
+        import sqlite3, json
+        try:
+            lim = max(1, min(int(limit), 2000))
+        except Exception:
+            lim = 500
+        db_path = "/var/lib/pymc_repeater/repeater.db"
+        try:
+            with _db_conn(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT timestamp, channel, drop_reason, route_type_name, "
+                    "hash_size, hop_count, path_hex, packet_length, rssi, snr "
+                    "FROM invalid_packets WHERE source_pubkey_hint = ? "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (hint, lim),
+                ).fetchall()
+                cherrypy.response.headers['Content-Type'] = 'application/json'
+                return json.dumps({"offender": hint, "packets": [dict(r) for r in rows]}).encode()
+        except Exception as e:
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({"error": str(e), "offender": hint, "packets": []}).encode()
+
+    @cherrypy.expose
+    def invalid_packets_clear(self, confirm=''):
+        """POST/GET /api/wm1303/invalid_packets_clear - Admin: delete all invalid_packets.
+        Requires explicit confirm=yes (minimum guard). TODO: gate behind same
+        auth as other admin APIs once that pattern is consolidated."""
+        import sqlite3, json
+        if str(confirm).lower() not in ('yes', '1', 'true'):
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({"ok": False, "error": "Missing confirm=yes"}).encode()
+        db_path = "/var/lib/pymc_repeater/repeater.db"
+        try:
+            with _db_conn(db_path) as conn:
+                before = conn.execute("SELECT COUNT(*) FROM invalid_packets").fetchone()[0]
+                conn.execute("DELETE FROM invalid_packets")
+                conn.commit()
+                cherrypy.response.headers['Content-Type'] = 'application/json'
+                return json.dumps({"ok": True, "deleted": before or 0}).encode()
+        except Exception as e:
+            cherrypy.response.headers['Content-Type'] = 'application/json'
+            return json.dumps({"ok": False, "error": str(e), "deleted": 0}).encode()
+
     @cherrypy.expose
     def origin_stats(self, hours='192'):
         """GET /api/wm1303/origin_stats - Origin channel activity from origin_channel_stats table."""

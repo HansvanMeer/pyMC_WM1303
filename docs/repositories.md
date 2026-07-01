@@ -6,12 +6,21 @@
 
 The WM1303 system is built from **four repositories**. Three are forks of upstream projects; one (this repo) contains the integration layer.
 
+The official upstream of `pyMC_core` and `pyMC_Repeater` has moved. Previously the canonical sources lived under the `pyMC-dev` GitHub organization; they have since been migrated to:
+
+- **https://github.com/openhop-dev/openhop_core** (was `pyMC-dev/pymc-core`)
+- **https://github.com/openhop-dev/openhop_repeater** (was `pyMC-dev/pymc-repeater`)
+
+The Hans van Meer forks (`HansvanMeer/pyMC_core` and `HansvanMeer/pyMC_Repeater`) remain in place and are kept in sync with the new upstream.
+
 | Repository | Type | Branch | Purpose |
 |-----------|------|--------|---------|
 | [HansvanMeer/pyMC_WM1303](https://github.com/HansvanMeer/pyMC_WM1303) | **This repo** | `main` | Installation, overlays, config, docs, scripts |
 | [HansvanMeer/sx1302_hal](https://github.com/HansvanMeer/sx1302_hal) | Fork | default | SX1302 HAL v2.10 — C library + packet forwarder |
-| [HansvanMeer/pyMC_core](https://github.com/HansvanMeer/pyMC_core) | Fork | `dev` | MeshCore core Python library |
-| [HansvanMeer/pyMC_Repeater](https://github.com/HansvanMeer/pyMC_Repeater) | Fork | `dev` | MeshCore repeater application |
+| [openhop-dev/openhop_core](https://github.com/openhop-dev/openhop_core) | **Upstream (official)** | `main` | MeshCore core Python library |
+| [HansvanMeer/pyMC_core](https://github.com/HansvanMeer/pyMC_core) | Fork (mirrors upstream) | `dev` | WM1303-tuned fork of openhop_core |
+| [openhop-dev/openhop_repeater](https://github.com/openhop-dev/openhop_repeater) | **Upstream (official)** | `main` | MeshCore repeater application |
+| [HansvanMeer/pyMC_Repeater](https://github.com/HansvanMeer/pyMC_Repeater) | Fork (mirrors upstream) | `dev` | WM1303-tuned fork of openhop_repeater |
 
 ### Important Rule
 

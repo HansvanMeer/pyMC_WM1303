@@ -17,8 +17,8 @@ The software is built from upstream repositories with overlay files applied duri
 | Repository | Branch | Role |
 |-----------|--------|------|
 | `HansvanMeer/sx1302_hal` | HAL v2.10 | Concentrator HAL + packet forwarder |
-| `HansvanMeer/pyMC_core` | `dev` | MeshCore core library |
-| `HansvanMeer/pyMC_Repeater` | `dev` | Repeater application |
+| `openhop-dev/openhop_core` (upstream) / `HansvanMeer/pyMC_core` (fork) | `main` / `dev` | MeshCore core library |
+| `openhop-dev/openhop_repeater` (upstream) / `HansvanMeer/pyMC_Repeater` (fork) | `main` / `dev` | Repeater application |
 | `HansvanMeer/pyMC_WM1303` | `main` | Overlays, scripts, config, docs |
 
 Overlay files replace or extend specific source files in the upstream repos without modifying the forks directly. See [`repositories.md`](./repositories.md).

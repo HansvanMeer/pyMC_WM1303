@@ -31,3 +31,10 @@ Thumbs.db
 *.promptinclude.md
 upgrade_bootstrap.sh
 node_modules/
+
+# Internal working notes / handovers (never publish - may contain infra/dev context)
+.notes/
+_*HANDOVER*.md
+_issues_review*.md
+_BACKEND_HANDOVER.md
+github_comment_*.md

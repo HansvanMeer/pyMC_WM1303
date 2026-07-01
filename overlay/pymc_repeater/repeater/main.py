@@ -51,6 +51,21 @@ except Exception:
     _UNIFORM_TRACER_AVAILABLE = False
 
 
+def json_safe(obj):
+    """Recursively convert bytes/bytearray to hex strings so any structure is
+    JSON-serializable. Applied at the get_stats() exit so no bytes field from
+    any source (repeater handler, bridge, gps, etc.) can break /api/stats.
+    Reusable safeguard against bytes leaking into API responses.
+    """
+    if isinstance(obj, (bytes, bytearray)):
+        return obj.hex()
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    return obj
+
+
 # Register packet-trace callbacks with pymc_core modules so they can emit
 # TX-phase trace events without importing repeater.web (layering boundary).
 try:
@@ -1514,7 +1529,9 @@ class RepeaterDaemon:
             stats["gps"] = self.gps_service.get_summary()
 
 
-        return stats
+        # Sanitize the full stats dict at the exit point so no bytes field from
+        # any source (repeater handler, bridge, gps, etc.) can break /api/stats.
+        return json_safe(stats)
 
     async def _get_companion_stats(self, stats_type: int) -> dict:
         """Return stats dict for companion CMD_GET_STATS (format expected by frame_server + meshcore_py)."""
