@@ -19,7 +19,7 @@
 #   1. Installs git + jq (if not present)
 #   2. Clones or updates the pyMC_WM1303 repository
 #   3. On NEW install only: runs an interactive wizard to choose region + preset
-#      and writes /etc/pymc_repeater/wm1303_ui.json with those defaults.
+#      and writes /etc/openhop_repeater/wm1303_ui.json with those defaults.
 #   4. Detects existing installation:
 #      - New install: runs install.sh
 #      - Existing install: runs upgrade.sh (wizard is SKIPPED to preserve config)
@@ -29,7 +29,7 @@ set -e
 
 REPO_URL="https://github.com/HansvanMeer/pyMC_WM1303.git"
 BOOTSTRAP_RAW_URL="https://raw.githubusercontent.com/HansvanMeer/pyMC_WM1303/main/bootstrap.sh"
-CONFIG_DIR="/etc/pymc_repeater"
+CONFIG_DIR="/etc/openhop_repeater"
 UI_JSON="${CONFIG_DIR}/wm1303_ui.json"
 
 # ---------------------------------------------------------------------------
@@ -182,7 +182,9 @@ cd "${INSTALL_DIR}"
 # Detect existing installation up-front (we need this for wizard skip logic)
 # ---------------------------------------------------------------------------
 IS_UPGRADE=0
-if [ -d "/opt/pymc_repeater" ] && systemctl is-enabled pymc-repeater &>/dev/null; then
+# Detect an existing install via either the new openhop-repeater unit or the
+# legacy pymc-repeater unit (pre-openhop migration).
+if [ -d "/opt/pymc_repeater" ] && { systemctl is-enabled openhop-repeater &>/dev/null || systemctl is-enabled pymc-repeater &>/dev/null; }; then
     IS_UPGRADE=1
 fi
 
@@ -338,7 +340,7 @@ run_wizard() {
     write_wizard_config
 }
 
-# Write wizard output to /etc/pymc_repeater/wm1303_ui.json.
+# Write wizard output to /etc/openhop_repeater/wm1303_ui.json.
 # Presets v3 contain only region + rf_center_freq_mhz (no channel configs).
 # All channels start disabled — the user configures them via the UI after
 # installation. The template wm1303_ui.json provides the skeleton with

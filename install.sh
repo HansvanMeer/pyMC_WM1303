@@ -72,9 +72,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_BASE="/opt/pymc_repeater"
 REPO_DIR="${INSTALL_BASE}/repos"
 VENV_DIR="${INSTALL_BASE}/venv"
-CONFIG_DIR="/etc/pymc_repeater"
-LOG_DIR="/var/log/pymc_repeater"
-DATA_DIR="/var/lib/pymc_repeater"
+CONFIG_DIR="/etc/openhop_repeater"
+LOG_DIR="/var/log/openhop_repeater"
+DATA_DIR="/var/lib/openhop_repeater"
 # PKTFWD_DIR and HAL_DIR are set after user detection (see below)
 
 # GitHub repositories (unmodified forks)
@@ -94,8 +94,8 @@ REPEATER_REPO="https://github.com/HansvanMeer/pyMC_Repeater.git"
 
 # Branch configuration
 HAL_BRANCH="master"
-CORE_BRANCH="main"
-REPEATER_BRANCH="main"
+CORE_BRANCH="dev"
+REPEATER_BRANCH="dev"
 
 # Parse arguments
 SKIP_UPDATE=false
@@ -609,6 +609,19 @@ phase "Directory Structure Creation"
 step "Creating installation directories"
 mkdir -p "${INSTALL_BASE}"
 mkdir -p "${REPO_DIR}"
+# --- OpenHop config migration -------------------------------------------------
+# Legacy config dir /etc/pymc_repeater is superseded by /etc/openhop_repeater.
+# On a device that still has the old dir, copy its contents (preserving the JWT
+# identity in config.yaml, the version file and wm1303_ui.json) into the new
+# location WITHOUT overwriting anything already present. The old dir is left in
+# place so a rollback remains possible.
+LEGACY_CONFIG_DIR="/etc/pymc_repeater"
+if [ -d "${LEGACY_CONFIG_DIR}" ] && [ "${LEGACY_CONFIG_DIR}" != "${CONFIG_DIR}" ]; then
+    mkdir -p "${CONFIG_DIR}"
+    # -a preserves perms/ownership/timestamps; -n never overwrites existing files
+    cp -an "${LEGACY_CONFIG_DIR}/." "${CONFIG_DIR}/" >> "${LOG_FILE}" 2>&1 || true
+    ok "Migrated legacy config ${LEGACY_CONFIG_DIR} -> ${CONFIG_DIR} (JWT/version/wm1303_ui.json preserved)"
+fi
 mkdir -p "${CONFIG_DIR}"
 mkdir -p "${PKTFWD_DIR}"
 mkdir -p "${LOG_DIR}"
@@ -718,17 +731,17 @@ cp "${OVERLAY_DIR}/hal/packet_forwarder/Makefile"      "${HAL_DIR}/packet_forwar
 ok "HAL overlay applied"
 
 step "Applying pyMC_core overlay"
-CORE_HW_DIR="${REPO_DIR}/pyMC_core/src/pymc_core/hardware"
+CORE_HW_DIR="${REPO_DIR}/pyMC_core/src/openhop_core/hardware"
 for f in __init__.py wm1303_backend.py sx1302_hal.py tx_queue.py sx1261_driver.py signal_utils.py virtual_radio.py region_config.py; do
-    if [ -f "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" ]; then
-        cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/${f}" "${CORE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
+    if [ -f "${OVERLAY_DIR}/pymc_core/src/openhop_core/hardware/${f}" ]; then
+        cp "${OVERLAY_DIR}/pymc_core/src/openhop_core/hardware/${f}" "${CORE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
 done
 # companion/ overlay files (Contact model with RSSI/SNR support)
-CORE_COMPANION_DIR="${REPO_DIR}/pyMC_core/src/pymc_core/companion"
+CORE_COMPANION_DIR="${REPO_DIR}/pyMC_core/src/openhop_core/companion"
 for f in models.py contact_store.py; do
-    if [ -f "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/${f}" ]; then
-        cp "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/${f}" "${CORE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
+    if [ -f "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion/${f}" ]; then
+        cp "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion/${f}" "${CORE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
 done
 ok "pyMC_core overlay applied"
@@ -948,16 +961,16 @@ ok "Done"
 # overlay changes to e.g. hardware/__init__.py are invisible. The blocks below
 # detect this case via the import path and rsync the full overlay tree on top.
 step "Verifying pyMC_core overlay is accessible"
-PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import pymc_core.hardware; print(pymc_core.hardware.__file__)" 2>/dev/null || echo "")
+PYMC_CORE_IMPORT_PATH=$(sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c "import openhop_core.hardware; print(openhop_core.hardware.__file__)" 2>/dev/null || echo "")
 if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
     SITE_HW_DIR=$(dirname "$PYMC_CORE_IMPORT_PATH")
     # Recursive rsync so sub-directories and non-.py files (e.g. __init__.py
     # with the WM1303Backend conditional import block) are always included.
-    rsync -a "${OVERLAY_DIR}/pymc_core/src/pymc_core/hardware/" "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
+    rsync -a "${OVERLAY_DIR}/pymc_core/src/openhop_core/hardware/" "${SITE_HW_DIR}/" >> "${LOG_FILE}" 2>&1
     # Also re-apply companion overlay to site-packages
     SITE_COMPANION_DIR=$(dirname "$SITE_HW_DIR")/companion
-    if [ -d "${SITE_COMPANION_DIR}" ] && [ -d "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion" ]; then
-        rsync -a "${OVERLAY_DIR}/pymc_core/src/pymc_core/companion/" "${SITE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
+    if [ -d "${SITE_COMPANION_DIR}" ] && [ -d "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion" ]; then
+        rsync -a "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion/" "${SITE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
     chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
     chown -R ${PI_USER}:${PI_USER} "${SITE_COMPANION_DIR}" 2>/dev/null || true
@@ -969,7 +982,7 @@ fi
 # Sanity check: WM1303Backend must be importable after re-apply, otherwise
 # bridge/scheduler init will run in degraded mode at service start.
 step "Verifying WM1303Backend import"
-if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c 'from pymc_core.hardware import WM1303Backend; assert WM1303Backend is not None' >> "${LOG_FILE}" 2>&1; then
+if sudo -u ${PI_USER} "${VENV_DIR}/bin/python3" -c 'from openhop_core.hardware import WM1303Backend; assert WM1303Backend is not None' >> "${LOG_FILE}" 2>&1; then
     ok "WM1303Backend importable"
 else
     warn "WM1303Backend import failed — bridge/scheduler may run in degraded mode (check ${LOG_FILE})"
@@ -1336,15 +1349,22 @@ ok "Generated"
 # =============================================================================
 phase "Install Systemd Service"
 
-step "Stopping existing service (if running)"
+step "Stopping existing service(s) (if running)"
+# Legacy pymc-repeater.service is superseded by openhop-repeater.service. Stop
+# and disable the old unit so both cannot run/enable simultaneously.
 systemctl stop pymc-repeater.service 2>/dev/null || true
+systemctl stop openhop-repeater.service 2>/dev/null || true
+if systemctl list-unit-files 2>/dev/null | grep -q '^pymc-repeater.service'; then
+    systemctl disable pymc-repeater.service >> "${LOG_FILE}" 2>&1 || true
+    rm -f /etc/systemd/system/pymc-repeater.service 2>/dev/null || true
+fi
 ok "Done"
 
 step "Installing systemd service file"
-cp "${SCRIPT_DIR}/config/pymc-repeater.service" /etc/systemd/system/pymc-repeater.service >> "${LOG_FILE}" 2>&1
+cp "${SCRIPT_DIR}/config/openhop-repeater.service" /etc/systemd/system/openhop-repeater.service >> "${LOG_FILE}" 2>&1
 # Replace placeholders with detected user
-sed -i "s|__PI_USER__|${PI_USER}|g" /etc/systemd/system/pymc-repeater.service
-sed -i "s|__PI_HOME__|${PI_HOME}|g" /etc/systemd/system/pymc-repeater.service
+sed -i "s|__PI_USER__|${PI_USER}|g" /etc/systemd/system/openhop-repeater.service
+sed -i "s|__PI_HOME__|${PI_HOME}|g" /etc/systemd/system/openhop-repeater.service
 ok "Installed (user: ${PI_USER})"
 
 step "Reloading systemd daemon"
@@ -1352,7 +1372,7 @@ systemctl daemon-reload >> "${LOG_FILE}" 2>&1
 ok "Reloaded"
 
 step "Enabling service for auto-start"
-systemctl enable pymc-repeater.service >> "${LOG_FILE}" 2>&1
+systemctl enable openhop-repeater.service >> "${LOG_FILE}" 2>&1
 ok "Enabled"
 
 # =============================================================================
@@ -1438,8 +1458,10 @@ phase "Low-Memory Device Maintenance"
 
 step "Configuring weekly maintenance reboot (low-memory devices)"
 MEM_TOTAL_MB=$(free -m | awk '/^Mem:/ {print $2}')
-REBOOT_CRON_FILE="/etc/cron.d/pymc-repeater-weekly-reboot"
-NO_REBOOT_MARKER="/etc/pymc_repeater/no-auto-reboot"
+REBOOT_CRON_FILE="/etc/cron.d/openhop-repeater-weekly-reboot"
+NO_REBOOT_MARKER="${CONFIG_DIR}/no-auto-reboot"
+# Remove legacy cron file from the pre-openhop naming, if present.
+rm -f /etc/cron.d/pymc-repeater-weekly-reboot 2>/dev/null || true
 
 if [ -f "${NO_REBOOT_MARKER}" ]; then
     ok "Opt-out marker present (${NO_REBOOT_MARKER}); skipping auto-reboot cron"
@@ -1450,14 +1472,14 @@ elif [ "${MEM_TOTAL_MB}" -lt 700 ]; then
 # Rationale: clears kernel Slab caches and Python heap fragmentation that
 # accumulate over days of uptime, keeping memory usage stable on 512 MB Pis.
 #
-# To disable one-off:  sudo rm /etc/cron.d/pymc-repeater-weekly-reboot
+# To disable one-off:  sudo rm /etc/cron.d/openhop-repeater-weekly-reboot
 # To prevent re-install on next upgrade:
-#   sudo touch /etc/pymc_repeater/no-auto-reboot
+#   sudo touch /etc/openhop_repeater/no-auto-reboot
 
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-0 4 * * 0 root logger -t pymc-repeater "Weekly maintenance reboot" && /sbin/reboot
+0 4 * * 0 root logger -t openhop-repeater "Weekly maintenance reboot" && /sbin/reboot
 CRON_EOF
     chmod 0644 "${REBOOT_CRON_FILE}"
     ok "Detected ${MEM_TOTAL_MB} MB RAM; installed ${REBOOT_CRON_FILE} (Sun 04:00)"
@@ -1483,17 +1505,17 @@ else
     sudo "${PKTFWD_DIR}/reset_lgw.sh" deep_reset 60 >> "${LOG_FILE}" 2>&1
     ok "Hardware drain reset complete"
 
-    step "Starting pymc-repeater service"
-    systemctl start pymc-repeater.service >> "${LOG_FILE}" 2>&1
+    step "Starting openhop-repeater service"
+    systemctl start openhop-repeater.service >> "${LOG_FILE}" 2>&1
     sleep 5
     ok "Started"
 
     step "Checking service status"
-    if systemctl is-active --quiet pymc-repeater.service; then
-        ok "pymc-repeater service is RUNNING"
+    if systemctl is-active --quiet openhop-repeater.service; then
+        ok "openhop-repeater service is RUNNING"
     else
         warn "Service may not have started correctly"
-        info "Check logs: journalctl -u pymc-repeater -f"
+        info "Check logs: journalctl -u openhop-repeater -f"
     fi
 
     step "Checking web interface availability"
@@ -1542,7 +1564,7 @@ else
         echo ""
         echo -e "  The service is installed and will start automatically on boot."
         echo -e "  You can restart it after adjusting settings:"
-        echo -e "  ${CYAN}sudo systemctl restart pymc-repeater${NC}"
+        echo -e "  ${CYAN}sudo systemctl restart openhop-repeater${NC}"
         echo ""
     fi
 fi
@@ -1559,8 +1581,8 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 echo -e "  ${BOLD}Quick Reference:${NC}"
 echo -e "  ─────────────────────────────────────────────────────────"
-echo -e "  Service control:  ${CYAN}sudo systemctl {start|stop|restart} pymc-repeater${NC}"
-echo -e "  Service logs:     ${CYAN}journalctl -u pymc-repeater -f${NC}"
+echo -e "  Service control:  ${CYAN}sudo systemctl {start|stop|restart} openhop-repeater${NC}"
+echo -e "  Service logs:     ${CYAN}journalctl -u openhop-repeater -f${NC}"
 echo -e "  Web interface:    ${CYAN}http://<this-pi-ip>:8000/wm1303.html${NC}"
 echo -e "  Repeater UI:      ${CYAN}http://<this-pi-ip>:8000/${NC}"
 echo -e "  Full log:         ${CYAN}${LOG_FILE}${NC}"

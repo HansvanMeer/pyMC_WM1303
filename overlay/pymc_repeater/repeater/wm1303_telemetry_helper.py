@@ -28,14 +28,14 @@ Owner info layout (appended after upstream version/name/owner):
 - wm1303_eui=<8-byte hex EUI>      (when /tmp/concentrator_eui is present)
 
 This module is part of the pyMC_WM1303 overlay and does NOT modify
-upstream pymc_repeater or pymc_core code.
+upstream pymc_repeater or openhop_core code.
 """
 
 import logging
 import struct
 import time
 
-from pymc_core.node.handlers.protocol_request import (
+from openhop_core.node.handlers.protocol_request import (
     REQ_TYPE_GET_ACCESS_LIST,
     REQ_TYPE_GET_NEIGHBOURS,
     REQ_TYPE_GET_OWNER_INFO,
@@ -46,19 +46,19 @@ from pymc_core.node.handlers.protocol_request import (
 from repeater.handler_helpers.protocol_request import ProtocolRequestHelper
 
 # === WM1303 OVERLAY: Firmware version capability patch ===
-# Upstream pymc_core sets FIRMWARE_VER_LEVEL = 1 in login_server, which the
+# Upstream openhop_core sets FIRMWARE_VER_LEVEL = 1 in login_server, which the
 # MeshCore companion treats as 'too old to support owner_info / telemetry'.
 # We override it to 11 (matches FIRMWARE_VER_CODE used by companion side) so
 # the companion app enables the Owner Info button and sends REQ_TYPE 0x07.
 # This patch happens at module import time, before LoginHelper builds any
 # login response packets.
-import pymc_core.node.handlers.login_server as _login_server_module
+import openhop_core.node.handlers.login_server as _login_server_module
 _login_server_module.FIRMWARE_VER_LEVEL = 11
 # =========================================================
 
 logger = logging.getLogger("WM1303TelemetryHelper")
 logger.info(
-    "WM1303: Patched pymc_core FIRMWARE_VER_LEVEL = %d "
+    "WM1303: Patched openhop_core FIRMWARE_VER_LEVEL = %d "
     "(claims owner_info + telemetry support in companion)",
     _login_server_module.FIRMWARE_VER_LEVEL,
 )

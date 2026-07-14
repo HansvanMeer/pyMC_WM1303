@@ -24,7 +24,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger("TXQueue")
 
 # ---------------------------------------------------------------------------
-# Packet-trace callback hook (layering: pymc_core must NOT import
+# Packet-trace callback hook (layering: openhop_core must NOT import
 # pymc_repeater.web.packet_trace directly). The repeater registers a callback
 # at startup via set_trace_callback(). Safe no-op when unset.
 # ---------------------------------------------------------------------------

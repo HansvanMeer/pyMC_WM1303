@@ -13,7 +13,7 @@ from collections import OrderedDict, deque
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-from pymc_core.node.handlers.advert import AdvertHandler
+from openhop_core.node.handlers.advert import AdvertHandler
 
 logger = logging.getLogger("AdvertHelper")
 
@@ -596,7 +596,7 @@ class AdvertHelper:
                     return
 
             # Get route type from packet header
-            from pymc_core.protocol.constants import PH_ROUTE_MASK
+            from openhop_core.protocol.constants import PH_ROUTE_MASK
 
             route_type = packet.header & PH_ROUTE_MASK
 

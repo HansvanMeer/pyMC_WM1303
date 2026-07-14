@@ -152,15 +152,15 @@ import math
 from pathlib import Path
 from typing import Any
 
-from pymc_core.hardware.tx_queue import ChannelTXQueue, TXQueueManager, GlobalTXScheduler, MAX_CHANNELS
+from openhop_core.hardware.tx_queue import ChannelTXQueue, TXQueueManager, GlobalTXScheduler, MAX_CHANNELS
 
 logger = logging.getLogger('WM1303Backend')
 
 # ---------------------------------------------------------------------------
-# Packet-trace callback hook (layering: pymc_core must NOT import
+# Packet-trace callback hook (layering: openhop_core must NOT import
 # pymc_repeater.web.packet_trace directly). The repeater registers a callback
 # at startup via set_trace_callback(). When no callback is registered (e.g.
-# standalone pymc_core use), _trace() is a safe no-op.
+# standalone openhop_core use), _trace() is a safe no-op.
 #
 # Empirical HAL-internal latencies used to backdate TX-phase trace events
 # relative to the post-TX TX_ACK arrival moment. Values are typical for the

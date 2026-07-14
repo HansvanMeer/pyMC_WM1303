@@ -850,7 +850,7 @@ def _do_install() -> None:
 
         # Clean up system-level packages to avoid shadowing
         _run(["python3", "-m", "pip", "uninstall", "-y", "pymc_repeater"], env=env)
-        _run(["python3", "-m", "pip", "uninstall", "-y", "pymc_core"], env=env)
+        _run(["python3", "-m", "pip", "uninstall", "-y", "openhop_core"], env=env)
 
         # Remove stale source tree that could shadow the venv package
         stale_src = "/opt/pymc_repeater/repeater"

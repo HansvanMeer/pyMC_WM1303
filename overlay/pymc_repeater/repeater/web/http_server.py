@@ -10,7 +10,7 @@ from typing import Callable, Optional
 
 import cherrypy
 import cherrypy_cors
-from pymc_core.protocol.utils import PAYLOAD_TYPES, ROUTE_TYPES
+from openhop_core.protocol.utils import PAYLOAD_TYPES, ROUTE_TYPES
 
 from repeater import __version__
 from repeater.data_acquisition import SQLiteHandler

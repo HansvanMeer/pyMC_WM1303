@@ -1,7 +1,7 @@
 """
 Hardware abstraction layer for PyMC_Core
 
-This overlay extends upstream pymc_core hardware exports with WM1303-specific
+This overlay extends upstream openhop_core hardware exports with WM1303-specific
 backends while preserving upstream USB/TCP LoRa radio support.
 """
 

@@ -1,8 +1,8 @@
-#Systemd service file for pyMC - Meshcore Repeater Daemon (clean install)
-#Install as /etc/systemd/system/pymc-repeater.service
+#Systemd service file for OpenHop - Meshcore Repeater Daemon (clean install)
+#Install as /etc/systemd/system/openhop-repeater.service
 
 [Unit]
-Description=pyMC Repeater Daemon
+Description=OpenHop Repeater Daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -20,7 +20,7 @@ ExecStartPre=+/bin/bash /opt/pymc_repeater/spi_optimize.sh
 # Stop any standalone lora_pkt_fwd service (may not exist; suppress errors)
 ExecStartPre=-/bin/bash -c '/usr/bin/sudo /bin/systemctl stop lora_pkt_fwd.service 2>/dev/null || true'
 ExecStartPre=/bin/bash -c 'for f in /tmp/pymc_spectral_results.json /tmp/pymc_wm1303_bridge_conf.json /tmp/pymc_cad_config.json; do touch "$f" && chown __PI_USER__:__PI_USER__ "$f" && chmod 664 "$f"; done 2>/dev/null || true'
-ExecStart=/opt/pymc_repeater/venv/bin/python3 -m repeater.main --config /etc/pymc_repeater/config.yaml
+ExecStart=/opt/pymc_repeater/venv/bin/python3 -m repeater.main --config /etc/openhop_repeater/config.yaml
 
 # Service-level hardware watchdog (Type=notify):
 # The backend sends sd_notify READY=1 once the RX watchdog thread is up, and
@@ -42,10 +42,10 @@ MemoryHigh=256M
 # Logging
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=pymc-repeater
+SyslogIdentifier=openhop-repeater
 
 # Security (relaxed for proper operation)
-ReadWritePaths=/var/log/pymc_repeater /var/lib/pymc_repeater /etc/pymc_repeater __PI_HOME__ /tmp
+ReadWritePaths=/var/log/openhop_repeater /var/lib/openhop_repeater /etc/openhop_repeater __PI_HOME__ /tmp
 
 [Install]
 WantedBy=multi-user.target

@@ -7,9 +7,9 @@ import time
 from collections import OrderedDict, deque
 from typing import Optional, Tuple
 
-from pymc_core.node.handlers.base import BaseHandler
-from pymc_core.protocol import Packet
-from pymc_core.protocol.constants import (
+from openhop_core.node.handlers.base import BaseHandler
+from openhop_core.protocol import Packet
+from openhop_core.protocol.constants import (
     MAX_PATH_SIZE,
     PAYLOAD_TYPE_ADVERT,
     PAYLOAD_TYPE_ANON_REQ,
@@ -22,7 +22,7 @@ from pymc_core.protocol.constants import (
     ROUTE_TYPE_TRANSPORT_DIRECT,
     ROUTE_TYPE_TRANSPORT_FLOOD,
 )
-from pymc_core.protocol.packet_utils import PacketHeaderUtils, PacketTimingUtils, PathUtils
+from openhop_core.protocol.packet_utils import PacketHeaderUtils, PacketTimingUtils, PathUtils
 
 from repeater.airtime import AirtimeManager
 from repeater.data_acquisition import StorageCollector
@@ -768,7 +768,7 @@ class RepeaterHandler(BaseHandler):
             return False, "No storage available for transport key validation"
 
         try:
-            from pymc_core.protocol.transport_keys import calc_transport_code
+            from openhop_core.protocol.transport_keys import calc_transport_code
 
             # Check cache validity
             current_time = time.time()

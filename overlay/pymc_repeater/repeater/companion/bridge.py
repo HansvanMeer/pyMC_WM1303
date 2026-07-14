@@ -13,7 +13,7 @@ import logging
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from pymc_core.companion import CompanionBridge
+from openhop_core.companion import CompanionBridge
 
 logger = logging.getLogger("RepeaterCompanionBridge")
 

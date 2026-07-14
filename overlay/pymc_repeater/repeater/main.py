@@ -66,12 +66,12 @@ def json_safe(obj):
     return obj
 
 
-# Register packet-trace callbacks with pymc_core modules so they can emit
+# Register packet-trace callbacks with openhop_core modules so they can emit
 # TX-phase trace events without importing repeater.web (layering boundary).
 try:
     from repeater.web.packet_trace import trace_event as _trace_event_fn
-    from pymc_core.hardware import wm1303_backend as _wm1303_backend_mod
-    from pymc_core.hardware import tx_queue as _tx_queue_mod
+    from openhop_core.hardware import wm1303_backend as _wm1303_backend_mod
+    from openhop_core.hardware import tx_queue as _tx_queue_mod
     if hasattr(_wm1303_backend_mod, 'set_trace_callback'):
         _wm1303_backend_mod.set_trace_callback(_trace_event_fn)
     if hasattr(_tx_queue_mod, 'set_trace_callback'):
@@ -212,8 +212,8 @@ class RepeaterDaemon:
                 raise RuntimeError("Repeater requires real LoRa hardware") from e
 
         try:
-            from pymc_core import LocalIdentity
-            from pymc_core.node.dispatcher import Dispatcher
+            from openhop_core import LocalIdentity
+            from openhop_core.node.dispatcher import Dispatcher
 
             self.dispatcher = Dispatcher(self.radio)
             logger.info("Dispatcher initialized")
@@ -473,7 +473,7 @@ class RepeaterDaemon:
             raise
 
     async def _load_additional_identities(self):
-        from pymc_core import LocalIdentity
+        from openhop_core import LocalIdentity
 
         identities_config = self.config.get("identities", {})
 
@@ -535,8 +535,8 @@ class RepeaterDaemon:
 
     async def _load_companion_identities(self) -> None:
         """Load companion identities from config and create CompanionBridge + frame server for each."""
-        from pymc_core import LocalIdentity
-        from pymc_core.companion.models import Channel, Contact
+        from openhop_core import LocalIdentity
+        from openhop_core.companion.models import Channel, Contact
 
         from repeater.companion import CompanionFrameServer, RepeaterCompanionBridge
 
@@ -659,7 +659,7 @@ class RepeaterDaemon:
 
                     # Preload queued messages from SQLite into bridge
                     for msg_dict in sqlite_handler.companion_load_messages(companion_hash_str):
-                        from pymc_core.companion.models import QueuedMessage
+                        from openhop_core.companion.models import QueuedMessage
 
                         sk = msg_dict.get("sender_key", b"")
                         if isinstance(sk, str):
@@ -721,8 +721,8 @@ class RepeaterDaemon:
         Creates RepeaterCompanionBridge, CompanionFrameServer, starts the server,
         and registers with identity_manager. Raises on error.
         """
-        from pymc_core import LocalIdentity
-        from pymc_core.companion.models import Channel
+        from openhop_core import LocalIdentity
+        from openhop_core.companion.models import Channel
 
         from repeater.companion import CompanionFrameServer, RepeaterCompanionBridge
         from repeater.companion.constants import DEFAULT_PUBLIC_CHANNEL_SECRET
@@ -815,7 +815,7 @@ class RepeaterDaemon:
                 bridge.channels.set(row.get("channel_idx", 0), ch)
 
             for msg_dict in sqlite_handler.companion_load_messages(companion_hash_str):
-                from pymc_core.companion.models import QueuedMessage
+                from openhop_core.companion.models import QueuedMessage
 
                 sk = msg_dict.get("sender_key", b"")
                 if isinstance(sk, str):
@@ -1173,12 +1173,12 @@ class RepeaterDaemon:
         passes.  Calling mark_seen early causes ALL packets to be silently
         dropped as duplicates.
         """
-        from pymc_core.protocol.packet import Packet
-        from pymc_core.node.handlers.advert import AdvertHandler
-        from pymc_core.node.handlers.trace import TraceHandler
-        from pymc_core.node.handlers.login_server import LoginServerHandler
-        from pymc_core.node.handlers.text import TextMessageHandler
-        from pymc_core.node.handlers.protocol_request import ProtocolRequestHandler
+        from openhop_core.protocol.packet import Packet
+        from openhop_core.node.handlers.advert import AdvertHandler
+        from openhop_core.node.handlers.trace import TraceHandler
+        from openhop_core.node.handlers.login_server import LoginServerHandler
+        from openhop_core.node.handlers.text import TextMessageHandler
+        from openhop_core.node.handlers.protocol_request import ProtocolRequestHandler
 
         # Parse raw bytes into Packet object
         pkt = Packet()
@@ -1363,7 +1363,7 @@ class RepeaterDaemon:
 
     def _init_wm1303_bridge(self):
         """Initialize the WM1303 bridge engine with dual-channel radios."""
-        from pymc_core.hardware import WM1303Backend
+        from openhop_core.hardware import WM1303Backend
 
         cfg_bridge = self.config.get("bridge", {})
 
@@ -1598,8 +1598,8 @@ class RepeaterDaemon:
             return False
 
         try:
-            from pymc_core.protocol import PacketBuilder
-            from pymc_core.protocol.constants import ADVERT_FLAG_HAS_NAME, ADVERT_FLAG_IS_REPEATER
+            from openhop_core.protocol import PacketBuilder
+            from openhop_core.protocol.constants import ADVERT_FLAG_HAS_NAME, ADVERT_FLAG_IS_REPEATER
 
             # Get node name and location from config
             repeater_config = self.config.get("repeater", {})
@@ -1819,7 +1819,7 @@ class RepeaterDaemon:
         # Release CH341 USB device if in use
         try:
             if self.config.get("radio_type", "sx1262").lower() == "sx1262_ch341":
-                from pymc_core.hardware.ch341.ch341_async import CH341Async
+                from openhop_core.hardware.ch341.ch341_async import CH341Async
 
                 CH341Async.reset_instance()
         except Exception as e:
@@ -1873,7 +1873,7 @@ class RepeaterDaemon:
 
             # --- WM1303 TX Queue Scheduler (CRITICAL for TX) ---
             try:
-                from pymc_core.hardware import WM1303Backend as _WM1303BE
+                from openhop_core.hardware import WM1303Backend as _WM1303BE
                 if hasattr(self, "radio") and isinstance(self.radio, _WM1303BE):
                     # Fix virtual radio event loops (they need the async loop)
                     _loop = asyncio.get_running_loop()

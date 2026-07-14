@@ -439,7 +439,7 @@ class DebugCollector:
         info.append("=== Python Version ===")
         info.append(self._run_cmd("python3 --version"))
 
-        info.append("=== pymc_core Package ===")
+        info.append("=== openhop_core Package ===")
         info.append(self._run_cmd("pip3 show pymc-core 2>/dev/null || echo 'not installed'"))
 
         info.append("=== pymc_repeater Package ===")
@@ -698,20 +698,20 @@ class DebugCollector:
 
         # Python overlay files
         site_pkg_base = self._run_cmd(
-            "python3 -c 'import pymc_core; import os; print(os.path.dirname(os.path.dirname(pymc_core.__file__)))' 2>/dev/null"
+            "python3 -c 'import openhop_core; import os; print(os.path.dirname(os.path.dirname(openhop_core.__file__)))' 2>/dev/null"
         ).strip()
 
         if site_pkg_base:
             python_files = [
-                f"{site_pkg_base}/pymc_core/hardware/__init__.py",
-                f"{site_pkg_base}/pymc_core/hardware/signal_utils.py",
-                f"{site_pkg_base}/pymc_core/hardware/sx1261_driver.py",
-                f"{site_pkg_base}/pymc_core/hardware/sx1302_hal.py",
-                f"{site_pkg_base}/pymc_core/hardware/tx_queue.py",
-                f"{site_pkg_base}/pymc_core/hardware/virtual_radio.py",
-                f"{site_pkg_base}/pymc_core/hardware/wm1303_backend.py",
+                f"{site_pkg_base}/openhop_core/hardware/__init__.py",
+                f"{site_pkg_base}/openhop_core/hardware/signal_utils.py",
+                f"{site_pkg_base}/openhop_core/hardware/sx1261_driver.py",
+                f"{site_pkg_base}/openhop_core/hardware/sx1302_hal.py",
+                f"{site_pkg_base}/openhop_core/hardware/tx_queue.py",
+                f"{site_pkg_base}/openhop_core/hardware/virtual_radio.py",
+                f"{site_pkg_base}/openhop_core/hardware/wm1303_backend.py",
                 # WM1303 v2.4.10+ overlay
-                f"{site_pkg_base}/pymc_core/hardware/region_config.py",
+                f"{site_pkg_base}/openhop_core/hardware/region_config.py",
             ]
             check_files.extend(python_files)
 
@@ -1241,7 +1241,7 @@ class DebugCollector:
 
         # setuptools-scm calculated versions (different from git describe)
         out.append("\n--- Installed Python package versions (setuptools-scm) ---")
-        for pkg in ["pymc_core", "pymc_repeater"]:
+        for pkg in ["openhop_core", "pymc_repeater"]:
             try:
                 r = _sp.run(["python3", "-c",
                              f"import importlib.metadata as m; print(m.version('{pkg}'))"],
@@ -1383,16 +1383,16 @@ class DebugCollector:
         os.makedirs(integrity_dir, exist_ok=True)
 
         repeater_base = "/opt/pymc_repeater/repos/pyMC_Repeater/repeater"
-        # Detect overlay site-packages base for pymc_core
+        # Detect overlay site-packages base for openhop_core
         sp_base = self._run_cmd(
-            "python3 -c 'import pymc_core, os; print(os.path.dirname(os.path.dirname(pymc_core.__file__)))' 2>/dev/null"
+            "python3 -c 'import openhop_core, os; print(os.path.dirname(os.path.dirname(openhop_core.__file__)))' 2>/dev/null"
         ).strip()
 
         checks = [
             ("v2.4.9 — Channel F bridge file",
              f"test -f '{repeater_base}/channel_f_bridge.py' && echo ACTIVE || echo MISSING"),
             ("v2.4.9 — region_config.py",
-             f"test -f '{sp_base}/pymc_core/hardware/region_config.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
+             f"test -f '{sp_base}/openhop_core/hardware/region_config.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
             ("v2.4.10 — presets.json deployed",
              "test -f /etc/pymc_repeater/presets.json && echo ACTIVE || echo MISSING"),
             ("v2.4.11 — Telemetry helper",
@@ -1402,7 +1402,7 @@ class DebugCollector:
             ("v2.4.12 — Bug 2 region banner in wm1303.html",
              f"grep -q 'Issue #7 Bug 2' '{repeater_base}/web/html/wm1303.html' && echo ACTIVE || echo MISSING"),
             ("v2.4.12 — Bug 3 IF guard in wm1303_backend.py",
-             f"grep -q 'Issue #7 Bug 3' '{sp_base}/pymc_core/hardware/wm1303_backend.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
+             f"grep -q 'Issue #7 Bug 3' '{sp_base}/openhop_core/hardware/wm1303_backend.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
             ("v2.5.0 — update_endpoints.py overlay",
              f"test -f '{repeater_base}/web/update_endpoints.py' && echo PRESENT || echo MISSING"),
             ("v2.5.0 — update check points at fork (HansvanMeer)",

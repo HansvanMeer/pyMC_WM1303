@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import cherrypy
-from pymc_core.protocol import CryptoUtils
+from openhop_core.protocol import CryptoUtils
 
 from repeater import __version__
 from repeater.companion.identity_resolve import (
@@ -636,9 +636,9 @@ class APIEndpoints:
             stats = self.stats_getter() if self.stats_getter else {}
             stats["version"] = __version__
             try:
-                import pymc_core
+                import openhop_core
 
-                stats["core_version"] = pymc_core.__version__
+                stats["core_version"] = openhop_core.__version__
             except ImportError:
                 stats["core_version"] = "unknown"
             image_info = get_buildroot_image_info()
@@ -2613,7 +2613,7 @@ class APIEndpoints:
             trace_tag = random.randint(0, 0xFFFFFFFF)
 
             # Create trace packet
-            from pymc_core.protocol import PacketBuilder
+            from openhop_core.protocol import PacketBuilder
 
             path_bytes = list(target_hash.to_bytes(byte_count, "big"))
             packet = PacketBuilder.create_trace(
@@ -3003,7 +3003,7 @@ class APIEndpoints:
             registration_success = False
             if identity_type == "room_server" and self.daemon_instance:
                 try:
-                    from pymc_core import LocalIdentity
+                    from openhop_core import LocalIdentity
 
                     # Create LocalIdentity from the key (convert hex string to bytes)
                     if isinstance(identity_key, bytes):
@@ -3270,7 +3270,7 @@ class APIEndpoints:
 
             if needs_reload and self.daemon_instance:
                 try:
-                    from pymc_core import LocalIdentity
+                    from openhop_core import LocalIdentity
 
                     final_name = identity["name"]  # Could be new_name
                     identity_key = identity["identity_key"]
@@ -3560,8 +3560,8 @@ class APIEndpoints:
     ):
         """Send advert for a room server identity"""
         try:
-            from pymc_core.protocol import PacketBuilder
-            from pymc_core.protocol.constants import (
+            from openhop_core.protocol import PacketBuilder
+            from openhop_core.protocol.constants import (
                 ADVERT_FLAG_HAS_NAME,
                 ADVERT_FLAG_IS_ROOM_SERVER,
             )

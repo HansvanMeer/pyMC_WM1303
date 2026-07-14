@@ -327,7 +327,7 @@ def get_radio_for_board(board_config: dict):
         radio_type = "kiss"
 
     if radio_type in ("sx1262", "sx1262_ch341"):
-        from pymc_core.hardware.sx1262_wrapper import SX1262Radio
+        from openhop_core.hardware.sx1262_wrapper import SX1262Radio
 
         # Get radio and SPI configuration - all settings must be in config file
         spi_config = board_config.get("sx1262")
@@ -344,8 +344,8 @@ def get_radio_for_board(board_config: dict):
             if not ch341_cfg:
                 raise ValueError("Missing 'ch341' section in configuration file")
 
-            from pymc_core.hardware.lora.LoRaRF.SX126x import set_spi_transport
-            from pymc_core.hardware.transports.ch341_spi_transport import CH341SPITransport
+            from openhop_core.hardware.lora.LoRaRF.SX126x import set_spi_transport
+            from openhop_core.hardware.transports.ch341_spi_transport import CH341SPITransport
 
             vid = _parse_int(ch341_cfg.get("vid"), default=0x1A86)
             pid = _parse_int(ch341_cfg.get("pid"), default=0x5512)
@@ -386,7 +386,7 @@ def get_radio_for_board(board_config: dict):
             combined_config["en_pins"] = en_pins
 
         # Add optional GPIO parameters if specified in config
-        # These wont be supported by older versions of pymc_core
+        # These wont be supported by older versions of openhop_core
         if "gpio_chip" in spi_config:
             combined_config["gpio_chip"] = _parse_int(spi_config["gpio_chip"], default=0)
         if "use_gpiod_backend" in spi_config:
@@ -406,10 +406,10 @@ def get_radio_for_board(board_config: dict):
 
     elif radio_type == "kiss":
         try:
-            from pymc_core.hardware.kiss_modem_wrapper import KissModemWrapper
+            from openhop_core.hardware.kiss_modem_wrapper import KissModemWrapper
         except ImportError:
             try:
-                from pymc_core.hardware.kiss_serial_wrapper import (
+                from openhop_core.hardware.kiss_serial_wrapper import (
                     KissSerialWrapper as KissModemWrapper,
                 )
             except ImportError:
@@ -452,7 +452,7 @@ def get_radio_for_board(board_config: dict):
 
     elif radio_type == "pymc_tcp":
         try:
-            from pymc_core.hardware.tcp_radio import TCPLoRaRadio
+            from openhop_core.hardware.tcp_radio import TCPLoRaRadio
         except ImportError:
             raise RuntimeError(
                 "pymc_tcp radio requires pyMC_core >= the release that includes "
@@ -498,7 +498,7 @@ def get_radio_for_board(board_config: dict):
 
     elif radio_type == "pymc_usb":
         try:
-            from pymc_core.hardware.usb_radio import USBLoRaRadio
+            from openhop_core.hardware.usb_radio import USBLoRaRadio
         except ImportError:
             raise RuntimeError(
                 "pymc_usb radio requires pyMC_core >= the release that includes "
@@ -543,7 +543,7 @@ def get_radio_for_board(board_config: dict):
     elif radio_type == "wm1303":
         # WM1303 SenseCAP M1 backend (pyMC_WM1303 overlay)
         try:
-            from pymc_core.hardware.wm1303_backend import WM1303Backend
+            from openhop_core.hardware.wm1303_backend import WM1303Backend
         except ImportError:
             raise RuntimeError(
                 "WM1303 support requires pyMC_core with WM1303Backend. "

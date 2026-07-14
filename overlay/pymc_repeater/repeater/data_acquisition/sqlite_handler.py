@@ -1748,7 +1748,7 @@ class SQLiteHandler:
 
             # Align with pyMC_core feat/newRadios PAYLOAD_TYPES (0x0B = CONTROL)
             try:
-                from pymc_core.protocol.utils import PAYLOAD_TYPES as _PT
+                from openhop_core.protocol.utils import PAYLOAD_TYPES as _PT
                 _human = {
                     "REQ": "Request",
                     "RESPONSE": "Response",
@@ -2295,7 +2295,7 @@ class SQLiteHandler:
             A base64-encoded transport key derived from the name
         """
         try:
-            from pymc_core.protocol.transport_keys import get_auto_key_for
+            from openhop_core.protocol.transport_keys import get_auto_key_for
 
             # Use the proper MeshCore key derivation function
             key_bytes = get_auto_key_for(name)

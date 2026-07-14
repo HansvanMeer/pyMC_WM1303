@@ -211,7 +211,7 @@ def _j(obj):
 def _get_backend():
     """Get WM1303Backend instance via module-level reference."""
     try:
-        from pymc_core.hardware.wm1303_backend import _active_backend
+        from openhop_core.hardware.wm1303_backend import _active_backend
         return _active_backend
     except Exception:
         return None
@@ -346,7 +346,7 @@ def sync_global_conf():
 
     bridge_conf.json is AUTHORITATIVE. global_conf.json is a copy.
     """
-    from pymc_core.hardware.wm1303_backend import _generate_bridge_conf
+    from openhop_core.hardware.wm1303_backend import _generate_bridge_conf
 
     ui = _load_ui()
     channels = ui.get('channels', [])
@@ -4988,7 +4988,7 @@ class WM1303API:
         Returns a JSON array of region summaries (code, label, tx_freq_min/max, etc.).
         """
         try:
-            from pymc_core.hardware.region_config import (
+            from openhop_core.hardware.region_config import (
                 REGIONS as _REGIONS,
                 get_region_summary as _summary,
             )
@@ -5019,7 +5019,7 @@ class WM1303API:
                 }
             # Add summary info for the active region
             try:
-                from pymc_core.hardware.region_config import (
+                from openhop_core.hardware.region_config import (
                     get_region_summary as _summary,
                     get_tx_bounds as _bounds,
                 )
@@ -5052,7 +5052,7 @@ class WM1303API:
                 return _j({"status": "error", "reason": "missing 'code' field"})
             # Validate region code against known regions
             try:
-                from pymc_core.hardware.region_config import REGIONS as _REGIONS
+                from openhop_core.hardware.region_config import REGIONS as _REGIONS
                 if code not in _REGIONS:
                     cherrypy.response.status = 400
                     return _j({

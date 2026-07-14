@@ -56,6 +56,40 @@ MIN_PACKET_LEN = 2
 # Hard upper bound — MeshCore frames over LoRa are well under 256 bytes.
 MAX_PACKET_LEN = 256
 
+# Header field layout (upstream MeshCore Packet.h):
+#   bits[1:0] = route type   (PH_ROUTE_MASK 0x03)
+#   bits[5:2] = payload type (PH_TYPE_SHIFT 2, PH_TYPE_MASK 0x0F)
+#   bits[7:6] = payload ver  (PH_VER_SHIFT  6, PH_VER_MASK  0x03)
+PH_TYPE_SHIFT = 2
+PH_TYPE_MASK = 0x0F
+PH_VER_SHIFT = 6
+PH_VER_MASK = 0x03
+
+# Defined payload types (upstream Packet.h). 0x0C/0x0D/0x0E are undefined
+# gaps; 0x0F is RAW_CUSTOM. Anything in the gap is not a real MeshCore type.
+VALID_PAYLOAD_TYPES = frozenset(
+    {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0F}
+)
+
+# Only PAYLOAD_VER_1 (0x00) is implemented upstream; VER 2/3/4 are FUTURE and
+# not emitted by any conforming node today. Reject them structurally.
+PAYLOAD_VER_1 = 0x00
+
+# Plausible hop-count ceiling. MeshCore allows up to 63 hops in the wire
+# format (6-bit field), but real meshes never approach that. Anything above
+# this is treated as a corrupt path_len byte. Stricter than MAX_PATH_SIZE
+# on purpose (defends against garbage/foreign frames whose path 'happens'
+# to fit the buffer). Set to 32 per HvM.
+MAX_PLAUSIBLE_HOP_COUNT = 32
+
+# Minimum payload bytes that MUST follow the path for a PAYLOAD_VER_1 frame
+# that carries dest_hash(1) + src_hash(1) + MAC(2). ADVERT (0x04) and ACK
+# (0x03) have their own layouts and are exempt from this specific check.
+MIN_VER1_PREFIXED_PAYLOAD = 4  # dest_hash + src_hash + MAC
+PREFIXED_PAYLOAD_TYPES = frozenset(
+    {0x00, 0x01, 0x02, 0x07, 0x08}  # REQ, RESPONSE, TXT_MSG, ANON_REQ, PATH
+)
+
 
 @dataclass
 class ValidationResult:
@@ -93,11 +127,13 @@ def offender_id_from_metadata(metadata: Dict[str, Any], raw_packet: bytes) -> st
 
 
 def _route_type_name(route_type: int) -> str:
+    # Names match upstream MeshCore Packet.h (route type = header bits[1:0]):
+    #   0x00 TRANSPORT_FLOOD, 0x01 FLOOD, 0x02 DIRECT, 0x03 TRANSPORT_DIRECT.
     return {
-        0x00: "TFLOOD",
-        0x01: "TFLOOD_TRANSPORT",
-        0x02: "TDIRECT_TRANSPORT",
-        0x03: "TDIRECT",
+        0x00: "TRANSPORT_FLOOD",
+        0x01: "FLOOD",
+        0x02: "DIRECT",
+        0x03: "TRANSPORT_DIRECT",
     }.get(route_type, f"UNKNOWN_0x{route_type:02X}")
 
 
@@ -130,9 +166,13 @@ def _extract_metadata(data: bytes) -> Tuple[Dict[str, Any], Optional[int]]:
 
     header = data[0]
     route_type = header & ROUTE_TYPE_MASK
+    payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK
+    payload_ver = (header >> PH_VER_SHIFT) & PH_VER_MASK
     meta["header_hex"] = f"{header:02x}"
     meta["route_type"] = route_type
     meta["route_type_name"] = _route_type_name(route_type)
+    meta["payload_type"] = payload_type
+    meta["payload_ver"] = payload_ver
 
     # Transport-code prefix (TFLOOD / TDIRECT only).
     if route_type in (ROUTE_TYPE_TFLOOD, ROUTE_TYPE_TDIRECT):
@@ -210,11 +250,25 @@ def validate(data: bytes) -> ValidationResult:
     if len(data) > MAX_PACKET_LEN:
         return _fail("length_implausible", metadata)
 
-    route_type = data[0] & ROUTE_TYPE_MASK
+    header = data[0]
+    route_type = header & ROUTE_TYPE_MASK
     # 3. Route type — bits[1:0] can only be 0..3; no overlay defines any
     #    other value today, so this is currently a documentation guard.
     if route_type not in (0x00, 0x01, 0x02, 0x03):
         return _fail("invalid_route_type", metadata)
+
+    # 3b. Payload version (header bits[7:6]) — only PAYLOAD_VER_1 (0x00) is
+    #     implemented upstream. VER 2/3/4 are FUTURE and not emitted by any
+    #     conforming node, so a non-zero version signals garbage/foreign.
+    payload_ver = (header >> PH_VER_SHIFT) & PH_VER_MASK
+    if payload_ver != PAYLOAD_VER_1:
+        return _fail("unsupported_payload_version", metadata)
+
+    # 3c. Payload type (header bits[5:2]) — must be a defined MeshCore type.
+    #     0x0C/0x0D/0x0E are undefined gaps; anything there is not real.
+    payload_type = (header >> PH_TYPE_SHIFT) & PH_TYPE_MASK
+    if payload_type not in VALID_PAYLOAD_TYPES:
+        return _fail("unknown_payload_type", metadata)
 
     # 4. Transport-code prefix length for TFLOOD / TDIRECT must fit.
     if route_type in (ROUTE_TYPE_TFLOOD, ROUTE_TYPE_TDIRECT):
@@ -236,16 +290,30 @@ def validate(data: bytes) -> ValidationResult:
     hash_size = hash_size_bits + 1
     hop_count = path_len_byte & HOP_COUNT_MASK
 
-    # 7. Path overflow — duplicates engine.validate_packet's MAX_PATH_SIZE
-    #    check at the bridge layer so RF→radio forwards reject it too.
+    # 7. Path overflow — hard buffer limit (MAX_PATH_SIZE), duplicates
+    #    engine.validate_packet's check at the bridge layer.
     if hop_count > MAX_PATH_SIZE:
         return _fail("path_overflow", metadata)
+
+    # 7b. Implausible hop count — stricter than the buffer limit. Real meshes
+    #     never approach the 6-bit ceiling; a huge hop count means a corrupt
+    #     path_len byte (foreign/garbage frame). Set to 32 per HvM.
+    if hop_count > MAX_PLAUSIBLE_HOP_COUNT:
+        return _fail("hop_count_implausible", metadata)
 
     # 8. Path bytes must actually fit inside the packet.
     path_start = pl_idx + 1
     path_end = path_start + hop_count * hash_size
     if path_end > len(data):
         return _fail("length_implausible", metadata)
+
+    # 9. Minimum payload for VER_1 types that carry dest_hash(1)+src_hash(1)+
+    #    MAC(2). ADVERT/ACK/GRP_* have different layouts and are exempt.
+    #    Guards against structurally-plausible frames with no real payload.
+    if payload_type in PREFIXED_PAYLOAD_TYPES:
+        remaining = len(data) - path_end
+        if remaining < MIN_VER1_PREFIXED_PAYLOAD:
+            return _fail("payload_too_short_for_type", metadata)
 
     return ValidationResult(is_valid=True, metadata=metadata)
 
