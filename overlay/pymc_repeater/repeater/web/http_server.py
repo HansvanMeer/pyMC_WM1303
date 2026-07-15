@@ -16,7 +16,7 @@ from repeater import __version__
 from repeater.data_acquisition import SQLiteHandler
 
 from .api_endpoints import APIEndpoints
-from .auth import cherrypy_tool  # Import to register the tool
+from .auth.cherrypy_tool import register_require_auth_tool
 from .auth.api_tokens import APITokenManager
 from .auth.jwt_handler import JWTHandler
 from .auth_endpoints import AuthEndpoints
@@ -287,6 +287,11 @@ class HTTPStatsServer:
     def start(self):
 
         try:
+            # WM1303 hotfix v2.6.1: explicitly register the CherryPy require_auth tool.
+            # Under upstream openhop_repeater@dev the module-level import side-effect
+            # is no longer sufficient; without this call every endpoint that sets
+            # tools.require_auth.on returns HTTP 500 (AttributeError on Toolbox).
+            register_require_auth_tool()
 
             if self._cors_enabled:
                 self._setup_server_cors()

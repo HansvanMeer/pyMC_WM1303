@@ -403,6 +403,41 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# OpenHop var-tree physical migration (defense-in-depth)
+# ---------------------------------------------------------------------------
+# Physically move legacy /var/log/pymc_repeater -> /var/log/openhop_repeater
+# and /var/lib/pymc_repeater -> /var/lib/openhop_repeater. install.sh and
+# upgrade.sh also perform this same migration, but running it here first
+# guarantees the move happens even when a stale local install/upgrade script
+# is somehow invoked. Uses rsync --remove-source-files when the destination
+# is empty (physical move, no disk duplication); otherwise a safe cp -an
+# merge without overwrite, leaving the legacy dir intact for rollback.
+# Skipped silently when rsync is not installed yet (install.sh will run it).
+_bootstrap_migrate_legacy_vardir() {
+    local legacy="$1" new="$2" label="$3"
+    [ -d "${legacy}" ] || return 0
+    [ "${legacy}" = "${new}" ] && return 0
+    mkdir -p "${new}"
+    if [ -z "$(ls -A "${new}" 2>/dev/null || true)" ]; then
+        if rsync -a --remove-source-files "${legacy}/" "${new}/" 2>/dev/null; then
+            find "${legacy}" -depth -type d -empty -delete 2>/dev/null || true
+            echo "  ✓ Migrated legacy ${label} ${legacy} -> ${new} (physical move)"
+        else
+            echo "  ⚠ Legacy ${label} ${legacy} rsync move failed; left in place"
+        fi
+    else
+        cp -an "${legacy}/." "${new}/" 2>/dev/null || true
+        echo "  ✓ Merged legacy ${label} ${legacy} -> ${new} (safe copy; legacy preserved)"
+    fi
+}
+if command -v rsync >/dev/null 2>&1; then
+    _bootstrap_migrate_legacy_vardir "/var/log/pymc_repeater" "/var/log/openhop_repeater" "log dir"
+    _bootstrap_migrate_legacy_vardir "/var/lib/pymc_repeater" "/var/lib/openhop_repeater" "data dir"
+else
+    echo "  ℹ rsync not installed yet; deferring legacy /var tree migration to install/upgrade script"
+fi
+
+# ---------------------------------------------------------------------------
 # SSH timeout protection: run install/upgrade with nohup so the process
 # survives if the SSH session disconnects (HAL build can take >10 minutes).
 # Output is logged and tailed so the user still sees live progress.

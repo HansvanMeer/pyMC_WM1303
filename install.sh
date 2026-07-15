@@ -624,6 +624,37 @@ if [ -d "${LEGACY_CONFIG_DIR}" ] && [ "${LEGACY_CONFIG_DIR}" != "${CONFIG_DIR}" 
 fi
 mkdir -p "${CONFIG_DIR}"
 mkdir -p "${PKTFWD_DIR}"
+
+# --- OpenHop var-tree physical migration --------------------------------------
+# Legacy /var/log/pymc_repeater and /var/lib/pymc_repeater are superseded by
+# /var/log/openhop_repeater and /var/lib/openhop_repeater. Physically move the
+# legacy content into the new location so historic logs and the SQLite DBs
+# (potentially several MB) are preserved WITHOUT duplicating them on disk.
+# If the new dir already has content, fall back to a safe copy that never
+# overwrites and leave the legacy dir intact for rollback.
+_migrate_legacy_vardir() {
+    local legacy="$1" new="$2" label="$3"
+    [ -d "${legacy}" ] || return 0
+    [ "${legacy}" = "${new}" ] && return 0
+    mkdir -p "${new}"
+    if [ -z "$(ls -A "${new}" 2>/dev/null || true)" ]; then
+        # New dir empty -> physical move via rsync -a --remove-source-files
+        # (portable, handles same-fs efficiently, works cross-fs, keeps dotfiles).
+        if rsync -a --remove-source-files "${legacy}/" "${new}/" >> "${LOG_FILE}" 2>&1; then
+            find "${legacy}" -depth -type d -empty -delete >> "${LOG_FILE}" 2>&1 || true
+            ok "Migrated legacy ${label} ${legacy} -> ${new} (physical move)"
+        else
+            ok "Legacy ${label} ${legacy} present but rsync move failed (see log); left in place"
+        fi
+    else
+        # New dir already has content -> safe merge without overwrite.
+        cp -an "${legacy}/." "${new}/" >> "${LOG_FILE}" 2>&1 || true
+        ok "Merged legacy ${label} ${legacy} -> ${new} (safe copy; legacy preserved for rollback)"
+    fi
+}
+_migrate_legacy_vardir "/var/log/pymc_repeater" "${LOG_DIR}"  "log dir"
+_migrate_legacy_vardir "/var/lib/pymc_repeater" "${DATA_DIR}" "data dir"
+
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}"
 mkdir -p "${PI_HOME}/backups"
