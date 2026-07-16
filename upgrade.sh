@@ -1559,16 +1559,14 @@ step "Updating version file"
 if [ -f "${SCRIPT_DIR}/VERSION" ]; then
     cp "${SCRIPT_DIR}/VERSION" "${CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1
     chown ${PI_USER}:${PI_USER} "${CONFIG_DIR}/version"
-    # --- WM1303 v2.6.2: dual-write to legacy path -----------------------------
-    # Several code paths (wm1303_api.py, wm1303_backend.py, main.py, ...) still
-    # read /etc/pymc_repeater/version hardcoded. Until the full path refactor
-    # (planned for v2.7) migrates every read to /etc/openhop_repeater/, mirror
-    # the version file so the WM1303 Manager UI displays the current version
-    # instead of the stale 2.5.x baseline.
-    if [ -d "${LEGACY_CONFIG_DIR}" ] && [ "${LEGACY_CONFIG_DIR}" != "${CONFIG_DIR}" ]; then
-        cp "${SCRIPT_DIR}/VERSION" "${LEGACY_CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1
-        chown ${PI_USER}:${PI_USER} "${LEGACY_CONFIG_DIR}/version" 2>/dev/null || true
-    fi
+    # NOTE: The v2.6.2 dual-write shim to ${LEGACY_CONFIG_DIR}/version was
+    # removed in v2.6.3 now that the overlay code reads via
+    # openhop_core.paths.resolve_config_path(), which handles both
+    # /etc/openhop_repeater/ (canonical) and /etc/pymc_repeater/ (legacy
+    # fallback). The Phase 1 legacy config-dir migration earlier in this
+    # script (cp -an ${LEGACY_CONFIG_DIR}/. ${CONFIG_DIR}/) still ensures
+    # that devices upgraded from v2.5.x get their old version file copied
+    # into ${CONFIG_DIR}/ before this step overwrites it with the new value.
     ok "v$(cat ${SCRIPT_DIR}/VERSION)"
 else
     warn "VERSION file not found in repo"
