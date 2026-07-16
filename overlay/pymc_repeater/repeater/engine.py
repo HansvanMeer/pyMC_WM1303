@@ -72,7 +72,7 @@ class RepeaterHandler(BaseHandler):
         if _max_cache_cfg is None:
             try:
                 import json as _json, pathlib as _pl
-                _ui_path = _pl.Path("/etc/pymc_repeater/wm1303_ui.json")
+                _ui_path = _pl.resolve_config_path('wm1303_ui.json')
                 if _ui_path.exists():
                     _ui = _json.loads(_ui_path.read_text()) or {}
                     _max_cache_cfg = _ui.get("adv_config", {}).get("max_cache_size")
@@ -1062,6 +1062,7 @@ class RepeaterHandler(BaseHandler):
         Passing it here avoids recomputing the hash in flood_forward /
         direct_forward / is_duplicate / mark_seen — reducing SHA-256 calls
         from 3 per forwarded packet to 1.
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
         """
         route_type = packet.header & PH_ROUTE_MASK
 

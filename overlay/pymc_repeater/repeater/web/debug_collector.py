@@ -24,6 +24,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger("DebugCollector")
 
@@ -35,7 +36,7 @@ def _detect_user_home() -> Path:
     # 1. From config.yaml pktfwd_dir
     try:
         import yaml as _yaml
-        with open('/etc/pymc_repeater/config.yaml') as _f:
+        with open(resolve_config_path('config.yaml')) as _f:
             _cfg = _yaml.safe_load(_f) or {}
         _pdir = _cfg.get('wm1303', {}).get('pktfwd_dir', '')
         if _pdir and Path(_pdir).is_dir():
@@ -446,7 +447,7 @@ class DebugCollector:
         info.append(self._run_cmd("pip3 show pymc-repeater 2>/dev/null || echo 'not installed'"))
 
         info.append("=== WM1303 Version ===")
-        info.append(self._run_cmd("cat /etc/pymc_repeater/version 2>/dev/null || echo 'unknown'"))
+        info.append(self._run_cmd("cat /etc/openhop_repeater/version 2>/dev/null || cat /etc/pymc_repeater/version 2>/dev/null || echo 'unknown'"))
 
         info.append("=== Service Restarts (last 24h) ===")
         info.append(self._run_cmd(
@@ -474,7 +475,7 @@ class DebugCollector:
         # config.yaml - SANITIZED
         try:
             import yaml
-            config_path = Path("/etc/pymc_repeater/config.yaml")
+            config_path = resolve_config_path('config.yaml')
             if config_path.exists():
                 with open(config_path) as f:
                     raw_config = yaml.safe_load(f)
@@ -486,7 +487,7 @@ class DebugCollector:
 
         # wm1303_ui.json
         try:
-            ui_path = Path("/etc/pymc_repeater/wm1303_ui.json")
+            ui_path = resolve_config_path('wm1303_ui.json')
             if ui_path.exists():
                 with open(ui_path) as f:
                     ui_data = json.load(f)
@@ -785,7 +786,7 @@ class DebugCollector:
         self._write(integrity_dir / "file_checksums.txt", "\n".join(checksums))
 
         # Version file
-        version = self._run_cmd("cat /etc/pymc_repeater/version 2>/dev/null").strip()
+        version = self._run_cmd("cat /etc/openhop_repeater/version 2>/dev/null || cat /etc/pymc_repeater/version 2>/dev/null").strip()
         self._write(integrity_dir / "version.txt", version or "unknown")
 
     async def _collect_database_info(self, work_dir: Path):
@@ -797,7 +798,7 @@ class DebugCollector:
 
         # Find database files
         db_files = self._run_cmd(
-            "find /opt/pymc_repeater /var/lib/pymc_repeater /etc/pymc_repeater "
+            "find /opt/pymc_repeater /var/lib/openhop_repeater /var/lib/pymc_repeater /etc/openhop_repeater /etc/pymc_repeater "
             "-name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' 2>/dev/null"
         ).strip()
 
@@ -870,7 +871,7 @@ class DebugCollector:
 
         # JWT token validity (NOT the actual token)
         try:
-            jwt_path = Path("/etc/pymc_repeater/jwt_token")
+            jwt_path = resolve_config_path('jwt_token')
             if jwt_path.exists():
                 info["jwt_token_exists"] = True
                 mtime = jwt_path.stat().st_mtime
@@ -1188,7 +1189,7 @@ class DebugCollector:
         out = []
         # WM1303 version file
         try:
-            with open("/etc/pymc_repeater/version") as f:
+            with open(resolve_config_path('version')) as f:
                 out.append(f"pyMC_WM1303 (overlay): {f.read().strip()}")
         except Exception:
             pass
@@ -1297,7 +1298,7 @@ class DebugCollector:
         os.makedirs(state_dir, exist_ok=True)
 
         # UI config (region, sync_word, channels)
-        ui_path = "/etc/pymc_repeater/wm1303_ui.json"
+        ui_path = str(resolve_config_path('wm1303_ui.json'))
         try:
             if os.path.exists(ui_path):
                 with open(ui_path) as f:
@@ -1335,7 +1336,7 @@ class DebugCollector:
             self._write(Path(state_dir) / "wm1303_ui.ERROR.txt", str(e))
 
         # Region presets
-        presets_path = "/etc/pymc_repeater/presets.json"
+        presets_path = str(resolve_config_path('presets.json'))
         try:
             if os.path.exists(presets_path):
                 with open(presets_path) as f:
@@ -1345,7 +1346,7 @@ class DebugCollector:
 
         # Generated bridge_conf.json (pkt_fwd input)
         for cfg_name in ["bridge_conf.json", "global_conf.json"]:
-            cfg_path = f"/etc/pymc_repeater/{cfg_name}"
+            cfg_path = fstr(resolve_config_path('{cfg_name}'))
             try:
                 if os.path.exists(cfg_path):
                     with open(cfg_path) as f:
@@ -1394,7 +1395,7 @@ class DebugCollector:
             ("v2.4.9 — region_config.py",
              f"test -f '{sp_base}/openhop_core/hardware/region_config.py' 2>/dev/null && echo ACTIVE || echo MISSING"),
             ("v2.4.10 — presets.json deployed",
-             "test -f /etc/pymc_repeater/presets.json && echo ACTIVE || echo MISSING"),
+             "test -f /etc/openhop_repeater/presets.json -o -f /etc/pymc_repeater/presets.json && echo ACTIVE || echo MISSING"),
             ("v2.4.11 — Telemetry helper",
              f"test -f '{repeater_base}/wm1303_telemetry_helper.py' && echo ACTIVE || echo MISSING"),
             ("v2.4.11 — Mesh CLI owner.info handler",

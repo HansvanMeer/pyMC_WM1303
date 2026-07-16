@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 import yaml
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def _build_dynamic_owner_info(max_len: int = 115) -> str:
 
     # 1. Software version (pyMC_WM1303)
     try:
-        with open('/etc/pymc_repeater/version') as f:
+        with open(resolve_config_path('version')) as f:
             version = f.read().strip()
         if version:
             segments.append(f'pyMC_WM1303 v{version}')

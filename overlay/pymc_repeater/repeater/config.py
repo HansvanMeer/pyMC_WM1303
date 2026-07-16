@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger("Config")
 
@@ -70,7 +71,7 @@ def get_node_info(config: Dict[str, Any]) -> Dict[str, Any]:
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     if config_path is None:
-        config_path = os.getenv("PYMC_REPEATER_CONFIG", "/etc/pymc_repeater/config.yaml")
+        config_path = os.getenv("PYMC_REPEATER_CONFIG", str(resolve_config_path('config.yaml')))
 
     # Check if config file exists
     if not Path(config_path).exists():
@@ -110,7 +111,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             "request_timeout_seconds": 10,
             "verify_tls": True,
             "api_token": "",
-            "cert_store_dir": "/etc/pymc_repeater/glass",
+            "cert_store_dir": str(resolve_config_path('glass')),
         }
 
     if "gps" not in config:
@@ -190,7 +191,7 @@ def save_config(config_data: Dict[str, Any], config_path: Optional[str] = None) 
         True if successful, False otherwise
     """
     if config_path is None:
-        config_path = os.getenv("PYMC_REPEATER_CONFIG", "/etc/pymc_repeater/config.yaml")
+        config_path = os.getenv("PYMC_REPEATER_CONFIG", str(resolve_config_path('config.yaml')))
     
     try:
         # Create backup of existing config
@@ -254,7 +255,7 @@ def _load_or_create_identity_key(path: Optional[str] = None) -> bytes:
 
     if path is None:
         # Check system-wide location first (matches config.yaml location)
-        system_key_path = Path("/etc/pymc_repeater/identity.key")
+        system_key_path = resolve_config_path('identity.key')
         if system_key_path.exists():
             key_path = system_key_path
         else:

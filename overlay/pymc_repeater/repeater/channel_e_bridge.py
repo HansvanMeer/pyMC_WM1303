@@ -6,12 +6,13 @@ Minimal plugin that:
 - Handles TX by routing packets through the existing GlobalTXScheduler
 
 Channel E parameters (frequency, SF, BW, CR, preamble, tx_power) are
-read dynamically from /etc/pymc_repeater/wm1303_ui.json at runtime.
+read dynamically from /etc/openhop_repeater/wm1303_ui.json (or legacy /etc/pymc_repeater/wm1303_ui.json) at runtime.
 
 TX uses the SX1302/SX1250/SKY66420 path via PULL_RESP to lora_pkt_fwd.
 
 Usage (inside pymc-repeater):
     from channel_e_bridge import ChannelEBridge
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
     ch_e = ChannelEBridge(bridge_engine, backend=radio)
     asyncio.create_task(ch_e.run())
 """
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 CHANNEL_E_NAME = 'channel_e'
 CHANNEL_E_UDP_PORT = 1733
 CHANNEL_E_TX_CHANNEL = 'channel_e'
-UI_CONFIG_PATH = Path('/etc/pymc_repeater/wm1303_ui.json')
+UI_CONFIG_PATH = resolve_config_path('wm1303_ui.json')
 
 
 def _load_channel_e_ui() -> dict:

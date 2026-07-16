@@ -15,11 +15,12 @@ What this plugin does:
     rules with source=channel_f fire correctly.
 
 Channel F parameters (frequency, BW, SF) are read dynamically from
-/etc/pymc_repeater/wm1303_ui.json at runtime by the backend. This plugin only
+/etc/openhop_repeater/wm1303_ui.json (or legacy /etc/pymc_repeater/wm1303_ui.json) at runtime by the backend. This plugin only
 needs the TX queue id and a friendly name resolver.
 
 Usage (inside pymc-repeater main):
     from repeater.channel_f_bridge import ChannelFBridge
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
     ch_f = ChannelFBridge(bridge_engine, backend=radio)
     asyncio.create_task(ch_f.run())
 """
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 CHANNEL_F_NAME = 'channel_f'
 CHANNEL_F_TX_CHANNEL = 'channel_f'
-UI_CONFIG_PATH = Path('/etc/pymc_repeater/wm1303_ui.json')
+UI_CONFIG_PATH = resolve_config_path('wm1303_ui.json')
 
 
 def _load_channel_f_ui() -> dict:

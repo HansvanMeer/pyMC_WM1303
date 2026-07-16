@@ -23,6 +23,7 @@ import struct
 import os
 import time
 from typing import Optional
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 try:
     import spidev
@@ -48,11 +49,11 @@ def _read_region_from_ui() -> tuple[int, int]:
     try:
         import json as _json
         from pathlib import Path as _Path
-        # UI JSON path: /etc/pymc_repeater/wm1303_ui.json (production)
+        # UI JSON path: /etc/openhop_repeater/wm1303_ui.json (canonical) or /etc/pymc_repeater/wm1303_ui.json (legacy fallback)
         # or relative override during development
         _candidates = [
             _Path(os.environ.get("WM1303_UI_JSON", "")),
-            _Path("/etc/pymc_repeater/wm1303_ui.json"),
+            resolve_config_path('wm1303_ui.json'),
             _Path("/opt/pymc_repeater/wm1303_ui.json"),
         ]
         ui_data = None

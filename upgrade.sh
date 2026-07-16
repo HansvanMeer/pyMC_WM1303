@@ -931,6 +931,20 @@ if echo "$PYMC_CORE_IMPORT_PATH" | grep -q "site-packages"; then
     if [ -d "${SITE_COMPANION_DIR}" ] && [ -d "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion" ]; then
         rsync -a "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion/" "${SITE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
+    # --- WM1303 v2.6.2 / v2.7 refactor: sync root-level helper modules -------
+    # Only hardware/ and companion/ are rsynced above. New helpers such as
+    # openhop_core/paths.py (v2.7 central config-path resolver) sit at the
+    # package root and must be copied explicitly, otherwise
+    # `from openhop_core.paths import resolve_config_path` fails at runtime.
+    SITE_CORE_DIR=$(dirname "$SITE_HW_DIR")
+    if [ -d "${SITE_CORE_DIR}" ]; then
+        for _f in "${OVERLAY_DIR}/pymc_core/src/openhop_core/"*.py; do
+            if [ -f "$_f" ]; then
+                cp "$_f" "${SITE_CORE_DIR}/" >> "${LOG_FILE}" 2>&1
+            fi
+        done
+        chown -R ${PI_USER}:${PI_USER} "${SITE_CORE_DIR}"/*.py 2>/dev/null || true
+    fi
     chown -R ${PI_USER}:${PI_USER} "${SITE_HW_DIR}"
     chown -R ${PI_USER}:${PI_USER} "${SITE_COMPANION_DIR}" 2>/dev/null || true
     ok "Re-applied overlay to site-packages (rsync)"

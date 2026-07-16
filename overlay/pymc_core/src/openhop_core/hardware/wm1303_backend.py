@@ -28,6 +28,7 @@ import hashlib
 import sqlite3
 
 from contextlib import contextmanager as _contextmanager
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 # Region configuration (regulatory frequency bands, SX1261 image calibration)
 try:
@@ -215,7 +216,7 @@ def _detect_pktfwd_dir() -> Path:
     import yaml as _yaml
     # 1. From config.yaml
     try:
-        with open('/etc/pymc_repeater/config.yaml') as _f:
+        with open(resolve_config_path('config.yaml')) as _f:
             _cfg = _yaml.safe_load(_f) or {}
         _pdir = _cfg.get('wm1303', {}).get('pktfwd_dir', '')
         if _pdir and Path(_pdir).is_dir():
@@ -261,7 +262,7 @@ UDP_PORT_DOWN  = 1730
 _DB_PATH = '/var/lib/pymc_repeater/repeater.db'
 
 # Path to the UI config (SSOT for channel definitions)
-UI_JSON_PATH = Path('/etc/pymc_repeater/wm1303_ui.json')
+UI_JSON_PATH = resolve_config_path('wm1303_ui.json')
 
 # Fixed channel-name to IF-chain mapping.
 # These NEVER change regardless of channel order or active/inactive status.
@@ -600,7 +601,7 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     # Channel E: always add if channel_e config present (even if lbt_enabled=false,
     # we need the freq in the LBT list to avoid "wrong channel" errors during TX)
     try:
-        _che_ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        _che_ui_path = resolve_config_path('wm1303_ui.json')
         if _che_ui_path.exists():
             _che_d = json.loads(_che_ui_path.read_text()).get('channel_e', {})
             if _che_d:
@@ -734,7 +735,7 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
         'sync_word': int(_sync_word_value) & 0xFFFF,
     }
     try:
-        _che_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        _che_path = resolve_config_path('wm1303_ui.json')
         if _che_path.exists():
             import json as _jche
             _che_d = _jche.loads(_che_path.read_text()).get('channel_e', {})
@@ -761,7 +762,7 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     _chf_bw_hz = 250000
     _chf_sf = 9
     try:
-        _chf_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        _chf_path = resolve_config_path('wm1303_ui.json')
         if _chf_path.exists():
             _chf_d = json.loads(_chf_path.read_text()).get('channel_f', {})
             if _chf_d:
@@ -808,7 +809,7 @@ def _generate_bridge_conf(channels: dict[str, dict]) -> dict:
     # WM1303: AGC reload interval from UI advanced config (0 = disabled)
     _agc_reload_interval_s = 30  # default 30s (aggressive to prevent SX1302 correlator stall)
     try:
-        _ui_agc = json.loads(Path('/etc/pymc_repeater/wm1303_ui.json').read_text())
+        _ui_agc = json.loads(resolve_config_path('wm1303_ui.json').read_text())
         _agc_reload_interval_s = _ui_agc.get('hal_advanced', {}).get('agc_reload_interval_s', 30)
     except Exception:
         pass
@@ -1397,7 +1398,7 @@ class WM1303Backend:
         _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
 
         # ---- PRIMARY: read channels from SSOT (wm1303_ui.json) ----
-        ui_path = _Path('/etc/pymc_repeater/wm1303_ui.json')
+        ui_path = resolve_config_path('wm1303_ui.json')
         ssot_channels = []
         try:
             if ui_path.exists():
@@ -1625,7 +1626,7 @@ class WM1303Backend:
         # FIX Bug3: Build set of inactive channel frequencies from UI config
         _inactive_freqs = set()
         try:
-            _ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+            _ui_path = resolve_config_path('wm1303_ui.json')
             if _ui_path.exists():
                 _ui = json.loads(_ui_path.read_text())
                 for _uc in _ui.get('channels', []):
@@ -1695,7 +1696,7 @@ class WM1303Backend:
             _che_tx_preamble = 17
             _che_tx_power = 27
             try:
-                _che_tx_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+                _che_tx_path = resolve_config_path('wm1303_ui.json')
                 if _che_tx_path.exists():
                     _che_tx_ui = json.loads(_che_tx_path.read_text()).get('channel_e', {})
                     if _che_tx_ui:
@@ -1735,7 +1736,7 @@ class WM1303Backend:
         # the same HAL TX path (PULL_RESP -> chan_Lora_std). Only enabled when
         # channel_f.enabled is True in wm1303_ui.json.
         try:
-            _chf_tx_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+            _chf_tx_path = resolve_config_path('wm1303_ui.json')
             _chf_enabled = False
             _chf_tx_freq = 869525000
             _chf_tx_bw = 250.0
@@ -1797,7 +1798,7 @@ class WM1303Backend:
         if (now - self._channel_e_cache_time) < self._channel_e_cache_ttl and self._channel_e_freq_cache:
             return self._channel_e_freq_cache
         try:
-            _ui = json.loads(Path("/etc/pymc_repeater/wm1303_ui.json").read_text()).get("channel_e", {})
+            _ui = json.loads(resolve_config_path('wm1303_ui.json').read_text()).get("channel_e", {})
             self._channel_e_config_cache = _ui
             self._channel_e_freq_cache = int(_ui.get("frequency", 0))
             self._channel_e_cache_time = now
@@ -1819,7 +1820,7 @@ class WM1303Backend:
             return (self._channel_f_enabled_cache, self._channel_f_freq_cache,
                     self._channel_f_bw_cache, self._channel_f_sf_cache)
         try:
-            _ui = json.loads(Path("/etc/pymc_repeater/wm1303_ui.json").read_text()).get("channel_f", {})
+            _ui = json.loads(resolve_config_path('wm1303_ui.json').read_text()).get("channel_f", {})
             self._channel_f_config_cache = _ui
             self._channel_f_enabled_cache = bool(_ui.get("enabled", False))
             self._channel_f_freq_cache = int(_ui.get("frequency", 0))
@@ -1845,7 +1846,7 @@ class WM1303Backend:
         Syncs: frequency, spreading_factor, bandwidth, coding_rate,
                preamble_length, tx_power.
         """
-        ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        ui_path = resolve_config_path('wm1303_ui.json')
         if not ui_path.exists():
             logger.warning('WM1303Backend: SSOT file %s not found, '
                           'using config.yaml frequencies as-is', ui_path)
@@ -1940,7 +1941,7 @@ class WM1303Backend:
 
         try:
             import yaml
-            cfg_path = Path("/etc/pymc_repeater/config.yaml")
+            cfg_path = resolve_config_path('config.yaml')
             if cfg_path.exists():
                 with open(cfg_path) as f:
                     cfg = yaml.safe_load(f) or {}
@@ -2049,7 +2050,7 @@ class WM1303Backend:
                 return cached
         # Refresh cache
         try:
-            ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+            ui_path = resolve_config_path('wm1303_ui.json')
             if not ui_path.exists():
                 self._lbt_config_cache = {}
                 self._lbt_config_cache_time = now
@@ -2138,7 +2139,7 @@ class WM1303Backend:
         """Compute per-channel noise floor from spectral scan data and store in DB."""
         # Load active channels from UI config
         try:
-            ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+            ui_path = resolve_config_path('wm1303_ui.json')
             if not ui_path.exists():
                 return
             ui = json.loads(ui_path.read_text())
@@ -2511,7 +2512,7 @@ class WM1303Backend:
         """
         bw_map = {125000: 0, 250000: 1, 500000: 2}
         try:
-            ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+            ui_path = resolve_config_path('wm1303_ui.json')
             if not ui_path.exists():
                 return
             ui = json.loads(ui_path.read_text())
@@ -2619,7 +2620,7 @@ class WM1303Backend:
             # Configure random TX delay for collision avoidance between repeaters
             try:
                 import json as _json
-                _ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+                _ui_path = resolve_config_path('wm1303_ui.json')
                 _ui_data = _json.loads(_ui_path.read_text()) if _ui_path.exists() else {}
                 _rnd_delay = _ui_data.get('tx_random_delay_max_ms', 200)
             except Exception:
@@ -4837,7 +4838,7 @@ class WM1303Backend:
             _ch_id_to_ui_name = {}
             try:
                 import json as _json2
-                with open("/etc/pymc_repeater/wm1303_ui.json") as _uf2:
+                with open(resolve_config_path('wm1303_ui.json')) as _uf2:
                     _ui2 = _json2.load(_uf2)
                 _CHID = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
                 _aidx = 0
@@ -4859,9 +4860,9 @@ class WM1303Backend:
                 _lbt_thresholds = {}
                 try:
                     import json as _json, yaml as _yaml
-                    with open("/etc/pymc_repeater/wm1303_ui.json") as _uf:
+                    with open(resolve_config_path('wm1303_ui.json')) as _uf:
                         _ui = _json.load(_uf)
-                    with open("/etc/pymc_repeater/config.yaml") as _cf:
+                    with open(resolve_config_path('config.yaml')) as _cf:
                         _cfg = _yaml.safe_load(_cf)
                     _config_keys = list(_cfg.get("wm1303", {}).get("channels", {}).keys())
                     _active_pos = 0

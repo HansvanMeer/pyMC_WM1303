@@ -14,6 +14,7 @@ import threading
 import queue
 
 from repeater.web.packet_trace import trace_event as _trace
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger('BridgeEngine')
 
@@ -458,7 +459,7 @@ class BridgeEngine:
         # Phase 2: Read wm1303_ui.json for UI channel names and friendly names
         # Match by POSITION (index) not by SF to avoid mismatches when SF is
         # changed in the UI but not yet in config.yaml.
-        ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        ui_path = resolve_config_path('wm1303_ui.json')
         try:
             if ui_path.exists():
                 ui = json.loads(ui_path.read_text())
@@ -507,7 +508,7 @@ class BridgeEngine:
         }
 
         # Read channel_e friendly_name from UI config
-        ui_path = Path('/etc/pymc_repeater/wm1303_ui.json')
+        ui_path = resolve_config_path('wm1303_ui.json')
         try:
             if ui_path.exists():
                 ui = json.loads(ui_path.read_text())

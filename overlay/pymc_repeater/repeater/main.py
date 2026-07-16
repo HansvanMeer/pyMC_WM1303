@@ -25,6 +25,7 @@ from repeater.handler_helpers import (
 from repeater.identity_manager import IdentityManager
 from repeater.packet_router import PacketRouter
 from repeater.web.http_server import HTTPStatsServer, _log_buffer
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 # WM1303 overlay: telemetry-enabled protocol request helper (adds REQ_TYPE_GET_TELEMETRY_DATA)
 try:
@@ -349,7 +350,7 @@ class RepeaterDaemon:
 
             # Initialize ConfigManager for centralized config management
             self.config_manager = ConfigManager(
-                config_path=getattr(self, "config_path", "/etc/pymc_repeater/config.yaml"),
+                config_path=getattr(self, "config_path", str(resolve_config_path('config.yaml'))),
                 config=self.config,
                 daemon_instance=self,
             )
@@ -1394,7 +1395,7 @@ class RepeaterDaemon:
             import json as _json_br
             _has_ef = False
             try:
-                with open('/etc/pymc_repeater/wm1303_ui.json') as _uif_br:
+                with open(resolve_config_path('wm1303_ui.json')) as _uif_br:
                     _ui_br = _json_br.load(_uif_br)
                 _has_ef = (bool(_ui_br.get('channel_e', {}).get('enabled'))
                            or bool(_ui_br.get('channel_f', {}).get('enabled')))
@@ -1463,9 +1464,9 @@ class RepeaterDaemon:
 
     @staticmethod
     def _load_bridge_rules_from_ui() -> list:
-        """Load bridge rules from SSOT: /etc/pymc_repeater/wm1303_ui.json."""
+        """Load bridge rules from SSOT: /etc/openhop_repeater/wm1303_ui.json (or legacy /etc/pymc_repeater/wm1303_ui.json)."""
         import json
-        ui_path = "/etc/pymc_repeater/wm1303_ui.json"
+        ui_path = str(resolve_config_path('wm1303_ui.json'))
         try:
             with open(ui_path) as f:
                 ui = json.load(f)
@@ -1922,7 +1923,7 @@ class RepeaterDaemon:
                         if 'channel_e' not in _ch_map2:
                             try:
                                 import json
-                                with open('/etc/pymc_repeater/wm1303_ui.json', 'r') as _uif:
+                                with open(resolve_config_path('wm1303_ui.json'), 'r') as _uif:
                                     _uicfg = json.load(_uif)
                                 _che = _uicfg.get('channel_e', {}) or {}
                                 _friendly = _che.get('friendly_name') or _che.get('name')
@@ -1956,7 +1957,7 @@ class RepeaterDaemon:
                         if 'channel_f' not in _ch_map3:
                             try:
                                 import json
-                                with open('/etc/pymc_repeater/wm1303_ui.json', 'r') as _uif:
+                                with open(resolve_config_path('wm1303_ui.json'), 'r') as _uif:
                                     _uicfg = json.load(_uif)
                                 _chf = _uicfg.get('channel_f', {}) or {}
                                 _friendly = _chf.get('friendly_name') or _chf.get('name')
@@ -2019,7 +2020,7 @@ class RepeaterDaemon:
                 config=self.config,
                 event_loop=current_loop,
                 daemon_instance=self,
-                config_path=getattr(self, "config_path", "/etc/pymc_repeater/config.yaml"),
+                config_path=getattr(self, "config_path", str(resolve_config_path('config.yaml'))),
             )
 
             try:
@@ -2065,7 +2066,7 @@ def main():
     parser = argparse.ArgumentParser(description="pyMC Repeater Daemon")
     parser.add_argument(
         "--config",
-        help="Path to config file (default: /etc/pymc_repeater/config.yaml)",
+        help="Path to config file (default: /etc/openhop_repeater/config.yaml, falls back to /etc/pymc_repeater/config.yaml)",
     )
     parser.add_argument(
         "--log-level",
@@ -2077,7 +2078,7 @@ def main():
 
     # Load configuration
     config = load_config(args.config)
-    config_path = args.config if args.config else "/etc/pymc_repeater/config.yaml"
+    config_path = args.config if args.config else str(resolve_config_path('config.yaml'))
 
     if args.log_level:
         if "logging" not in config:

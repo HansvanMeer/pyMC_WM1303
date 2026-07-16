@@ -57,17 +57,22 @@ No other changes are needed for v2.6.2 — the UI displays whatever `wm1303_api.
 
 ---
 
-## Roadmap — v2.7 (full path refactor)
+## v2.7 refactor — delivered under v2.6.2 scope
 
-v2.6.2 is a targeted fix, **not** a completion of the OpenHop migration. The following is planned for v2.7:
+After the initial v2.6.2 dual-write hotfix landed, the v2.7 path refactor was carried forward under the same version scope so the full fix ships in a single release. The following items from the original v2.7 plan are now included:
 
-- Introduce a central `openhop_core.paths` / `repeater.paths` module with a `resolve_config_path(name)` helper that prefers `/etc/openhop_repeater/<name>` and falls back to `/etc/pymc_repeater/<name>`.
-- Replace all 68 hardcoded `/etc/pymc_repeater/...` references in the overlay with calls to that helper.
-- Rename the installed Python package on disk from `pymc_repeater` to `openhop_repeater` so `import openhop_repeater` succeeds without conditional imports.
-- Delete the dual-write shim added by v2.6.2 once the code no longer reads the legacy path.
-- Optionally: replace `/etc/pymc_repeater/` with a symlink to `/etc/openhop_repeater/` on legacy devices as a one-shot cleanup, once the code is confirmed to read only the new path.
+- ✅ **`openhop_core.paths` helper** — new `overlay/pymc_core/src/openhop_core/paths.py` (109 lines) exposing `resolve_config_path(name)`, `CONFIG_DIR`, `LEGACY_CONFIG_DIR`, `config_dir()`, and `legacy_config_dir()`. The helper prefers `/etc/openhop_repeater/<name>` and transparently falls back to `/etc/pymc_repeater/<name>` on devices upgraded from v2.5.x. Fresh installs always resolve to the OpenHop location.
+- ✅ **All 68 hardcoded `/etc/pymc_repeater/...` references replaced** across 12 overlay Python files with `resolve_config_path()` calls (61 helper calls in total; the remaining historical string references live in docstrings and argparse help text that explicitly mention both paths).
+- ✅ **Shell-command paths in `debug_collector.py` extended** to try both `/etc/openhop_repeater/` and `/etc/pymc_repeater/` where the helper cannot reach (subprocess shell strings executed via `_run_cmd`).
+- ✅ **`install.sh` and `upgrade.sh` extended** with a root-level `openhop_core/*.py` sync block after the existing companion rsync, so `paths.py` (and any future root-level helpers) is deployed automatically to `site-packages/openhop_core/` on every install/upgrade.
 
-Until v2.7 lands, the dual-write pattern keeps the UI honest without touching any Python source.
+### Remaining planned items — still deferred
+
+- ⏳ **Rename the installed Python package on disk from `pymc_repeater` to `openhop_repeater`.** Upstream `openhop_repeater@dev` already names the project `openhop_repeater` in `pyproject.toml`, but the source tree is still `repeater/`, so `import openhop_repeater` currently fails while `import pymc_repeater` still works via the editable finder. Requires either an upstream source-directory rename or a fork-scoped remapping — deferred pending upstream decision.
+- ⏳ **Remove the v2.6.2 dual-write shim from `install.sh` / `upgrade.sh`.** Kept as a safety net until every field device has been rebuilt cleanly. Once no device still needs `/etc/pymc_repeater/version` for the legacy read path, the shim can go.
+- ⏳ **Optional `/etc/pymc_repeater/` → `/etc/openhop_repeater/` symlink on legacy devices** as a one-shot cleanup once the code no longer needs the legacy read path.
+
+The dual-write shim remains active so the WM1303 Manager UI keeps working on installations that haven't been rebuilt yet.
 
 ---
 
@@ -81,14 +86,40 @@ Until v2.7 lands, the dual-write pattern keeps the UI honest without touching an
 
 ## Files Changed
 
+### Scripts
+
 | File | Changes |
 |------|---------|
 | `VERSION` | `2.6.1` → `2.6.2` |
-| `install.sh` | Dual-write of the `VERSION` file to `${LEGACY_CONFIG_DIR}/version` alongside `${CONFIG_DIR}/version`, guarded by an existence check |
-| `upgrade.sh` | Same dual-write, applied inside the existing `Updating version file` step |
+| `install.sh` | (a) Dual-write of the `VERSION` file to `${LEGACY_CONFIG_DIR}/version` alongside `${CONFIG_DIR}/version`, guarded by an existence check. (b) New root-level `openhop_core/*.py` sync block after the companion rsync so `paths.py` is auto-deployed to `site-packages/openhop_core/`. |
+| `upgrade.sh` | Same two changes as `install.sh`, applied inside the existing `Updating version file` step and the `Verifying pyMC_core overlay is accessible` step. |
 | `release_notes/RELEASE_NOTES_v2.6.2.md` | This file |
+| `TODO.md` | Item #204 open updated with v2.6.2 progress status (priority High → Low); item #210 added to completed section documenting the helper + refactor. |
 
-No Python code changes.
+### New Python module
+
+| File | Purpose |
+|------|---------|
+| `overlay/pymc_core/src/openhop_core/paths.py` (**new**, 109 lines) | Central `resolve_config_path()` helper preferring `/etc/openhop_repeater/` with legacy fallback to `/etc/pymc_repeater/`. Also exposes `CONFIG_DIR`, `LEGACY_CONFIG_DIR`, `config_dir()`, and `legacy_config_dir()` for callers that need the raw dirs. |
+
+### Refactored Python modules (12 files, 61 `resolve_config_path()` calls total)
+
+| File | `resolve_config_path()` calls |
+|------|------------------------------|
+| `overlay/pymc_core/src/openhop_core/hardware/wm1303_backend.py` | 21 |
+| `overlay/pymc_core/src/openhop_core/hardware/sx1261_driver.py` | 1 |
+| `overlay/pymc_repeater/repeater/config.py` | 4 |
+| `overlay/pymc_repeater/repeater/bridge_engine.py` | 2 |
+| `overlay/pymc_repeater/repeater/channel_e_bridge.py` | 1 |
+| `overlay/pymc_repeater/repeater/channel_f_bridge.py` | 1 |
+| `overlay/pymc_repeater/repeater/main.py` | 7 |
+| `overlay/pymc_repeater/repeater/engine.py` | 1 |
+| `overlay/pymc_repeater/repeater/handler_helpers/mesh_cli.py` | 1 |
+| `overlay/pymc_repeater/repeater/web/wm1303_api.py` | 8 |
+| `overlay/pymc_repeater/repeater/web/debug_collector.py` | 8 (plus 4 subprocess shell commands extended to try both `/etc/openhop_repeater/` and `/etc/pymc_repeater/` in shell) |
+| `overlay/pymc_repeater/repeater/web/api_endpoints.py` | 3 |
+
+All 13 refactored files pass `python3 -m py_compile`.
 
 ---
 

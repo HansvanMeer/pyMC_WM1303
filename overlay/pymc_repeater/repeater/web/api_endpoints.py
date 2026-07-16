@@ -23,6 +23,7 @@ from .auth_endpoints import AuthAPIEndpoints
 from .cad_calibration_engine import CADCalibrationEngine
 from .companion_endpoints import CompanionAPIEndpoints
 from .update_endpoints import UpdateAPIEndpoints
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger("HTTPServer")
 
@@ -175,7 +176,7 @@ class APIEndpoints:
         self.config = config or {}
         self.event_loop = event_loop
         self.daemon_instance = daemon_instance
-        self._config_path = config_path or "/etc/pymc_repeater/config.yaml"
+        self._config_path = config_path or str(resolve_config_path('config.yaml'))
         self.cad_calibration = CADCalibrationEngine(daemon_instance, event_loop)
 
         # Initialize ConfigManager for centralized config management
@@ -1896,7 +1897,7 @@ class APIEndpoints:
             self.config["radio"]["cad"]["peak_threshold"] = peak
             self.config["radio"]["cad"]["min_threshold"] = min_val
 
-            config_path = getattr(self, "_config_path", "/etc/pymc_repeater/config.yaml")
+            config_path = getattr(self, "_config_path", str(resolve_config_path('config.yaml')))
             saved = self.config_manager.save_to_file()
             if not saved:
                 return self._error("Failed to save configuration to file")
@@ -2500,7 +2501,7 @@ class APIEndpoints:
                 self.config["mesh"]["global_flood_allow"] = global_flood_allow
 
                 # Get the actual config path from daemon instance (same as CAD settings)
-                config_path = getattr(self, "_config_path", "/etc/pymc_repeater/config.yaml")
+                config_path = getattr(self, "_config_path", str(resolve_config_path('config.yaml')))
                 if self.daemon_instance and hasattr(self.daemon_instance, "config_path"):
                     config_path = self.daemon_instance.config_path
 

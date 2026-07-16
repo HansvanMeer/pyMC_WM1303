@@ -1,4 +1,5 @@
 from collections import deque
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 def _load_global_conf() -> dict:
     import re, json
@@ -72,7 +73,7 @@ def _detect_pktfwd_dir() -> Path:
     # 1. From config.yaml
     try:
         import yaml as _yaml
-        with open('/etc/pymc_repeater/config.yaml') as _f:
+        with open(resolve_config_path('config.yaml')) as _f:
             _cfg = _yaml.safe_load(_f) or {}
         _pdir = _cfg.get('wm1303', {}).get('pktfwd_dir', '')
         if _pdir and Path(_pdir).is_dir():
@@ -111,7 +112,7 @@ _PKTFWD_DIR  = _detect_pktfwd_dir()
 
 # Paths
 _SVC_NAME    = "pymc-repeater"
-_UI_JSON     = Path("/etc/pymc_repeater/wm1303_ui.json")
+_UI_JSON     = resolve_config_path('wm1303_ui.json')
 _GLOBAL_CONF = _PKTFWD_DIR / "global_conf.json"
 _SPECTRAL_BIN = _PKTFWD_DIR / "spectral_scan"
 _SPECTRAL_RES = Path("/tmp/pymc_spectral_results.json")
@@ -307,7 +308,7 @@ def _sync_config_yaml_channels(channels: list) -> None:
     """
     import yaml
     _CHANNEL_ID_BY_INDEX = ['channel_a', 'channel_b', 'channel_c', 'channel_d']
-    cfg_path = Path('/etc/pymc_repeater/config.yaml')
+    cfg_path = resolve_config_path('config.yaml')
     try:
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f) or {}
@@ -1151,7 +1152,7 @@ class WM1303API:
         # Read version from VERSION file (deployed by install/upgrade scripts)
         _version = "0.10.0"
         try:
-            _vf = Path("/etc/pymc_repeater/version")
+            _vf = resolve_config_path('version')
             if _vf.exists():
                 _version = _vf.read_text().strip()
         except Exception:
@@ -2637,7 +2638,7 @@ class WM1303API:
                 _sdir = '/var/lib/pymc_repeater'
                 try:
                     import yaml as _yaml
-                    with open('/etc/pymc_repeater/config.yaml') as _f:
+                    with open(resolve_config_path('config.yaml')) as _f:
                         _cfg = _yaml.safe_load(_f) or {}
                     _sdir = ((_cfg.get('storage') or {}).get('storage_dir')
                              or _sdir)
@@ -4528,7 +4529,7 @@ class WM1303API:
             import yaml
             cfg = {}
             try:
-                with open("/etc/pymc_repeater/config.yaml") as f:
+                with open(resolve_config_path('config.yaml')) as f:
                     cfg = yaml.safe_load(f) or {}
             except Exception as e:
                 logger.warning("adv_config_get: could not read config.yaml: %s", e)
@@ -4585,7 +4586,7 @@ class WM1303API:
             logger.info("adv_config_post: group=%s params=%s", group, params)
 
             cfg = {}
-            cfg_path = "/etc/pymc_repeater/config.yaml"
+            cfg_path = str(resolve_config_path('config.yaml'))
             try:
                 with open(cfg_path) as f:
                     cfg = yaml.safe_load(f) or {}
@@ -5209,12 +5210,12 @@ class WM1303API:
     def _presets_get(self):
         """GET /api/wm1303/presets - return community channel presets.
 
-        Reads /etc/pymc_repeater/presets.json (deployed by installer) or falls back
+        Reads /etc/openhop_repeater/presets.json (or legacy /etc/pymc_repeater/presets.json, deployed by installer) or falls back
         to /opt/pymc_repeater/presets.json. Returns the parsed JSON content.
         """
         from pathlib import Path as _Path
         _candidates = [
-            _Path("/etc/pymc_repeater/presets.json"),
+            resolve_config_path('presets.json'),
             _Path("/opt/pymc_repeater/presets.json"),
         ]
         for p in _candidates:
