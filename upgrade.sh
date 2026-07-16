@@ -688,6 +688,21 @@ for f in models.py contact_store.py; do
         cp "${OVERLAY_DIR}/pymc_core/src/openhop_core/companion/${f}" "${CORE_COMPANION_DIR}/" >> "${LOG_FILE}" 2>&1
     fi
 done
+# --- WM1303 v2.6.3: sync root-level helper modules into editable source ---
+# The pyMC_core repo is pip install -e'd, so the editable path is the actual
+# import location on most devices. Helpers such as openhop_core/paths.py sit
+# at the package root and must be copied explicitly, otherwise
+# `from openhop_core.paths import resolve_config_path` fails at runtime on
+# editable-install devices (the site-packages sync in Phase 6 only runs in
+# the non-editable fallback branch).
+CORE_ROOT_DIR="${REPO_DIR}/pyMC_core/src/openhop_core"
+if [ -d "${CORE_ROOT_DIR}" ]; then
+    for _f in "${OVERLAY_DIR}/pymc_core/src/openhop_core/"*.py; do
+        if [ -f "$_f" ]; then
+            cp "$_f" "${CORE_ROOT_DIR}/" >> "${LOG_FILE}" 2>&1
+        fi
+    done
+fi
 ok "pyMC_core overlay applied"
 
 step "Applying pyMC_Repeater overlay"
