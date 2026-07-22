@@ -1,0 +1,28 @@
+# Meshat.se MC2MQTT broker preset.
+#
+# Meshat.se is a Swedish community MeshCore visualization and analytics
+# platform. Their single ingest broker speaks the standard MeshCoreToMQTT
+# (MC2MQTT) protocol with the LetsMesh-compatible topic structure
+# (meshcore/{IATA}/{PUBLIC_KEY}/...).
+#
+# Reference all Meshat.se endpoints with: brokers: [{preset: meshat-se}]
+#
+# Optional UI metadata. Consumed by the GET /api/broker_presets endpoint
+# so the React/Vue admin can render this preset in the "From Template"
+# dropdown. `display_name` and `website` are advisory only -- they are
+# never read by the runtime broker connection code.
+display_name: "Meshat.se"
+website: "https://meshat.se"
+brokers:
+  - name: "Meshat.se"
+    enabled: true
+    host: meshcore-mqtt.meshat.se
+    port: 443
+    transport: "websockets"
+    audience: "meshcore-mqtt.meshat.se"
+    use_jwt_auth: true
+    format: letsmesh
+    retain_status: false
+    tls:
+      enabled: true
+      insecure: false

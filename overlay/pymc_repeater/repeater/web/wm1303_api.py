@@ -111,7 +111,7 @@ def _detect_pktfwd_dir() -> Path:
 _PKTFWD_DIR  = _detect_pktfwd_dir()
 
 # Paths
-_SVC_NAME    = "pymc-repeater"
+_SVC_NAME    = "openhop-repeater"
 _UI_JSON     = resolve_config_path('wm1303_ui.json')
 _GLOBAL_CONF = _PKTFWD_DIR / "global_conf.json"
 _SPECTRAL_BIN = _PKTFWD_DIR / "spectral_scan"

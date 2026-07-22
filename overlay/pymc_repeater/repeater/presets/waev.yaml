@@ -1,0 +1,38 @@
+# Waev MC2MQTT broker preset.
+#
+# Waev is a real-time telemetry, monitoring, and analytics platform for
+# MeshCore radio networks. These brokers speak the MeshCoreToMQTT
+# (MC2MQTT) protocol with the "waev" format flavor, which today shares
+# the canonical MC2MQTT topic structure (meshcore/{IATA}/{PUBLIC_KEY}/...)
+# and is reserved for future Waev-specific deviations.
+#
+# Reference all Waev endpoints with: brokers: [{preset: waev}]
+#
+# Redundancy model: a single client connection to `mqtt.waev.app`. The
+# Waev edge Worker (see waev/src/router.ts: MQTT_PRIMARY_FAILOVER_TIMEOUT_MS)
+# fans the WebSocket upgrade to broker A first with a 1500 ms timeout,
+# then transparently retries against broker B on failure. Operators who
+# want to pin to a single container can edit the broker after import and
+# set `host`/`audience` to one of:
+#   - mqtt-a.waev.app   (force primary, no failover)
+#   - mqtt-b.waev.app   (force backup)
+#
+# Optional UI metadata. Consumed by the GET /api/broker_presets endpoint
+# so the React/Vue admin can render this preset in the "From Template"
+# dropdown. `display_name` and `website` are advisory only — they are
+# never read by the runtime broker connection code.
+display_name: "Waev"
+website: "https://waev.app"
+brokers:
+  - name: "Waev"
+    enabled: true
+    host: mqtt.waev.app
+    port: 443
+    transport: "websockets"
+    audience: "mqtt.waev.app"
+    use_jwt_auth: true
+    format: waev
+    retain_status: true
+    tls:
+      enabled: true
+      insecure: false

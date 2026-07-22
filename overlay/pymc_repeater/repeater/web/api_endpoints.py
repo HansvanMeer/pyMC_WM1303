@@ -1110,14 +1110,36 @@ class APIEndpoints:
                 for i, b in enumerate(brokers):
                     if not isinstance(b, dict):
                         return self._error(f"Broker at index {i} must be an object")
-                    for field in ("name", "host", "port", "format"):
-                        if not b.get(field, ""):
-                            return self._error(f"Broker at index {i} missing required field: {field}")
-                    
+                    # Human-friendly broker label for error messages (name if set, else index)
+                    broker_label = str(b.get("name", "")).strip() or f"index {i}"
+
+                    # Required text fields (name/host/format). Port handled separately below
+                    # so we can return a clear, port-specific message (e.g. for the port=0
+                    # default produced by a half-filled broker in the UI).
+                    for field in ("name", "host", "format"):
+                        if not str(b.get(field, "")).strip():
+                            return self._error(
+                                f"Broker '{broker_label}': {field} is required"
+                            )
+
+                    # Port validation: must be present and in the valid 1-65535 range.
+                    # A missing/0 port typically comes from a newly added or incomplete
+                    # broker row in the UI; give an explicit, actionable message.
+                    raw_port = b.get("port", None)
+                    if raw_port in (None, "", 0, "0"):
+                        return self._error(
+                            f"Broker '{broker_label}': port is required (1-65535)"
+                        )
                     try:
-                        port = int(b.get("port", 443))
+                        port = int(raw_port)
                     except (ValueError, TypeError):
-                        return self._error(f"Broker at index {i} has invalid port")
+                        return self._error(
+                            f"Broker '{broker_label}': port must be a number (1-65535)"
+                        )
+                    if not (1 <= port <= 65535):
+                        return self._error(
+                            f"Broker '{broker_label}': port must be between 1 and 65535"
+                        )
                     
                     new_broker = {
                         "name":      str(b["name"]).strip(),
@@ -1172,10 +1194,336 @@ class APIEndpoints:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
+    def validate_config(self):
+        """Validate config.yaml syntax and required settings without restarting."""
+        self._set_cors_headers()
+
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+
+        if cherrypy.request.method != "GET":
+            cherrypy.response.status = 405
+            cherrypy.response.headers["Allow"] = "GET"
+            raise cherrypy.HTTPError(405, "Method not allowed. This endpoint requires GET.")
+
+        try:
+            import yaml  # local import: overlay has no module-level yaml
+            errors = []
+            warnings = []
+
+            def add_error(path: str, message: str):
+                errors.append({"path": path, "message": message})
+
+            def add_warning(path: str, message: str):
+                warnings.append({"path": path, "message": message})
+
+            def as_int(value, path: str):
+                if isinstance(value, bool):
+                    add_error(path, "must be an integer")
+                    return None
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    add_error(path, "must be an integer")
+                    return None
+
+            def as_float(value, path: str):
+                if isinstance(value, bool):
+                    add_error(path, "must be a number")
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    add_error(path, "must be a number")
+                    return None
+
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    config_yaml = yaml.safe_load(f)
+            except FileNotFoundError:
+                add_error("config", f"Configuration file not found: {self._config_path}")
+                config_yaml = None
+            except yaml.YAMLError as e:
+                mark = getattr(e, "problem_mark", None)
+                if mark is not None:
+                    add_error(
+                        "config",
+                        f"YAML syntax error at line {mark.line + 1}, column {mark.column + 1}: {e}",
+                    )
+                else:
+                    add_error("config", f"YAML syntax error: {e}")
+                config_yaml = None
+            except Exception as e:
+                add_error("config", f"Failed to read configuration: {e}")
+                config_yaml = None
+
+            if config_yaml is not None and not isinstance(config_yaml, dict):
+                add_error("config", "Top-level YAML value must be a mapping/object")
+                config_yaml = None
+
+            if isinstance(config_yaml, dict):
+                repeater = config_yaml.get("repeater")
+                if not isinstance(repeater, dict):
+                    add_error("repeater", "Missing required section 'repeater'")
+                    repeater = {}
+
+                node_name = (repeater.get("node_name") if isinstance(repeater, dict) else "") or ""
+                node_name = str(node_name).strip()
+                if not node_name:
+                    add_error("repeater.node_name", "Node name is required")
+                elif len(node_name.encode("utf-8")) > 31:
+                    add_error("repeater.node_name", "Node name too long (max 31 bytes in UTF-8)")
+
+                security = repeater.get("security") if isinstance(repeater, dict) else None
+                if not isinstance(security, dict):
+                    add_error("repeater.security", "Missing required section 'repeater.security'")
+                    security = {}
+
+                admin_password = (
+                    security.get("admin_password") if isinstance(security, dict) else ""
+                ) or ""
+                if not str(admin_password).strip():
+                    add_error("repeater.security.admin_password", "Admin password is required")
+
+                radio_type_raw = config_yaml.get("radio_type")
+                radio_type = "" if radio_type_raw is None else str(radio_type_raw).strip().lower()
+                if radio_type == "kiss-modem":
+                    radio_type = "kiss"
+
+                known_radio_types = {
+                    "sx1262",
+                    "sx1262_ch341",
+                    "kiss",
+                    "pymc_tcp",
+                    "pymc_usb",
+                    "wm1303",
+                    "none",
+                    "null",
+                    "disabled",
+                    "off",
+                    "no_radio",
+                    "",
+                }
+                if radio_type not in known_radio_types:
+                    add_error(
+                        "radio_type",
+                        "Unsupported radio_type. Supported: sx1262, sx1262_ch341, kiss, pymc_tcp, pymc_usb, wm1303, none/null",
+                    )
+
+                radio_disabled = radio_type in ("", "none", "null", "disabled", "off", "no_radio")
+                # WM1303 (SX1303 LoRa concentrator): radio parameters are NOT stored in the
+                # config.yaml 'radio' section; they are managed via wm1303_ui.json and validated
+                # separately. Skip the config.yaml radio.* checks for this radio_type.
+                radio_managed_externally = radio_type == "wm1303"
+                radio = config_yaml.get("radio")
+
+                if not radio_disabled and not radio_managed_externally:
+                    if not isinstance(radio, dict):
+                        add_error("radio", "Missing required section 'radio'")
+                        radio = {}
+
+                    frequency = as_float((radio or {}).get("frequency"), "radio.frequency")
+                    if frequency is None:
+                        add_error("radio.frequency", "Frequency is required")
+                    elif frequency < 100_000_000 or frequency > 1_000_000_000:
+                        add_error("radio.frequency", "Frequency must be 100-1000 MHz")
+
+                    bandwidth = as_int((radio or {}).get("bandwidth"), "radio.bandwidth")
+                    valid_bw = [
+                        7800,
+                        10400,
+                        15600,
+                        20800,
+                        31250,
+                        41700,
+                        62500,
+                        125000,
+                        250000,
+                        500000,
+                    ]
+                    if bandwidth is None:
+                        add_error("radio.bandwidth", "Bandwidth is required")
+                    elif bandwidth not in valid_bw:
+                        add_error(
+                            "radio.bandwidth",
+                            f"Bandwidth must be one of {[b / 1000 for b in valid_bw]} kHz",
+                        )
+
+                    spreading_factor = as_int(
+                        (radio or {}).get("spreading_factor"), "radio.spreading_factor"
+                    )
+                    if spreading_factor is None:
+                        add_error("radio.spreading_factor", "Spreading factor is required")
+                    elif spreading_factor < 5 or spreading_factor > 12:
+                        add_error("radio.spreading_factor", "Spreading factor must be 5-12")
+
+                    coding_rate = as_int((radio or {}).get("coding_rate"), "radio.coding_rate")
+                    if coding_rate is None:
+                        add_error("radio.coding_rate", "Coding rate is required")
+                    elif coding_rate < 5 or coding_rate > 8:
+                        add_error("radio.coding_rate", "Coding rate must be 5-8 (for 4/5 to 4/8)")
+
+                    tx_power = as_int((radio or {}).get("tx_power"), "radio.tx_power")
+                    if tx_power is None:
+                        add_error("radio.tx_power", "TX power is required")
+                    elif tx_power < -9 or tx_power > 30:
+                        add_error("radio.tx_power", "TX power must be between -9 and +30 dBm")
+
+                    preamble_length = as_int(
+                        (radio or {}).get("preamble_length"), "radio.preamble_length"
+                    )
+                    if preamble_length is None:
+                        add_error("radio.preamble_length", "Preamble length is required")
+                    elif preamble_length <= 0:
+                        add_error(
+                            "radio.preamble_length", "Preamble length must be greater than zero"
+                        )
+
+                if radio_type in ("sx1262", "sx1262_ch341"):
+                    sx1262_cfg = config_yaml.get("sx1262")
+                    if not isinstance(sx1262_cfg, dict):
+                        add_error("sx1262", "Missing required section 'sx1262'")
+                        sx1262_cfg = {}
+
+                    required_sx1262_keys = [
+                        "bus_id",
+                        "cs_id",
+                        "cs_pin",
+                        "reset_pin",
+                        "busy_pin",
+                        "irq_pin",
+                        "txen_pin",
+                        "rxen_pin",
+                    ]
+                    for key in required_sx1262_keys:
+                        value = sx1262_cfg.get(key) if isinstance(sx1262_cfg, dict) else None
+                        parsed = as_int(value, f"sx1262.{key}")
+                        if parsed is None:
+                            add_error(
+                                f"sx1262.{key}", f"Missing or invalid required setting '{key}'"
+                            )
+
+                    en_pins = sx1262_cfg.get("en_pins") if isinstance(sx1262_cfg, dict) else None
+                    if en_pins is not None:
+                        if not isinstance(en_pins, list):
+                            add_error("sx1262.en_pins", "en_pins must be a list of integers")
+                        else:
+                            for idx, pin in enumerate(en_pins):
+                                if as_int(pin, f"sx1262.en_pins[{idx}]") is None:
+                                    add_error(
+                                        f"sx1262.en_pins[{idx}]",
+                                        "Each en_pins entry must be an integer",
+                                    )
+
+                if radio_type == "sx1262_ch341":
+                    ch341_cfg = config_yaml.get("ch341")
+                    if not isinstance(ch341_cfg, dict):
+                        add_error(
+                            "ch341", "Missing required section 'ch341' for radio_type sx1262_ch341"
+                        )
+                        ch341_cfg = {}
+                    for key in ("vid", "pid"):
+                        value = ch341_cfg.get(key) if isinstance(ch341_cfg, dict) else None
+                        parsed = as_int(value, f"ch341.{key}")
+                        if parsed is None:
+                            add_error(
+                                f"ch341.{key}", f"Missing or invalid required setting '{key}'"
+                            )
+
+                if radio_type == "kiss":
+                    kiss_cfg = config_yaml.get("kiss")
+                    if not isinstance(kiss_cfg, dict):
+                        add_error("kiss", "Missing required section 'kiss' for radio_type kiss")
+                        kiss_cfg = {}
+                    port = (kiss_cfg.get("port") if isinstance(kiss_cfg, dict) else "") or ""
+                    if not str(port).strip():
+                        add_error("kiss.port", "KISS port is required")
+                    baud = as_int((kiss_cfg or {}).get("baud_rate"), "kiss.baud_rate")
+                    if baud is None:
+                        add_error("kiss.baud_rate", "KISS baud_rate is required")
+                    elif baud <= 0:
+                        add_error("kiss.baud_rate", "KISS baud_rate must be greater than zero")
+
+                if radio_type == "pymc_usb":
+                    usb_cfg = config_yaml.get("pymc_usb")
+                    if not isinstance(usb_cfg, dict):
+                        add_error(
+                            "pymc_usb",
+                            "Missing required section 'pymc_usb' for radio_type pymc_usb",
+                        )
+                        usb_cfg = {}
+                    port = (usb_cfg.get("port") if isinstance(usb_cfg, dict) else "") or ""
+                    if not str(port).strip():
+                        add_error("pymc_usb.port", "pymc_usb.port is required")
+                    baud = as_int((usb_cfg or {}).get("baudrate"), "pymc_usb.baudrate")
+                    if baud is not None and baud <= 0:
+                        add_error(
+                            "pymc_usb.baudrate", "pymc_usb.baudrate must be greater than zero"
+                        )
+
+                if radio_type == "pymc_tcp":
+                    tcp_cfg = config_yaml.get("pymc_tcp")
+                    if not isinstance(tcp_cfg, dict):
+                        add_error(
+                            "pymc_tcp",
+                            "Missing required section 'pymc_tcp' for radio_type pymc_tcp",
+                        )
+                        tcp_cfg = {}
+                    host = (tcp_cfg.get("host") if isinstance(tcp_cfg, dict) else "") or ""
+                    host_str = str(host).strip()
+                    if not host_str:
+                        add_error("pymc_tcp.host", "pymc_tcp.host is required")
+                    elif host_str == "REPLACE_WITH_MODEM_HOST":
+                        add_error(
+                            "pymc_tcp.host",
+                            "Replace placeholder host with your modem hostname or IP",
+                        )
+                    port = as_int((tcp_cfg or {}).get("port"), "pymc_tcp.port")
+                    if port is None:
+                        add_error("pymc_tcp.port", "pymc_tcp.port is required")
+                    elif port < 1 or port > 65535:
+                        add_error("pymc_tcp.port", "pymc_tcp.port must be 1-65535")
+
+                if radio_disabled:
+                    add_warning("radio_type", "Radio is disabled (radio_type none/null/off)")
+
+            valid = len(errors) == 0
+            return self._success(
+                {
+                    "valid": valid,
+                    "blocked_restart": not valid,
+                    "errors": errors,
+                    "warnings": warnings,
+                    "summary": {
+                        "error_count": len(errors),
+                        "warning_count": len(warnings),
+                    },
+                    "config_path": self._config_path,
+                    "message": "Configuration is valid"
+                    if valid
+                    else "Configuration has validation errors",
+                }
+            )
+
+        except cherrypy.HTTPError:
+            raise
+        except Exception as e:
+            logger.error(f"Error validating configuration: {e}", exc_info=True)
+            return self._error(str(e))
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
     @cherrypy.tools.json_in()
     def restart_service(self):
-        """Restart the pymc-repeater service via systemctl."""
-        # Enable CORS for this endpoint only if configured
+        """Restart the openhop-repeater service via a detached background sudo call.
+
+        The synchronous ``service_utils.restart_service`` returns
+        "Restart failed: Unknown error" on WM1303 devices because the sudo child
+        process is killed when systemd stops this very service mid-call
+        (the service runs as user ``pi``). Fire-and-forget avoids that race:
+        return success to the UI immediately and do the actual ``systemctl
+        restart`` in a detached process that survives the parent's death.
+        """
         self._set_cors_headers()
 
         if cherrypy.request.method == "OPTIONS":
@@ -1183,15 +1531,37 @@ class APIEndpoints:
 
         try:
             self._require_post()
-            from repeater.service_utils import restart_service as do_restart
 
-            logger.warning("Service restart requested via API")
-            success, message = do_restart()
+            import shutil
+            import subprocess
+            import threading
 
-            if success:
-                return {"success": True, "message": message}
-            else:
-                return self._error(message)
+            logger.warning("Service restart requested via API (detached)")
+
+            sudo_bin = shutil.which("sudo") or "/usr/bin/sudo"
+            systemctl_bin = shutil.which("systemctl") or "/usr/bin/systemctl"
+
+            def _detached_restart():
+                try:
+                    # Small sleep so this HTTP response can flush before the
+                    # daemon receives SIGTERM from systemd.
+                    subprocess.Popen(
+                        [
+                            "/bin/sh",
+                            "-c",
+                            f"sleep 1; {sudo_bin} -n {systemctl_bin} "
+                            f"restart openhop-repeater >/dev/null 2>&1",
+                        ],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                except Exception as ex:  # pragma: no cover
+                    logger.error(f"Failed to schedule detached restart: {ex}")
+
+            threading.Thread(target=_detached_restart, daemon=True).start()
+            return {"success": True, "message": "Service restart initiated"}
 
         except cherrypy.HTTPError:
             raise
@@ -1677,6 +2047,186 @@ class APIEndpoints:
         except Exception as e:
             logger.error(f"Error getting packet by hash: {e}")
             return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def packet_by_id(self, packet_id=None):
+        """Return a single packet row by its integer primary key.
+
+        GET /api/packet_by_id?packet_id=<int>
+
+        The Vue UI calls this from the "Packet Details" drawer after a user
+        clicks a row in the packets list. The catch-all in ``http_server.py``
+        would otherwise serve ``index.html`` and break the drawer.
+        """
+        try:
+            if packet_id is None or packet_id == "":
+                return self._error("packet_id parameter required")
+            try:
+                pid = int(packet_id)
+            except (TypeError, ValueError):
+                return self._error("packet_id must be an integer")
+            packet = self._get_storage().get_packet_by_id(pid)
+            return self._success(packet) if packet else self._error("Packet not found")
+        except Exception as e:
+            logger.error(f"Error getting packet by id: {e}")
+            return self._error(e)
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def site_info(self):
+        """Return the site identification name (public endpoint, no auth required).
+
+        GET /api/site_info
+
+        The login page reads this to render the configured site name above
+        the credentials form. Mirrors upstream ``openhop-dev/openhop_repeater``
+        semantics: response is always JSON so the login page never crashes,
+        even if the ``web.site_name`` key is missing.
+        """
+        try:
+            site_name = self.config.get("web", {}).get("site_name", "") or ""
+            return {"success": True, "site_name": str(site_name)}
+        except Exception as e:
+            logger.error(f"Error serving site_info: {e}")
+            return {"success": True, "site_name": ""}
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    def broker_presets(self):
+        """List bundled MC2MQTT broker presets.
+
+        GET /api/broker_presets
+
+        Returns the sorted list of ``repeater/presets/*.yaml`` packaged with
+        this build so the admin frontend's Observer-tab "From Template"
+        dropdown does not need to bundle its own copy of the broker catalogue.
+        Response shape mirrors upstream ``openhop-dev/openhop_repeater``:
+
+            {
+              "success": true,
+              "data": [
+                {
+                  "id":       "waev",
+                  "name":     "Waev",
+                  "website":  "https://waev.app",     # optional
+                  "brokers":  [ ... raw broker dicts from the YAML ... ]
+                },
+                ...
+              ]
+            }
+        """
+        self._set_cors_headers()
+        try:
+            # Lazy import so a broken preset YAML never blocks process
+            # startup; the loader logs and skips bad files.
+            from repeater.presets import get_preset, list_presets
+
+            data = []
+            for preset_id in list_presets():
+                preset = get_preset(preset_id) or {}
+                entry = {
+                    "id": preset_id,
+                    "name": preset.get("display_name") or preset_id.title(),
+                    "brokers": list(preset.get("brokers", [])),
+                }
+                website = preset.get("website")
+                if website:
+                    entry["website"] = website
+                data.append(entry)
+            return self._success(data)
+        except Exception as e:
+            logger.error(f"Error listing broker presets: {e}")
+            return self._error(str(e))
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in(force=False)
+    def policy_groups(self, **kwargs):
+        """List policy groups for channel hashes and pubkeys (minimal stub).
+
+        GET  /api/policy_groups[?kind=channel_hashes|pubkeys]
+        POST /api/policy_groups
+        DELETE /api/policy_groups
+
+        NOTE: The upstream ``openhop-dev/openhop_repeater`` reference
+        implementation depends on a ``policy_engine`` module and several
+        ``_policy_*`` helpers that are not present in the pyMC / WM1303
+        fork. Rather than serve the SPA catch-all (HTML) - which breaks the
+        Vue "Policy" tab - this endpoint returns a well-formed JSON
+        response describing an empty policy state, and rejects mutations
+        with an explicit "not implemented" error. A full policy-engine
+        port is tracked as a separate task.
+        """
+        self._set_cors_headers()
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+
+        if cherrypy.request.method == "GET":
+            valid_kinds = ("channel_hashes", "pubkeys")
+            raw_kind = cherrypy.request.params.get("kind")
+            kind = raw_kind if raw_kind in valid_kinds else None
+            if raw_kind and not kind:
+                return self._error("Invalid kind. Use 'channel_hashes' or 'pubkeys'")
+
+            empty_groups = {"channel_hashes": [], "pubkeys": []}
+            data = {
+                "policy_file": None,
+                "exists": False,
+                "kind": kind,
+                "groups": empty_groups[kind] if kind else empty_groups,
+            }
+            return self._success(data)
+
+        if cherrypy.request.method in ("POST", "DELETE"):
+            cherrypy.response.status = 501
+            return self._error(
+                "Policy engine not available in this build (upstream "
+                "policy_engine module is not yet ported)."
+            )
+
+        return self._error("Method not supported")
+
+    @cherrypy.expose
+    @cherrypy.tools.json_out()
+    @cherrypy.tools.json_in(force=False)
+    def policy_group_entries(self, **kwargs):
+        """Manage entries inside policy groups (minimal stub).
+
+        GET  /api/policy_group_entries?kind=<kind>&group_id=<id>
+        POST /api/policy_group_entries
+        DELETE /api/policy_group_entries
+
+        See ``policy_groups`` docstring for rationale. This endpoint keeps
+        the UI functional by returning JSON instead of the SPA catch-all
+        HTML; the UI will simply render an empty group list.
+        """
+        self._set_cors_headers()
+        if cherrypy.request.method == "OPTIONS":
+            return ""
+
+        if cherrypy.request.method == "GET":
+            valid_kinds = ("channel_hashes", "pubkeys")
+            raw_kind = cherrypy.request.params.get("kind")
+            kind = raw_kind if raw_kind in valid_kinds else None
+            if not kind:
+                return self._error("Invalid kind. Use 'channel_hashes' or 'pubkeys'")
+
+            group_id = cherrypy.request.params.get("group_id")
+            if not group_id:
+                return self._error("group_id parameter required")
+
+            # No policy engine → no group exists. Match upstream error shape.
+            return self._error(f"Group not found: {group_id}")
+
+        if cherrypy.request.method in ("POST", "DELETE"):
+            cherrypy.response.status = 501
+            return self._error(
+                "Policy engine not available in this build (upstream "
+                "policy_engine module is not yet ported)."
+            )
+
+        return self._error("Method not supported")
 
     @cherrypy.expose
     @cherrypy.tools.json_out()

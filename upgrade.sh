@@ -743,17 +743,30 @@ if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" ]; then
     cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/html/wm1303.html" "${RPT_DIR}/repeater/web/html/" >> "${LOG_FILE}" 2>&1
 fi
 
-# repeater/data_acquisition/ files
-for f in sqlite_handler.py storage_collector.py; do
-    if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" ]; then
-        cp "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" >> "${LOG_FILE}" 2>&1
-    fi
-done
+# repeater/presets/ YAML files (observer/broker templates served by /api/broker_presets)
+if [ -d "${OVERLAY_DIR}/pymc_repeater/repeater/presets" ]; then
+    mkdir -p "${RPT_DIR}/repeater/presets" >> "${LOG_FILE}" 2>&1
+    for f in "${OVERLAY_DIR}/pymc_repeater/repeater/presets"/*.yaml "${OVERLAY_DIR}/pymc_repeater/repeater/presets"/__init__.py; do
+        if [ -f "$f" ]; then
+            cp "$f" "${RPT_DIR}/repeater/presets/" >> "${LOG_FILE}" 2>&1
+        fi
+    done
+fi
 
-ok "pyMC_Repeater overlay applied"
 
-chown -R ${PI_USER}:${PI_USER} "${HAL_DIR}"
 chown -R ${PI_USER}:${PI_USER} "${REPO_DIR}"
+
+# Post-build UI patch: fix Observer/MQTT-tab save bugs in the shipped (minified)
+# SPA assets (port=0 default and disallowedInput field-name mismatch). The Vue
+# source is not in this repo and there is no npm build step, so the built assets
+# are patched in place. Idempotent; safe to run on every install/upgrade.
+step "Patching UI assets (Observer/MQTT save fix)"
+if [ -f "${SCRIPT_DIR}/_tools/patch_ui_observer_save.sh" ]; then
+    bash "${SCRIPT_DIR}/_tools/patch_ui_observer_save.sh" "${RPT_DIR}" >> "${LOG_FILE}" 2>&1 || true
+    ok "UI Observer save patch applied"
+else
+    ok "Patch script not found — skipped"
+fi
 
 # =============================================================================
 # Phase 5: Rebuild HAL & Packet Forwarder (if needed)

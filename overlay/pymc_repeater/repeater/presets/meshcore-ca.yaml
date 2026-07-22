@@ -1,0 +1,44 @@
+# MeshCore Canada MC2MQTT broker preset.
+#
+# MeshCore Canada is the operator of the public MeshCore Packet Analyzer
+# infrastructure. These brokers speak the MeshCoreToMQTT (MC2MQTT)
+# protocol with the "letsmesh" format flavor, which today shares the
+# canonical MC2MQTT topic structure (meshcore/{IATA}/{PUBLIC_KEY}/...).
+#
+# Reference all MeshCore Canada endpoints with: brokers: [{preset: letsmesh}]
+#
+# Note: order matters for backward compatibility with the legacy
+# letsmesh.broker_index field. Index 0 is Europe, index 1 is US West.
+#
+# Optional UI metadata. Consumed by the GET /api/broker_presets endpoint
+# so the React/Vue admin can render this preset in the "From Template"
+# dropdown. `display_name` and `website` are advisory only — they are
+# never read by the runtime broker connection code.
+display_name: "MeshCore.CA"
+website: "https://meshcore.ca"
+brokers:
+  - name: "MeshCore.CA Primary"
+    enabled: true
+    host: mqtt1.meshcore.ca
+    port: 443
+    transport: "websockets"
+    audience: "mqtt1.meshcore.ca"
+    use_jwt_auth: true
+    format: letsmesh
+    retain_status: false
+    tls:
+      enabled: true
+      insecure: false
+
+  - name: "MeshCore.CA Backup"
+    enabled: true
+    host: mqtt2.meshcore.ca
+    port: 443
+    transport: "websockets"
+    audience: "mqtt2.meshcore.ca"
+    use_jwt_auth: true
+    format: letsmesh
+    retain_status: false
+    tls:
+      enabled: true
+      insecure: false

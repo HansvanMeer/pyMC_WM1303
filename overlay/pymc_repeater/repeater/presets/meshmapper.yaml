@@ -1,0 +1,33 @@
+# MeshMapper MC2MQTT broker preset.
+#
+# MeshMapper (https://meshmapper.net) is a community MeshCore visualization
+# and analytics platform. Their single ingest broker speaks the standard
+# MeshCoreToMQTT (MC2MQTT) protocol with the canonical
+# `meshcore/{IATA}/{PUBLIC_KEY}/...` topic structure. Today the operator
+# does not differentiate from the LetsMesh format flavor, so this preset
+# uses `format: letsmesh` to match the published wire contract; bump to
+# a dedicated `meshmapper` format value (and the corresponding entry in
+# MC2MQTT_FORMATS in `repeater/data_acquisition/mqtt_handler.py`) only
+# when there's a real wire-level deviation to express.
+#
+# Reference all MeshMapper endpoints with: brokers: [{preset: meshmapper}]
+#
+# Optional UI metadata. Consumed by the GET /api/broker_presets endpoint
+# so the React/Vue admin can render this preset in the "From Template"
+# dropdown. `display_name` and `website` are advisory only — they are
+# never read by the runtime broker connection code.
+display_name: "MeshMapper"
+website: "https://meshmapper.net"
+brokers:
+  - name: "MeshMapper"
+    enabled: true
+    host: mqtt.meshmapper.net
+    port: 443
+    transport: "websockets"
+    audience: "mqtt.meshmapper.net"
+    use_jwt_auth: true
+    format: letsmesh
+    retain_status: false
+    tls:
+      enabled: true
+      insecure: false

@@ -12,7 +12,6 @@ TX uses the SX1302/SX1250/SKY66420 path via PULL_RESP to lora_pkt_fwd.
 
 Usage (inside pymc-repeater):
     from channel_e_bridge import ChannelEBridge
-from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
     ch_e = ChannelEBridge(bridge_engine, backend=radio)
     asyncio.create_task(ch_e.run())
 """
@@ -24,6 +23,7 @@ import hashlib
 from pathlib import Path
 from repeater.bridge_engine import _stable_hash
 from repeater.web.packet_trace import trace_event as _trace
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger(__name__)
 

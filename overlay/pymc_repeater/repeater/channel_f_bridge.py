@@ -20,7 +20,6 @@ needs the TX queue id and a friendly name resolver.
 
 Usage (inside pymc-repeater main):
     from repeater.channel_f_bridge import ChannelFBridge
-from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
     ch_f = ChannelFBridge(bridge_engine, backend=radio)
     asyncio.create_task(ch_f.run())
 """
@@ -30,6 +29,7 @@ import logging
 from pathlib import Path
 from repeater.bridge_engine import _stable_hash
 from repeater.web.packet_trace import trace_event as _trace
+from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central config-path helper
 
 logger = logging.getLogger(__name__)
 

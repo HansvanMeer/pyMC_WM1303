@@ -417,6 +417,15 @@ class StorageCollector:
     def get_packet_by_hash(self, packet_hash: str) -> Optional[dict]:
         return self.sqlite_handler.get_packet_by_hash(packet_hash)
 
+    def get_packet_by_id(self, packet_id: int) -> Optional[dict]:
+        """Return a single packet row by its integer primary key.
+
+        Proxy for :meth:`SQLiteHandler.get_packet_by_id`. Backs
+        GET /api/packet_by_id, which the Vue UI's Packet Details drawer
+        calls after a user clicks a row in the packets list.
+        """
+        return self.sqlite_handler.get_packet_by_id(packet_id)
+
     def get_rrd_data(
         self,
         start_time: Optional[int] = None,

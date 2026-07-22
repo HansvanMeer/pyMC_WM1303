@@ -1269,6 +1269,7 @@ from openhop_core.paths import resolve_config_path  # WM1303 v2.7: central confi
                     "path_hash_mode": self.config.get("mesh", {}).get("path_hash_mode", 0),
                 },
                 "letsmesh": self.config.get("letsmesh", {}),
+                "mqtt_brokers": self.config.get("mqtt_brokers", {}),  # FIX: openhop mqtt->mqtt_brokers rename; UI Observer tab reads brokers from stats.config.mqtt_brokers
             },
             "public_key": None,
         }

@@ -1742,6 +1742,38 @@ class SQLiteHandler:
             logger.error(f"Failed to get packet by hash: {e}")
             return None
 
+    def get_packet_by_id(self, packet_id: int) -> Optional[dict]:
+        """Return a single packet row by its integer primary key.
+
+        Backs GET /api/packet_by_id (Vue Packet Details drawer). Uses the
+        same column list as get_packet_by_hash so the UI can share its
+        formatter, and additionally exposes ``id`` because upstream did not
+        need to surface it (hash was the only lookup key).
+        """
+        try:
+            with self._connect() as conn:
+                conn.row_factory = sqlite3.Row
+
+                packet = conn.execute(
+                    """
+                    SELECT
+                        id, timestamp, type, route, length, rssi, snr, score,
+                        transmitted, is_duplicate, drop_reason, src_hash, dst_hash, path_hash,
+                        header, transport_codes, payload, payload_length,
+                        tx_delay_ms, packet_hash, original_path, forwarded_path, raw_packet,
+                        lbt_attempts, lbt_backoff_delays_ms, lbt_channel_busy
+                    FROM packets
+                    WHERE id = ?
+                """,
+                    (int(packet_id),),
+                ).fetchone()
+
+                return dict(packet) if packet else None
+
+        except Exception as e:
+            logger.error(f"Failed to get packet by id: {e}")
+            return None
+
     def get_packet_type_stats(self, hours: int = 24) -> dict:
         try:
             cutoff = time.time() - (hours * 3600)
