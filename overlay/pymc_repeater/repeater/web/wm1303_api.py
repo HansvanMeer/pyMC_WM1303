@@ -5388,7 +5388,23 @@ def _record_packet_activity_once(now):
 
 
 def _record_crc_error_rate_once(now):
-    """Record one 60s sample of per-channel CRC error/disabled counts."""
+    """Record one 60s sample of per-channel CRC error/disabled counts.
+
+    Also writes the aggregated per-tick CRC error total to the legacy
+    ``crc_errors`` table (schema ``id,timestamp,count``) so the
+    per-tick drill-down queries (``get_crc_error_count``,
+    ``get_crc_error_history``) return data on WM1303 gateways.
+
+    Background: ``crc_errors`` used to be populated only by
+    ``engine._record_crc_errors_async``, which reads a KISS-modem
+    attribute (``dispatcher.radio.crc_error_count``). WM1303 uses the
+    lora_pkt_fwd/HAL path via WM1303Backend and never sets that
+    attribute, so its delta was always 0 and ``crc_errors`` stayed
+    empty even though hardware CRC errors arrived continuously. This
+    recorder already holds the authoritative WM1303 CRC counts
+    (from ``backend.get_and_reset_crc_rate_counters()``), so writing
+    the aggregate here fills the gap without touching the RX hot path.
+    """
     _db = "/var/lib/pymc_repeater/repeater.db"
     _bk = _get_backend()
     if not _bk:
@@ -5400,10 +5416,12 @@ def _record_crc_error_rate_once(now):
     if not counters:
         return
     inserts = []
+    total_crc_errors = 0
     for ch_id, counts in counters.items():
-        crc_err = counts.get("crc_error", 0)
-        crc_dis = counts.get("crc_disabled", 0)
+        crc_err = int(counts.get("crc_error", 0) or 0)
+        crc_dis = int(counts.get("crc_disabled", 0) or 0)
         inserts.append((now, ch_id, crc_err, crc_dis))
+        total_crc_errors += crc_err
     if not inserts:
         return
     try:
@@ -5411,6 +5429,15 @@ def _record_crc_error_rate_once(now):
             conn.executemany(
                 "INSERT INTO crc_error_rate (timestamp, channel_id, crc_error_count, crc_disabled_count) VALUES (?,?,?,?)",
                 inserts)
+            # Also mirror the aggregate CRC error count into the legacy
+            # per-tick table so drill-down queries work on WM1303.
+            # Only insert when >0 to avoid noise rows (matches the
+            # engine._record_crc_errors_async delta>0 semantics).
+            if total_crc_errors > 0:
+                conn.execute(
+                    "INSERT INTO crc_errors (timestamp, count) VALUES (?, ?)",
+                    (now, total_crc_errors),
+                )
     except Exception as _wr_e:
         logger.debug("unified_recorder write crc: %s", _wr_e)
 

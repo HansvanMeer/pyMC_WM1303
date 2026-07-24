@@ -216,7 +216,7 @@ DOWNSAMPLE_TABLES: List[Dict] = [
         "agg_cols": [
             ("COUNT(*)",                "sample_count"),
             # NOTE: rx_count/tx_count/tx_failed/tx_airtime_ms/tx_bytes/
-            # lbt_blocked/lbt_passed/pkt_count are CUMULATIVE counters in
+            # lbt_blocked/lbt_passed are CUMULATIVE counters in
             # channel_stats_history (monotonically increasing since service
             # start). Using SUM would multiply the cumulative value by the
             # number of samples in the bucket, which is meaningless. The
@@ -227,6 +227,14 @@ DOWNSAMPLE_TABLES: List[Dict] = [
             # (_1m -> _10m -> _15m) is handled by the existing SUM logic on
             # aliases starting with `total_`, which correctly sums the
             # per-minute deltas into 10/15-minute deltas.
+            # NOTE: legacy `pkt_count` column was removed here — it is a
+            # dead column in the WM1303 schema (never written by any
+            # overlay code; RX totals come from packet_activity via
+            # _pkt_counts_for). Referencing it caused
+            # "no such column: pkt_count" WARNINGs that blocked every
+            # channel_stats_history rollup tier (warm/cool/cold), leaving
+            # channel_stats_history_{1m,10m,15m} empty and the base table
+            # unbounded.
             ("MAX(rx_count) - MIN(rx_count)",             "total_rx_count"),
             ("AVG(avg_rssi)",                             "avg_rssi"),
             ("AVG(avg_snr)",                              "avg_snr"),
@@ -237,7 +245,6 @@ DOWNSAMPLE_TABLES: List[Dict] = [
             ("MAX(lbt_blocked) - MIN(lbt_blocked)",       "total_lbt_blocked"),
             ("MAX(lbt_passed) - MIN(lbt_passed)",         "total_lbt_passed"),
             ("AVG(noise_floor_dbm)",                      "avg_noise_floor_dbm"),
-            ("MAX(pkt_count) - MIN(pkt_count)",           "total_pkt_count"),
             ("AVG(tx_noisefloor_dbm)",                    "avg_tx_noisefloor_dbm"),
         ],
     },

@@ -709,7 +709,7 @@ step "Applying pyMC_Repeater overlay"
 RPT_DIR="${REPO_DIR}/pyMC_Repeater"
 
 # repeater/ level files
-for f in bridge_engine.py channel_e_bridge.py channel_f_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py wm1303_telemetry_helper.py; do
+for f in bridge_engine.py channel_e_bridge.py channel_f_bridge.py config_manager.py engine.py main.py identity_manager.py config.py packet_router.py metrics_retention.py uniform_tracer.py wm1303_telemetry_helper.py protocol_validator.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/${f}" "${RPT_DIR}/repeater/" >> "${LOG_FILE}" 2>&1
     fi
@@ -735,6 +735,16 @@ done
 for f in wm1303_api.py http_server.py spectrum_collector.py cad_calibration_engine.py api_endpoints.py debug_collector.py packet_trace.py tiered_query.py update_endpoints.py; do
     if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" ]; then
         cp "${OVERLAY_DIR}/pymc_repeater/repeater/web/${f}" "${RPT_DIR}/repeater/web/" >> "${LOG_FILE}" 2>&1
+    fi
+done
+
+# repeater/data_acquisition/ level files (SQLite schema + storage; WM1303 tables:
+# invalid_packets, packet_metrics, crc_error_rate, dedup_events, neighbour_samples,
+# sx1261_health_events + store_packet_metric/store_invalid_packet methods).
+mkdir -p "${RPT_DIR}/repeater/data_acquisition" >> "${LOG_FILE}" 2>&1
+for f in sqlite_handler.py; do
+    if [ -f "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" ]; then
+        cp "${OVERLAY_DIR}/pymc_repeater/repeater/data_acquisition/${f}" "${RPT_DIR}/repeater/data_acquisition/" >> "${LOG_FILE}" 2>&1
     fi
 done
 
@@ -2121,6 +2131,25 @@ phase "Restart and Verify Service"
 step "Performing extended hardware drain reset (60s)"
 sudo "${PKTFWD_DIR}/reset_lgw.sh" deep_reset 60 >> "${LOG_FILE}" 2>&1
 ok "Hardware drain reset complete"
+
+# --- Deploy-gap verification (added v2.7.2 to catch #211/#214-style bugs) ---
+# Compares overlay repeater/*.py against ${RPT_DIR}/repeater/*.py (active-dir
+# served via PYTHONPATH) and warns if any overlay .py was not deployed.
+# storage_collector.py is intentionally excluded (fork-drift protection).
+step "Verifying overlay deploy coverage (repeater/*.py)"
+_DEPLOY_EXCLUDED='storage_collector\.py$'
+_DEPLOY_MISSING=$(comm -23 \
+    <(cd "${OVERLAY_DIR}/pymc_repeater/repeater" 2>/dev/null && find . -name '*.py' -type f | sed 's|^\./||' | sort) \
+    <(cd "${RPT_DIR}/repeater" 2>/dev/null && find . -name '*.py' -type f | sed 's|^\./||' | sort) \
+    2>/dev/null | grep -Ev "${_DEPLOY_EXCLUDED}" || true)
+if [ -n "${_DEPLOY_MISSING}" ]; then
+    warn "Deploy-gap detected \u2014 the following overlay .py files were NOT copied to ${RPT_DIR}/repeater/:"
+    echo "${_DEPLOY_MISSING}" | sed 's/^/  - /' | tee -a "${LOG_FILE}"
+    warn "Add them to the appropriate for-loop in install.sh/upgrade.sh (see #211/#214 pattern)"
+else
+    ok "Overlay deploy coverage complete (all *.py deployed, excluding intentional: storage_collector.py)"
+fi
+unset _DEPLOY_EXCLUDED _DEPLOY_MISSING
 
 step "Starting openhop-repeater service"
 systemctl start openhop-repeater.service >> "${LOG_FILE}" 2>&1

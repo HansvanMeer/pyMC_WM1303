@@ -94,12 +94,18 @@ _TABLE_REGISTRY: Dict[str, Dict] = {
             ("COUNT(*)",                                  "sample_count"),
             # NOTE: cumulative counters in channel_stats_history
             # (rx_count, tx_count, tx_failed, tx_airtime_ms, tx_bytes,
-            # lbt_blocked, lbt_passed, pkt_count) are monotonic since
+            # lbt_blocked, lbt_passed) are monotonic since
             # service start. To get a per-bucket delta from raw rows we
             # use MAX(x) - MIN(x). With 1 sample per minute (the snapshot
             # interval is 60 s in wm1303_backend), 1-minute buckets often
             # yield 0; coarser buckets (10/15 minute) yield meaningful
             # deltas. Must match the aggregation in metrics_retention.py.
+            # NOTE: legacy `pkt_count` column was removed here — it is a
+            # dead column in the WM1303 schema (never written by any
+            # overlay code; RX totals come from packet_activity via
+            # _pkt_counts_for). Referencing it caused
+            # "no such column: pkt_count" errors that broke tiered
+            # channel_stats_history queries.
             ("MAX(rx_count) - MIN(rx_count)",             "total_rx_count"),
             ("AVG(avg_rssi)",                             "avg_rssi"),
             ("AVG(avg_snr)",                              "avg_snr"),
@@ -110,7 +116,6 @@ _TABLE_REGISTRY: Dict[str, Dict] = {
             ("MAX(lbt_blocked) - MIN(lbt_blocked)",       "total_lbt_blocked"),
             ("MAX(lbt_passed) - MIN(lbt_passed)",         "total_lbt_passed"),
             ("AVG(noise_floor_dbm)",                      "avg_noise_floor_dbm"),
-            ("MAX(pkt_count) - MIN(pkt_count)",           "total_pkt_count"),
             ("AVG(tx_noisefloor_dbm)",                    "avg_tx_noisefloor_dbm"),
         ],
     },
