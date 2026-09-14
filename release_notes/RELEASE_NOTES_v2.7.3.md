@@ -20,7 +20,7 @@ Six related improvements around Layer-2 protocol validation, operator diagnostic
 
 - **Symptom / gap:** the validator missed the explicit `hash_count × hash_size > MAX_PATH_SIZE (64)` check that upstream `Packet.cpp isValidPathLen()` enforces. In large enough frames a declared path total of >64 bytes (e.g. `hash_size=2 × hop_count=40 = 80 bytes`) could slip past `length_implausible` even though upstream would reject it as structurally invalid.
 - **Fix:** added check 7c in `overlay/pymc_repeater/repeater/protocol_validator.py` (between `hop_count_implausible` and `length_implausible`): `if hop_count * hash_size > MAX_PATH_SIZE: return _fail("path_bytes_exceed_max", metadata)`. Docstring drop_reasons list updated. UI updates in `overlay/pymc_repeater/repeater/web/html/wm1303.html`: new `REASON_INFO` + `REASON_DETAIL` entries with byte-arithmetic explanation, `RELIABILITY = 'partial'`. `length_implausible` and `path_overflow` tips also sharpened for accuracy.
-- **Impact:** restores full spec-parity with upstream `Packet.cpp isValidPathLen()`; no structurally-invalid frame can slip past the validator regardless of frame size. Live on pi03: **184 rows** with the new drop_reason recorded within 10 minutes, capturing real garbage-frames that previously slipped through.
+- **Impact:** restores full spec-parity with upstream `Packet.cpp isValidPathLen()`; no structurally-invalid frame can slip past the validator regardless of frame size. Live on the test device: **184 rows** with the new drop_reason recorded within 10 minutes, capturing real garbage-frames that previously slipped through.
 
 ### #220 — 'Invalid Packets' UI — decode-reliability indicator per row + colour-coded sender-hint
 
@@ -32,14 +32,14 @@ Six related improvements around Layer-2 protocol validation, operator diagnostic
 
 - **Symptom:** every received ADVERT (~10/hour on a busy device) failed to persist to the `adverts` table with a JSON-serialisation error. The advert was still forwarded to the mesh and neighbour tracking still worked, but the DB row was missing — breaking advert statistics, UI history and neighbour analytics.
 - **Root cause:** `advert_record["path"] = path_bytes_blob` in `overlay/pymc_repeater/repeater/handler_helpers/advert.py` passed a raw `bytes` object into a dict that gets JSON-encoded downstream (`storage.record_advert` → `json.dumps`), which cannot serialise `bytes`.
-- **Fix:** defensively convert to hex string in the record: `"path": (path_bytes_blob.hex() if isinstance(path_bytes_blob, (bytes, bytearray)) else (path_bytes_blob or ""))`. Verified on pi03: **0** `Failed to store advert record` errors in the journal since deploy (was recurring ~10×/hour before).
+- **Fix:** defensively convert to hex string in the record: `"path": (path_bytes_blob.hex() if isinstance(path_bytes_blob, (bytes, bytearray)) else (path_bytes_blob or ""))`. Verified on the test device: **0** `Failed to store advert record` errors in the journal since deploy (was recurring ~10×/hour before).
 - **Impact:** restores per-ADVERT database persistence on every device — the `adverts` table now grows correctly with every incoming advert.
 
 ### #222 — Bug: `invalid_packets` missing from `metrics_retention` (unbounded growth past 8-day policy)
 
-- **Symptom:** the `invalid_packets` table had rows older than 12 days on pi03 while other retention-managed tables (`packets`, `adverts`, `crc_errors`) were correctly pruned at 8 days. The design-doc retention policy was silently not enforced for this table.
+- **Symptom:** the `invalid_packets` table had rows older than 12 days on the test device while other retention-managed tables (`packets`, `adverts`, `crc_errors`) were correctly pruned at 8 days. The design-doc retention policy was silently not enforced for this table.
 - **Root cause:** `overlay/pymc_repeater/repeater/metrics_retention.py` `DELETE_ONLY_TABLES` list did not include `invalid_packets` — only `packets`, `adverts`, `crc_errors`, `noise_floor`, `sx1261_health_events`, `spectrum_scans`.
-- **Fix:** added `("repeater.db", "invalid_packets", "timestamp")` between `crc_errors` and `noise_floor` in the list, with an explanatory comment referencing the design-doc requirement. Verified on pi03: runtime-inspect confirms `invalid_packets in DELETE_ONLY_TABLES: True`; next hourly cleanup will start pruning the backlog to the 8-day cutoff.
+- **Fix:** added `("repeater.db", "invalid_packets", "timestamp")` between `crc_errors` and `noise_floor` in the list, with an explanatory comment referencing the design-doc requirement. Verified on the test device: runtime-inspect confirms `invalid_packets in DELETE_ONLY_TABLES: True`; next hourly cleanup will start pruning the backlog to the 8-day cutoff.
 - **Impact:** restores the design-doc 8-day retention policy for the `invalid_packets` table on every device; prevents unbounded table growth (~1000+ rows/day) that would eventually inflate DB size.
 
 ### #223 — Analytics > Neighbour Links tab 'Loading Failed' — missing `/api/neighbor_links` + `/api/neighbor_link_history` endpoints (#208-pattern)
@@ -51,7 +51,7 @@ Six related improvements around Layer-2 protocol validation, operator diagnostic
 
 ## Verification
 
-All fixes deployed to the test device (pi03) running v2.7.2 and verified: service `active (running)`, `NRestarts=0`, no new tracebacks after restart.
+All fixes deployed to the test device (the test device) running v2.7.2 and verified: service `active (running)`, `NRestarts=0`, no new tracebacks after restart.
 
 - **#218**: runtime-inspect of `BridgeEngine.inject_packet` source contains `protocol_validator import validate_and_record`.
 - **#219**: runtime `validate()` source contains `path_bytes_exceed_max`; UI HTTP 200 with 3 marker hits (INFO/DETAIL/RELIABILITY); **184 rows** with the new drop_reason recorded within 10 minutes of deploy.

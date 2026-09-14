@@ -33,11 +33,43 @@ upgrade_bootstrap.sh
 node_modules/
 
 # Internal working notes / handovers (never publish - may contain infra/dev context)
+# Patterns are deliberately prefix-independent: a handover named HANDOVER-x.md
+# must be ignored just as surely as one named _HANDOVER-x.md. Requiring a
+# leading underscore once let HANDOVER-20260914.md slip through untracked.
 .notes/
-_*HANDOVER*.md
+*HANDOVER*
+*Handover*
+*handover*
 _issues_review*.md
-_BACKEND_HANDOVER.md
+*issues_review*
 github_comment_*.md
 
-# Screenshots (local reference only, keep private)
-screenshots/
+# Scratch / temporary working material: one-off helper and debug scripts,
+# ad-hoc analysis notes, editor and tooling leftovers. Never published.
+/tmp_*
+/scratch_*
+/debug_*
+/analysis_*
+/check_*
+/fix_*
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Screenshots. Local debug captures (mesh_*, radar_*, ...) stay private, but the
+# six screenshots embedded in README.md are published product documentation and
+# MUST stay tracked. A bare `screenshots/` rule cannot be overridden per file,
+# because git never descends into an excluded directory - hence `screenshots/*`.
+screenshots/*
+!screenshots/status.png
+!screenshots/channels.png
+!screenshots/bridge-rules.png
+!screenshots/spectrum.png
+!screenshots/dedup.png
+!screenshots/tracing.png
+
+# Convention: any root-level path starting with an underscore is scratch or
+# working material (analysis notes, one-off helpers, collected reference data)
+# and is never published.
+/_*

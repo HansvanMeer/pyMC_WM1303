@@ -303,6 +303,29 @@ mkdir -p "${LOG_DIR}" "${DATA_DIR}"
 _migrate_legacy_vardir "/var/log/pymc_repeater" "${LOG_DIR}"  "log dir"
 _migrate_legacy_vardir "/var/lib/pymc_repeater" "${DATA_DIR}" "data dir"
 
+# --- OpenHop stale-DB quarantine (v2.7.5+, TODO #228) -------------------------
+# When ${DATA_DIR}/repeater.db exists from an OLD openhop_repeater install with
+# a stale schema (e.g. channel_stats_history has 'pkt_count' but no 'rx_count'
+# column), quarantine it so the service creates a fresh DB with the current
+# schema at first start. Prevents the recurring
+# "table channel_stats_history has no column named rx_count" crash where the
+# 60s snapshot loop fails and UI graphs stay empty.
+_quarantine_stale_openhop_db() {
+    local db="${DATA_DIR}/repeater.db"
+    [ -f "${db}" ] || return 0
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local schema
+    schema=$(sqlite3 "${db}" ".schema channel_stats_history" 2>/dev/null || echo "")
+    if [ -n "${schema}" ] && ! echo "${schema}" | grep -q 'rx_count'; then
+        local ts=$(date +%Y%m%d_%H%M%S)
+        mv "${db}" "${db}.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        [ -f "${db}-shm" ] && mv "${db}-shm" "${db}-shm.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        [ -f "${db}-wal" ] && mv "${db}-wal" "${db}-wal.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        ok "Quarantined stale ${db} (missing rx_count) -> ${db}.stale_${ts}"
+    fi
+}
+_quarantine_stale_openhop_db
+
 step "Creating pre-upgrade backup"
 mkdir -p "${UPGRADE_BACKUP}"
 if [ -d "${CONFIG_DIR}" ]; then
@@ -1603,6 +1626,31 @@ else
     warn "${SYSTEMD_CONF} not found; skipped RuntimeWatchdogSec"
 fi
 
+# --- Journal Log Management (TODO #14) ---
+# Keep upgrades consistent with install.sh Phase 10c: cap journal size and
+# retention so continuous repeater logging cannot fill the SD card. SQLite
+# metrics retention is handled by repeater/metrics_retention.py (8-day window).
+step "Installing systemd-journald limits drop-in"
+JOURNALD_DROPIN_DIR="/etc/systemd/journald.conf.d"
+JOURNALD_DROPIN="${JOURNALD_DROPIN_DIR}/10-openhop.conf"
+if [ -f "${SCRIPT_DIR}/config/journald-openhop.conf" ]; then
+    if [ -f "${JOURNALD_DROPIN}" ] && cmp -s "${SCRIPT_DIR}/config/journald-openhop.conf" "${JOURNALD_DROPIN}"; then
+        ok "Already up to date"
+    else
+        mkdir -p "${JOURNALD_DROPIN_DIR}"
+        cp "${SCRIPT_DIR}/config/journald-openhop.conf" "${JOURNALD_DROPIN}" >> "${LOG_FILE}" 2>&1
+        chmod 644 "${JOURNALD_DROPIN}"
+        if systemctl restart systemd-journald >> "${LOG_FILE}" 2>&1; then
+            ok "Installed ${JOURNALD_DROPIN} (SystemMaxUse=200M, MaxRetentionSec=8day)"
+        else
+            warn "Drop-in installed but journald restart failed (applies after reboot)"
+        fi
+        journalctl --vacuum-size=200M >> "${LOG_FILE}" 2>&1 || warn "journal vacuum failed (non-fatal)"
+    fi
+else
+    warn "config/journald-openhop.conf not found; skipped journal limits"
+fi
+
 step "Updating version file"
 if [ -f "${SCRIPT_DIR}/VERSION" ]; then
     cp "${SCRIPT_DIR}/VERSION" "${CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1
@@ -1615,6 +1663,16 @@ if [ -f "${SCRIPT_DIR}/VERSION" ]; then
     # script (cp -an ${LEGACY_CONFIG_DIR}/. ${CONFIG_DIR}/) still ensures
     # that devices upgraded from v2.5.x get their old version file copied
     # into ${CONFIG_DIR}/ before this step overwrites it with the new value.
+    # Hardening: if a stale legacy version marker still exists (left behind
+    # by an old install), re-sync it with the canonical version so
+    # audits/tools can never read a wrong value again. Never CREATE the
+    # legacy file — only refresh an existing one, and skip when legacy and
+    # canonical resolve to the same file (e.g. symlinked config dirs).
+    if [ -f "${LEGACY_CONFIG_DIR}/version" ] && ! [ "${LEGACY_CONFIG_DIR}/version" -ef "${CONFIG_DIR}/version" ]; then
+        cp "${SCRIPT_DIR}/VERSION" "${LEGACY_CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1 || true
+        chown ${PI_USER}:${PI_USER} "${LEGACY_CONFIG_DIR}/version" 2>/dev/null || true
+        ok "Legacy ${LEGACY_CONFIG_DIR}/version re-synced to canonical version"
+    fi
     ok "v$(cat ${SCRIPT_DIR}/VERSION)"
 else
     warn "VERSION file not found in repo"

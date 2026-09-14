@@ -63,6 +63,19 @@ TIER_OVERLAP_S = 60
 # }
 # The summary_alias is the column name in _1m/_10m/_15m tables.
 # The raw_expr is the SQL aggregation applied to the raw table.
+# TODO #234: marker for source columns holding a CUMULATIVE (monotonically
+# increasing since service start) counter rather than an interval value.
+# An agg_cols entry of the form ("CUMDELTA:<source_column>", "<alias>") tells
+# _build_raw_query() to emit the per-bucket delta relative to the PREVIOUS
+# bucket (window function LAG), clamped at 0 so a counter reset on service
+# restart yields 0 instead of a large negative spike.
+#
+# This mirrors the identical constant in metrics_retention.py. The write side
+# (rollup into _1m/_10m/_15m) and this read side (raw hot-tier queries) must
+# use the same delta definition, otherwise a single series shows a step at the
+# 7-hour hot/warm tier boundary.
+CUMDELTA_PREFIX = "CUMDELTA:"
+
 _TABLE_REGISTRY: Dict[str, Dict] = {
     "packet_activity": {
         "ts_col": "timestamp",
@@ -95,28 +108,37 @@ _TABLE_REGISTRY: Dict[str, Dict] = {
             # NOTE: cumulative counters in channel_stats_history
             # (rx_count, tx_count, tx_failed, tx_airtime_ms, tx_bytes,
             # lbt_blocked, lbt_passed) are monotonic since
-            # service start. To get a per-bucket delta from raw rows we
-            # use MAX(x) - MIN(x). With 1 sample per minute (the snapshot
-            # interval is 60 s in wm1303_backend), 1-minute buckets often
-            # yield 0; coarser buckets (10/15 minute) yield meaningful
-            # deltas. Must match the aggregation in metrics_retention.py.
+            # service start.
+            # TODO #234: these were previously differenced WITHIN the bucket
+            # via MAX(x) - MIN(x). The snapshot loop writes this table once
+            # per 60 s, so a 60 s bucket holds exactly one sample and that
+            # expression is 0 by construction. Coarser buckets only appeared
+            # to work: they still dropped every increment that fell between
+            # the last sample of one bucket and the first of the next.
+            # They are now marked with CUMDELTA_PREFIX so _build_raw_query()
+            # differences against the PREVIOUS bucket with a LAG() window
+            # function, which is correct at every bucket size.
+            # Must match the aggregation in metrics_retention.py, otherwise a
+            # series crossing the 7-hour hot/warm boundary shows a step.
             # NOTE: legacy `pkt_count` column was removed here — it is a
             # dead column in the WM1303 schema (never written by any
             # overlay code; RX totals come from packet_activity via
             # _pkt_counts_for). Referencing it caused
             # "no such column: pkt_count" errors that broke tiered
             # channel_stats_history queries.
-            ("MAX(rx_count) - MIN(rx_count)",             "total_rx_count"),
+            ("CUMDELTA:rx_count",                         "total_rx_count"),
             ("AVG(avg_rssi)",                             "avg_rssi"),
             ("AVG(avg_snr)",                              "avg_snr"),
-            ("MAX(tx_count) - MIN(tx_count)",             "total_tx_count"),
-            ("MAX(tx_failed) - MIN(tx_failed)",           "total_tx_failed"),
-            ("MAX(tx_airtime_ms) - MIN(tx_airtime_ms)",   "total_tx_airtime_ms"),
-            ("MAX(tx_bytes) - MIN(tx_bytes)",             "total_tx_bytes"),
-            ("MAX(lbt_blocked) - MIN(lbt_blocked)",       "total_lbt_blocked"),
-            ("MAX(lbt_passed) - MIN(lbt_passed)",         "total_lbt_passed"),
+            ("CUMDELTA:tx_count",                         "total_tx_count"),
+            ("CUMDELTA:tx_failed",                        "total_tx_failed"),
+            ("CUMDELTA:tx_airtime_ms",                    "total_tx_airtime_ms"),
+            ("CUMDELTA:tx_bytes",                         "total_tx_bytes"),
+            ("CUMDELTA:lbt_blocked",                      "total_lbt_blocked"),
+            ("CUMDELTA:lbt_passed",                       "total_lbt_passed"),
             ("AVG(noise_floor_dbm)",                      "avg_noise_floor_dbm"),
             ("AVG(tx_noisefloor_dbm)",                    "avg_tx_noisefloor_dbm"),
+            # TODO #243: must mirror metrics_retention.py exactly.
+            ("AVG(lbt_last_rssi)",                        "avg_lbt_last_rssi"),
         ],
     },
     "dedup_events": {
@@ -140,6 +162,8 @@ _TABLE_REGISTRY: Dict[str, Dict] = {
             ("SUM(cad_hw_detected)",  "total_cad_hw_detected"),
             ("SUM(cad_sw_clear)",     "total_cad_sw_clear"),
             ("SUM(cad_sw_detected)",  "total_cad_sw_detected"),
+            # TODO #242: must mirror metrics_retention.py exactly.
+            ("SUM(cad_busy_events)",  "total_cad_busy_events"),
         ],
     },
     "crc_error_rate": {
@@ -164,6 +188,8 @@ _TABLE_REGISTRY: Dict[str, Dict] = {
             ("MAX(snr)",        "max_snr"),
             ("AVG(airtime_ms)", "avg_airtime_ms"),
             ("SUM(airtime_ms)", "total_airtime_ms"),
+            # TODO #245: must mirror metrics_retention.py exactly.
+            ("SUM(wait_time_ms)", "total_wait_time_ms"),
             ("SUM(length)",     "total_bytes"),
             ("AVG(hop_count)",  "avg_hop_count"),
             ("SUM(CASE WHEN crc_ok=0 THEN 1 ELSE 0 END)", "crc_error_count"),
@@ -313,18 +339,12 @@ def _build_raw_query(
     Returns (sql, params).
     """
     bucket_expr = f"CAST(({ts_col} / {bucket_seconds}) AS INTEGER) * {bucket_seconds}"
-    select_parts = [f"{bucket_expr} AS bucket_ts"]
 
     all_group_cols = list(group_cols)
     if extra_group_cols:
         for gc in extra_group_cols:
             if gc not in all_group_cols:
                 all_group_cols.append(gc)
-
-    for gc in all_group_cols:
-        select_parts.append(gc)
-    for raw_expr, alias in agg_cols:
-        select_parts.append(f"{raw_expr} AS {alias}")
 
     where_parts = [f"{ts_col} >= ?", f"{ts_col} < ?"]
     params = [seg_start, seg_end]
@@ -334,12 +354,68 @@ def _build_raw_query(
         params.append(filter_val)
 
     group_by = ["bucket_ts"] + all_group_cols
+    has_cumdelta = any(expr.startswith(CUMDELTA_PREFIX) for expr, _ in agg_cols)
 
+    if not has_cumdelta:
+        select_parts = [f"{bucket_expr} AS bucket_ts"]
+        for gc in all_group_cols:
+            select_parts.append(gc)
+        for raw_expr, alias in agg_cols:
+            select_parts.append(f"{raw_expr} AS {alias}")
+
+        sql = (
+            f"SELECT {', '.join(select_parts)} "
+            f"FROM {table_name} "
+            f"WHERE {' AND '.join(where_parts)} "
+            f"GROUP BY {', '.join(group_by)} "
+            f"ORDER BY bucket_ts ASC"
+        )
+        return sql, params
+
+    # TODO #234: two-stage query for cumulative counters.
+    #   Stage 1 (_buckets) collapses each bucket and keeps the LAST cumulative
+    #           level seen in it. The counters are monotonic, so MAX is the
+    #           last value.
+    #   Stage 2 turns those per-bucket levels into per-bucket deltas with LAG
+    #           across the bucket boundary.
+    # The outer column order must stay identical to agg_cols, because
+    # _rows_to_dicts() maps result columns onto aliases by position.
+    inner_parts = [f"{bucket_expr} AS bucket_ts"]
+    outer_parts = ["bucket_ts"]
+    for gc in all_group_cols:
+        inner_parts.append(gc)
+        outer_parts.append(gc)
+
+    for raw_expr, alias in agg_cols:
+        if raw_expr.startswith(CUMDELTA_PREFIX):
+            src_col = raw_expr[len(CUMDELTA_PREFIX):]
+            level = f"_cum_{alias}"
+            inner_parts.append(f"MAX({src_col}) AS {level}")
+            # COALESCE(LAG(...), level) makes the first bucket of the segment
+            # yield 0 rather than NULL; the 2-argument scalar MAX clamps at 0
+            # so a counter reset on service restart cannot produce a large
+            # negative spike.
+            outer_parts.append(
+                f"MAX(0, {level} - COALESCE(LAG({level}) OVER _w, {level})) "
+                f"AS {alias}"
+            )
+        else:
+            inner_parts.append(f"{raw_expr} AS {alias}")
+            outer_parts.append(alias)
+
+    partition = (
+        f"PARTITION BY {', '.join(all_group_cols)} " if all_group_cols else ""
+    )
     sql = (
-        f"SELECT {', '.join(select_parts)} "
+        f"WITH _buckets AS ("
+        f"SELECT {', '.join(inner_parts)} "
         f"FROM {table_name} "
         f"WHERE {' AND '.join(where_parts)} "
-        f"GROUP BY {', '.join(group_by)} "
+        f"GROUP BY {', '.join(group_by)}"
+        f") "
+        f"SELECT {', '.join(outer_parts)} "
+        f"FROM _buckets "
+        f"WINDOW _w AS ({partition}ORDER BY bucket_ts) "
         f"ORDER BY bucket_ts ASC"
     )
     return sql, params
@@ -778,6 +854,7 @@ def tiered_cad_events_query(
             "total_cad_clear", "total_cad_detected", "total_cad_skipped",
             "total_cad_hw_clear", "total_cad_hw_detected",
             "total_cad_sw_clear", "total_cad_sw_detected",
+            "total_cad_busy_events",
         ],
     )
 

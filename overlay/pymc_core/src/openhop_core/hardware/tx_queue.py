@@ -123,6 +123,40 @@ def estimate_lora_airtime_ms(
 
 
 
+# --- TODO #8: ACK priority in the TX queue ------------------------------------
+# MeshCore packet header, byte 0: bits 2-5 hold the payload type.
+# Mirrors BridgeEngine.PH_TYPE_SHIFT / PH_TYPE_MASK in
+# repeater/bridge_engine.py; kept as local constants so openhop_core does not
+# depend on the repeater package.
+PH_TYPE_SHIFT = 2
+PH_TYPE_MASK = 0x0F
+PAYLOAD_TYPE_ACK = 0x03
+
+# Payload types that jump the queue. ACKs are time-critical: the sending node
+# waits for them and companion apps show a delivery checkmark only once the ACK
+# is received. Flood/advert traffic is bulk and can wait a round.
+PRIORITY_PAYLOAD_TYPES = frozenset({PAYLOAD_TYPE_ACK})
+
+
+def meshcore_payload_type(payload: bytes):
+    """Return the MeshCore payload type of `payload`, or None when unknown.
+
+    Only the first header byte is inspected, so this stays cheap enough to run
+    on every enqueue without adding TX latency.
+    """
+    if not payload:
+        return None
+    try:
+        return (payload[0] >> PH_TYPE_SHIFT) & PH_TYPE_MASK
+    except (TypeError, IndexError):
+        return None
+
+
+def is_priority_payload(payload: bytes) -> bool:
+    """True when `payload` must be transmitted ahead of queued bulk traffic."""
+    return meshcore_payload_type(payload) in PRIORITY_PAYLOAD_TYPES
+
+
 class ChannelTXQueue:
     """Simple FIFO TX queue for a single channel.
 
@@ -149,6 +183,14 @@ class ChannelTXQueue:
         self._queue_size = queue_size
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=queue_size)
 
+        # TODO #8: separate priority lane for time-critical payloads (ACKs).
+        # Kept as a bounded deque next to the bulk asyncio.Queue so an ACK is
+        # never queued behind flood/advert traffic. dequeue_nowait() drains
+        # this lane first. Bounded independently so a burst of ACKs cannot grow
+        # without limit; on overflow the OLDEST ACK is dropped, matching the
+        # bulk-queue policy (a stale ACK has no value).
+        self._priority_queue: deque = deque(maxlen=queue_size)
+
         # Stats
         self.stats = {
             "pending": 0,
@@ -157,6 +199,11 @@ class ChannelTXQueue:
             "dropped_ttl": 0,
             "dropped_overflow": 0,
             "dropped_stale": 0,
+            # TODO #8: ACK priority lane counters
+            "pending_priority": 0,
+            "priority_enqueued": 0,
+            "priority_sent": 0,
+            "dropped_priority_overflow": 0,
             "last_tx_time": None,
             "avg_tx_time_ms": 0,
             "avg_send_ms": 0,
@@ -178,6 +225,15 @@ class ChannelTXQueue:
             "cad_clear": 0,
             "cad_detected": 0,
             "cad_timeout": 0,
+            # Channel-busy accounting. cad_clear/cad_detected carry only the
+            # FINAL outcome of a TX, so a TX cleared after N HAL CAD retries
+            # counts as cad_clear and the N busy detections preceding it are
+            # lost. Without these counters, channel occupancy at TX time is
+            # invisible in the UI and in history.
+            "cad_busy_events": 0,
+            "cad_retry_total": 0,
+            "cad_tx_with_retries": 0,
+            "cad_max_retries": 0,
             "cad_last_result": None,
             # HW CAD (done by HAL C code before every TX, reported via TX_ACK)
             "cad_hw_clear": 0,
@@ -215,6 +271,10 @@ class ChannelTXQueue:
         Overflow policy: when full, drop the OLDEST packet to make room.
         New packets are more important than stale ones.
 
+        TODO #8: time-critical payloads (ACKs) are routed to a separate
+        priority lane that the scheduler drains first, so an ACK is never held
+        up behind queued flood/advert traffic.
+
         Returns:
             dict with {"ok": True/False, ...}
         """
@@ -229,6 +289,40 @@ class ChannelTXQueue:
             "enqueue_time": time.time(),
             "trace_hash": trace_hash,
         }
+
+        # --- TODO #8: priority lane for ACKs -----------------------------
+        if is_priority_payload(payload):
+            # Drop the OLDEST priority entry when the lane is full. Done
+            # explicitly rather than relying on deque(maxlen=...) so the
+            # dropped request's future is always resolved; otherwise its
+            # caller would block until the 15s wait_for timeout.
+            if len(self._priority_queue) >= self._queue_size:
+                old_req = self._priority_queue.popleft()
+                old_future = old_req.get("future")
+                if old_future and not old_future.done():
+                    old_future.set_result({"ok": False,
+                                           "error": "dropped_priority_overflow"})
+                self.stats["dropped_priority_overflow"] += 1
+                logger.warning(
+                    "ChannelTXQueue[%s]: priority lane full (%d), dropped OLDEST "
+                    "ACK (age=%.1fs) to make room",
+                    self.channel_id, self._queue_size,
+                    time.time() - old_req.get("enqueue_time", 0))
+            self._priority_queue.append(request)
+            self.stats["pending_priority"] = len(self._priority_queue)
+            self.stats["priority_enqueued"] += 1
+            logger.info("ChannelTXQueue[%s]: enqueued %d bytes on PRIORITY lane "
+                        "(type=ACK, pending_priority=%d, pending=%d)",
+                        self.channel_id, len(payload),
+                        len(self._priority_queue), self.queue.qsize())
+            try:
+                return await asyncio.wait_for(future, timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("ChannelTXQueue[%s]: TX wait timeout (priority)",
+                               self.channel_id)
+                self.stats["total_failed"] += 1
+                return {"ok": False, "error": "timeout"}
+
         try:
             self.queue.put_nowait(request)
             self.stats["pending"] = self.queue.qsize()
@@ -273,7 +367,20 @@ class ChannelTXQueue:
             return {"ok": False, "error": "timeout"}
 
     def dequeue_nowait(self):
-        """Non-blocking dequeue. Returns request dict or raises asyncio.QueueEmpty."""
+        """Non-blocking dequeue. Returns request dict or raises asyncio.QueueEmpty.
+
+        TODO #8: the priority lane (ACKs) is drained before the bulk queue, so
+        a time-critical ACK is transmitted in the current scheduler round even
+        when flood/advert packets are already queued. Raises
+        ``asyncio.QueueEmpty`` only when BOTH lanes are empty, keeping the
+        contract expected by GlobalTXScheduler._scheduler_loop() unchanged.
+        """
+        if self._priority_queue:
+            request = self._priority_queue.popleft()
+            request["priority"] = True
+            self.stats["pending_priority"] = len(self._priority_queue)
+            self.stats["priority_sent"] += 1
+            return request
         request = self.queue.get_nowait()  # raises QueueEmpty if empty
         self.stats["pending"] = self.queue.qsize()
         return request
@@ -374,7 +481,13 @@ class ChannelTXQueue:
             return
         self._lbt_rssi_buffer.append(rssi)
         n = len(self._lbt_rssi_buffer)
-        self.stats["lbt_last_rssi"] = round(rssi, 1)
+        # TODO #243: deliberately does NOT set lbt_last_rssi. This method is
+        # also fed by the SX1261 noise-floor monitor (wm1303_backend
+        # _feed_noise_floor_to_queues), which is not an LBT measurement. The
+        # real LBT path assigns lbt_last_rssi itself in record_lbt_result().
+        # Setting it here made the field report a noise floor on channels with
+        # LBT switched off, so the UI showed an "LBT RSSI" that no LBT check
+        # ever produced.
         self.stats["noise_floor_lbt_samples"] = n
         if n > 0:
             vals_sorted = sorted(self._lbt_rssi_buffer)
@@ -425,6 +538,8 @@ class ChannelTXQueue:
     def get_status(self) -> dict:
         """Return queue status and stats."""
         self.stats["pending"] = self.queue.qsize()
+        # TODO #8: keep the reported priority-lane depth in sync with reality.
+        self.stats["pending_priority"] = len(self._priority_queue)
         return {
             "channel_id": self.channel_id,
             "freq_hz": self.freq_hz,
@@ -493,7 +608,9 @@ class TXQueueManager:
         Args:
             channel_id: per-channel queue identifier.
             cad_result: dict with keys 'enabled' (bool), 'detected' (bool),
-                optional 'reason' (str).
+                optional 'reason' (str) and optional 'retries' (int) holding
+                the number of HAL CAD retries that preceded the final
+                outcome.
         """
         if not cad_result or not cad_result.get("enabled"):
             return
@@ -506,6 +623,20 @@ class TXQueueManager:
         else:
             q.stats["cad_clear"] = q.stats.get("cad_clear", 0) + 1
             q.stats["cad_hw_clear"] = q.stats.get("cad_hw_clear", 0) + 1
+        # Busy accounting: every retry means the HAL found the channel
+        # occupied and scanned again. Those detections never reach
+        # cad_detected because the final outcome was 'clear'.
+        _retries = int(cad_result.get("retries", 0) or 0)
+        if _retries < 0:
+            _retries = 0
+        _busy = _retries + (1 if cad_result.get("detected") else 0)
+        if _busy:
+            q.stats["cad_busy_events"] = q.stats.get("cad_busy_events", 0) + _busy
+        if _retries:
+            q.stats["cad_retry_total"] = q.stats.get("cad_retry_total", 0) + _retries
+            q.stats["cad_tx_with_retries"] = q.stats.get("cad_tx_with_retries", 0) + 1
+            if _retries > int(q.stats.get("cad_max_retries", 0) or 0):
+                q.stats["cad_max_retries"] = _retries
         q.stats["cad_last_result"] = cad_result.get("reason", "hw")
 
     def record_lbt_result(self, channel_id: str, lbt_result: dict) -> None:

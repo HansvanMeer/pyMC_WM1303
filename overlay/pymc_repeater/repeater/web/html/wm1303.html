@@ -1507,7 +1507,7 @@ function _fmtAgo(ts){
 function updateRfPreview(){
   const rf0en = true;
   const rf1en = true;
-  const sharedF = parseFloat(G('rf-shared-freq').value) || 0;
+  const sharedF = parseFloat((G('rf-shared-freq').value || '').replace(/,/g, '.')) || 0;
   const rf0f = sharedF;
   const rf1f = sharedF;
   // Update shared range display
@@ -2279,8 +2279,14 @@ async function specLoad() {
   if(scanEl){if(d.spectral_scan_enabled){scanEl.innerHTML='<span style="background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.3);padding:2px 8px;border-radius:6px;font-size:12px">✅ Spectral Scan Active</span>';}else{scanEl.innerHTML='<span style="background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.3);padding:2px 8px;border-radius:6px;font-size:12px">Spectral Scan Disabled</span>';}}
 
 
+  // specLbtStatus was removed from the UI but this assignment was not, so
+  // every specLoad() threw "Cannot set properties of null" here and silently
+  // skipped everything below it (enable checkbox, LBT channel list). Guarded
+  // like every other lookup in this function.
   const lbtEl = G('specLbtStatus');
+  if(lbtEl){
   if(d.lbt_enabled){lbtEl.innerHTML='<span style="background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.3);padding:2px 8px;border-radius:6px;font-size:12px">✅ LBT Active</span>';}else{lbtEl.innerHTML='<span style="background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3);padding:2px 8px;border-radius:6px;font-size:12px">LBT Disabled</span>';}
+  }
 
 
   // Enable checkbox
@@ -5462,7 +5468,7 @@ showTab = function(name, btn) {
       </div>
     </div>
     <div style="position:relative;height:260px"><canvas id="cadTimelineChart"></canvas></div>
-    <div style="font-size:10px;color:var(--txm);opacity:0.6;margin-top:6px;padding:0 4px">&#x1F7E2; <b>Clear</b> = channel free, TX sent &nbsp;|&nbsp; &#x1F534; <b>Detected</b> = activity detected after all CAD retries, TX force-sent anyway</div>
+    <div style="font-size:10px;color:var(--txm);opacity:0.6;margin-top:6px;padding:0 4px">&#x1F7E2; <b>Clear</b> = channel free, TX sent &nbsp;|&nbsp; &#x1F534; <b>Detected</b> = activity detected after all CAD retries, TX force-sent anyway &nbsp;|&nbsp; &#x1F7E0; <b>Busy (retries)</b> = extra CAD scans needed because the air was busy; these still count as Clear once the channel freed up</div>
     <div id="cadChartNoData" style="display:none;text-align:center;padding:40px 0;color:var(--txm)">
       <svg width="48" height="48" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24" style="margin:0 auto 12px;opacity:0.4"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
       <div>No CAD events recorded yet</div>
@@ -5530,7 +5536,7 @@ showTab = function(name, btn) {
       <span style="font-size:11px;color:var(--txm)" id="pmTxTimingCount">0 buckets</span>
     </div>
     <div style="height:280px;position:relative"><canvas id="pmTxTimingChart"></canvas></div>
-    <div style="font-size:10px;color:var(--txm);opacity:0.7;margin-top:6px">Solid line = airtime (ms) &middot; Dashed line = wait time (ms, queue + CAD + guard)</div>
+    <div style="font-size:10px;color:var(--txm);opacity:0.7;margin-top:6px">Solid line = airtime (ms), the time actually spent transmitting &middot; Dashed line = queue wait (ms), how long a packet sat in the TX queue before dispatch. CAD scan and RF guard time are not included here; those are visible per packet in the Tracing tab.</div>
   </div>
 
   <!-- Chart 9: RX hops per channel over time -->
@@ -6108,6 +6114,11 @@ function renderNfCards(channels) {
       (buckets[chId] || []).forEach(function(pt) { dataMap[pt.ts] = pt; });
       var clearData = timestamps.map(function(ts) { return dataMap[ts] ? (dataMap[ts].clear || 0) : 0; });
       var detData = timestamps.map(function(ts) { return dataMap[ts] ? (dataMap[ts].detected || 0) : 0; });
+      // TODO #242: a TX that cleared only after retries counts as Clear, so
+      // without this series the chart shows a calm channel while the radio
+      // was repeatedly finding the air busy.
+      var busyData = timestamps.map(function(ts) { return dataMap[ts] ? (dataMap[ts].busy || 0) : 0; });
+      var hasBusy = busyData.some(function(v) { return v > 0; });
       var label = chFriendly[chId] || formatChannelName(chId);
 
       datasets.push({
@@ -6116,7 +6127,11 @@ function renderNfCards(channels) {
         backgroundColor: 'rgba(' + rgb + ',0.85)',
         borderColor: 'rgba(' + rgb + ',1)',
         borderWidth: 1, borderRadius: 2,
-        stack: 'cad_' + chId
+        stack: 'cad_' + chId,
+        // Must be explicit: with a second y-axis declared, an unset yAxisID
+        // makes Chart.js fall back to the first declared scale, which put the
+        // event bars on the retry axis and left the event axis empty (0..1).
+        yAxisID: 'y'
       });
       datasets.push({
         label: label + ' Detected',
@@ -6124,8 +6139,26 @@ function renderNfCards(channels) {
         backgroundColor: 'rgba(239,68,68,0.9)',
         borderColor: 'rgba(239,68,68,1)',
         borderWidth: 1, borderRadius: 2,
-        stack: 'cad_' + chId
+        stack: 'cad_' + chId,
+        yAxisID: 'y'
       });
+      // Retries are counted per TX, not per event, so they are drawn as a
+      // line on their own axis instead of stacked onto the event bars.
+      if (hasBusy) {
+        datasets.push({
+          label: label + ' Busy (retries)',
+          data: busyData,
+          type: 'line',
+          borderColor: 'rgba(245,158,11,1)',
+          backgroundColor: 'rgba(245,158,11,0.12)',
+          borderWidth: 1.6,
+          pointRadius: 0,
+          pointHoverRadius: 3,
+          tension: 0.25,
+          fill: true,
+          yAxisID: 'yBusy'
+        });
+      }
     });
 
     var ctx = document.getElementById("cadTimelineChart").getContext("2d");
@@ -6143,7 +6176,9 @@ function renderNfCards(channels) {
               color: "rgba(255,255,255,0.6)", padding: 10, usePointStyle: true,
               pointStyle: "rectRounded", font: { size: 10 },
               filter: function(item) {
-                return item.text.indexOf('Clear') >= 0;
+                return item.text.indexOf('Clear') >= 0 ||
+                       item.text.indexOf('Detected') >= 0 ||
+                       item.text.indexOf('Busy') >= 0;
               }
             }
           },
@@ -6167,6 +6202,12 @@ function renderNfCards(channels) {
             stacked: true,
             ticks: { color: "rgba(255,255,255,0.4)", maxTicksLimit: 16, font: { size: 10 } },
             grid: { color: "rgba(255,255,255,0.05)" }
+          },
+          yBusy: {
+            position: 'right', beginAtZero: true, stacked: false,
+            title: { display: true, text: 'Retries', color: 'rgba(245,158,11,0.7)', font: { size: 10 } },
+            ticks: { color: 'rgba(245,158,11,0.7)', font: { size: 10 }, precision: 0 },
+            grid: { drawOnChartArea: false }
           },
           y: {
             stacked: true, beginAtZero: true,
@@ -6229,6 +6270,18 @@ function renderNfCards(channels) {
       html += '<span>&#x2705; ' + (ch.clear||0) + ' (' + clearPct + '%)</span>';
       html += '<span>&#x1F534; ' + (ch.detected||0) + ' (' + detPct + '%)</span>';
       html += '<span>Total: ' + total + '</span>';
+      // TODO #242: the retry counters added in #235 were stored but never
+      // surfaced, so a channel that repeatedly found the air busy still read
+      // as 100% clear.
+      var _busyTot = (txCad.cad_busy_events != null) ? txCad.cad_busy_events : (ch.busy || 0);
+      if (_busyTot > 0) {
+        var _txRetry = txCad.cad_tx_with_retries || 0;
+        var _maxRetry = txCad.cad_max_retries || 0;
+        html += '<span style="color:#f59e0b" title="Extra CAD scans needed because the channel was busy. These transmissions still count as Clear once the air freed up.">&#x1F7E0; ' + _busyTot + ' busy</span>';
+        if (_txRetry > 0) {
+          html += '<span style="color:#f59e0b;opacity:0.85" title="Transmissions that needed at least one retry, and the highest retry count seen on this channel.">' + _txRetry + ' TX retried, max ' + _maxRetry + '</span>';
+        }
+      }
       html += '</div>';
       if (txCad.cad_clear !== undefined) {
         html += '<div style="font-size:10px;color:var(--txm);margin-top:2px;opacity:0.5">Live: C:' + (txCad.cad_clear||0) + ' D:' + (txCad.cad_detected||0) + '</div>';
@@ -6334,8 +6387,12 @@ function renderLbtHistChart(channels) {
     var lbtRssiLine = evts.map(function(e){ return { x: new Date(e.timestamp*1000), y: (e.lbt_last_rssi   != null ? e.lbt_last_rssi   : null) }; });
     var rxRssiLine  = evts.map(function(e){ return { x: new Date(e.timestamp*1000), y: (e.avg_rssi        != null ? e.avg_rssi        : null) }; });
     var snrLine     = evts.map(function(e){ return { x: new Date(e.timestamp*1000), y: (e.avg_snr         != null ? e.avg_snr         : null) }; });
-    // LBT last RSSI — dotted line on dBm axis
-    datasets.push({
+    // LBT last RSSI — dotted line on dBm axis.
+    // TODO #243: only drawn when the channel actually produced LBT
+    // measurements. With LBT disabled the series is empty, and promising a
+    // line that can never appear is worse than omitting it.
+    var hasLbtRssi = lbtRssiLine.some(function(pt) { return pt.y != null; });
+    if (hasLbtRssi) datasets.push({
       label: (ch.name || ch.friendly_name) + ' LBT RSSI',
       data: lbtRssiLine,
       borderColor: color,
@@ -6404,7 +6461,15 @@ function renderLbtHistChart(channels) {
     });
   }
 
-  legendHtml += '<span>| <span style="border-bottom:2px dashed #999">---</span> LBT Threshold &nbsp; <span style="border-bottom:2px dotted #999">···</span> LBT RSSI &nbsp; <span style="border-bottom:1px dashed #999">- -</span> RX RSSI</span>';
+  var _lbtRssiDrawn = datasets.some(function(d) { return / LBT RSSI$/.test(d.label || ''); });
+  legendHtml += '<span>| <span style="border-bottom:2px dashed #999">---</span> LBT Threshold';
+  if (_lbtRssiDrawn) {
+    legendHtml += ' &nbsp; <span style="border-bottom:2px dotted #999">···</span> LBT RSSI';
+  }
+  legendHtml += ' &nbsp; <span style="border-bottom:1px dashed #999">- -</span> RX RSSI</span>';
+  if (!_lbtRssiDrawn) {
+    legendHtml += '<span style="opacity:0.6;font-style:italic" title="LBT RSSI is measured just before transmitting, only on channels with Listen-Before-Talk enabled.">&nbsp;| LBT RSSI not shown &mdash; LBT disabled on this channel</span>';
+  }
   var legendEl = document.getElementById('lbtHistLegend');
   if (legendEl) legendEl.innerHTML = legendHtml;
 
@@ -8875,6 +8940,7 @@ function renderPmCrcChart(channels) {
     'cad_start\u2192cad_check':          'CAD + LBT scan',
     'cad_start\u2192rf_tx_start':        'CAD + LBT scan',
     'tx_noisefloor\u2192lbt_check':      'CAD + LBT scan',
+    'tx_noisefloor\u2192cad_check':      'CAD + LBT scan',
     'tx_noisefloor\u2192rf_tx_start':    'CAD + LBT scan',
     'lbt_check\u2192cad_check':          'Scan finalize',
     'cad_check\u2192lbt_check':          'Scan finalize',
@@ -8892,7 +8958,7 @@ function renderPmCrcChart(channels) {
   // Enhance free-form detail text so inline durations (Duration/Airtime/
   // Duur: NN ms) become visually distinct from the Δ/Σ time markers in
   // the row. Wraps matches in a small monospace pill with a clock icon
-  // and a Dutch tooltip explaining the meaning.
+  // and a tooltip explaining the meaning.
   function _enhanceDetail(text) {
     if (!text) return '';
     // Escape HTML to avoid accidental injection (detail is plain text from backend)
@@ -8900,15 +8966,15 @@ function renderPmCrcChart(channels) {
     // Match "<Label>: 123.4 ms" where Label ∈ {Duration, Airtime, Duur, Scan, Queue wait, Send}
     var PATTERN = /(Duration|Airtime|Duur|Scan duur|Queue wait|Send)\s*:\s*(\d+(?:\.\d+)?)\s*ms/gi;
     var TOOLTIPS = {
-      'duration':   'Werkelijke duur van deze HAL operatie',
-      'airtime':    'Werkelijke RF zendtijd (on-air time)',
-      'duur':       'Werkelijke duur van deze operatie',
-      'scan duur':  'Werkelijke duur van de CAD/LBT scan',
-      'queue wait': 'Tijd dat het pakket in de TX-queue heeft gewacht',
-      'send':       'Tijd tussen HAL-aanroep en afronding van de TX'
+      'duration':   'Actual duration of this HAL operation',
+      'airtime':    'Actual RF transmission time (on-air time)',
+      'duur':       'Actual duration of this operation',
+      'scan duur':  'Actual duration of the CAD/LBT scan',
+      'queue wait': 'Time the packet spent waiting in the TX queue',
+      'send':       'Time between HAL call and TX completion'
     };
     return safe.replace(PATTERN, function(_m, label, value){
-      var tip = TOOLTIPS[label.toLowerCase()] || 'Tijdsduur gerapporteerd door HAL';
+      var tip = TOOLTIPS[label.toLowerCase()] || 'Duration reported by HAL';
       return '<span title="' + tip + '" style="display:inline-flex;align-items:center;gap:3px;font-family:monospace;font-size:10.5px;background:rgba(6,182,212,0.10);color:#67e8f9;border:1px solid rgba(6,182,212,0.35);padding:0 5px;border-radius:3px;margin:0 1px">\u23F1 ' + label + ': ' + value + ' ms</span>';
     });
   }
@@ -8984,108 +9050,79 @@ function renderPmCrcChart(channels) {
     }
   })();
   // ---------------------------------------------------------------------
-  // Semantic Δ computation (v2.4.1+):
-  // Instead of always showing "time since previous event", compute a
-  // context-aware Δ that represents the duration of the specific action
-  // described by each event row.
+  // Row Delta computation:
+  // Delta is always the plain gap since the previous row, so the column adds
+  // up from top to bottom and a trace reads as one closing chain. Durations
+  // that describe something other than that gap (HAL-reported scan duration,
+  // computed airtime) stay in the detail column as badges.
   //
-  // Pairing rules:
-  //   cad_start    → forward-look to last of (lbt_check, cad_check)
-  //                  before next rf_tx_start/tx_send → Δ = scan duration
-  //   tx_noisefloor→ Δ = 0 (instantaneous marker, co-timed with cad_start)
-  //   lbt_check    → back-look to nearest cad_start → Δ = LBT scan portion
-  //   cad_check    → back-look to nearest cad_start → Δ = CAD scan portion
-  //   rf_tx_start  → back-look to nearest cad_check/lbt_check → Δ = scan-to-TX
-  //   all others   → gap since previous event (unchanged behavior)
+  // Trustworthiness: the packet forwarder only reports back at TX
+  // acknowledgement, so every earlier TX-phase moment is back-dated from that
+  // single anchor using the HAL-reported scan duration, the computed airtime
+  // and fixed offsets (_ACK_ROUNDTRIP_MS, _FEM_SETTLE_MS and a 1 ms
+  // scan-result offset in wm1303_backend.py). Those timestamps are estimates,
+  // not measurements, and every Delta touching one is marked with a leading
+  // tilde so a reader never mistakes a constant for a measured value.
   // ---------------------------------------------------------------------
-  var _SEMANTIC_DELTA_TOOLTIPS = {
-    cad_start:         'CAD + LBT scan duration',
-    tx_noisefloor:     'Noise floor read (instantaneous)',
-    lbt_check:         'LBT result (instantaneous)',
-    cad_check:         'CAD result (instantaneous)',
-    rf_tx_start:       'Scan-to-TX launch delay',
+  var _RECONSTRUCTED_STEPS = {
+    cad_start: 1, tx_noisefloor: 1, lbt_check: 1, cad_check: 1,
+    rf_tx_start: 1, rf_tx_end: 1, sx1261_rx_restart: 1
+  };
+  function _isReconstructed(name) {
+    return !!(name && _RECONSTRUCTED_STEPS[name]);
+  }
+  // What the gap on this row represents, in plain words.
+  var _DELTA_TOOLTIPS = {
+    cad_start:         'Time from queue dispatch to scan start',
+    tx_noisefloor:     'Noise floor read, taken at scan start',
+    lbt_check:         'LBT scan duration, measured from scan start',
+    cad_check:         'CAD + LBT scan duration, measured from scan start',
+    rf_tx_start:       'Delay from scan result to transmitter start',
     rf_tx_end:         'RF airtime (on-air duration)',
-    sx1261_rx_restart: 'TX inhibit cooldown',
-    tx_ack:            'TX ACK roundtrip',
+    sx1261_rx_restart: 'TX inhibit cooldown after transmission',
+    tx_ack:            'TX acknowledgement roundtrip',
     tx_send:           'Post-TX finalize',
-    received:          'RX event',
-    dedup_check:       'Dedup check (instantaneous)',
-    dedup_skip:        'Dedup skip (instantaneous)',
+    received:          'Time since previous event',
+    dedup_check:       'Dedup check, time since previous event',
+    dedup_skip:        'Dedup skip, time since previous event',
     bridge_forward:    'Bridge routing time',
     tx_enqueue:        'Queue enqueue time',
     rf_guard:          'RF-chain guard wait'
   };
-  function _computeSemanticDelta(steps, idx) {
+  function _computeRowDelta(steps, idx) {
     var s = steps[idx];
     var sElapsed = (s.elapsed_ms !== undefined) ? s.elapsed_ms : 0;
     var prevStep = (idx > 0) ? steps[idx - 1] : null;
     var prevElapsed = (prevStep && prevStep.elapsed_ms !== undefined) ? prevStep.elapsed_ms : null;
-    var defaultDelta = (prevElapsed !== null) ? (sElapsed - prevElapsed) : 0;
-    if (defaultDelta < 0) defaultDelta = 0;
-    var tooltip = _SEMANTIC_DELTA_TOOLTIPS[s.name] || 'Time since previous event';
-
-    // --- cad_start: forward-look to last scan result ---
-    if (s.name === 'cad_start') {
-      var scanEndElapsed = null;
-      for (var fwd = idx + 1; fwd < steps.length; fwd++) {
-        var fn = steps[fwd].name;
-        // Stop searching at rf_tx_start, tx_send, or another cad_start (next TX cycle)
-        if (fn === 'rf_tx_start' || fn === 'tx_send' || fn === 'cad_start') break;
-        if (fn === 'lbt_check' || fn === 'cad_check') {
-          var fe = (steps[fwd].elapsed_ms !== undefined) ? steps[fwd].elapsed_ms : 0;
-          // Take the latest (max) of lbt_check / cad_check
-          if (scanEndElapsed === null || fe > scanEndElapsed) scanEndElapsed = fe;
-        }
-      }
-      if (scanEndElapsed !== null) {
-        var scanDur = scanEndElapsed - sElapsed;
-        if (scanDur < 0) scanDur = 0;
-        return { delta: scanDur, tooltip: tooltip };
-      }
-      // Fallback: no scan result found, show 0
-      return { delta: 0, tooltip: tooltip + ' (no scan result found)' };
+    var delta = (prevElapsed !== null) ? (sElapsed - prevElapsed) : 0;
+    if (delta < 0) delta = 0;
+    var derived = _isReconstructed(s.name) ||
+                  (prevStep ? _isReconstructed(prevStep.name) : false);
+    var tooltip = _DELTA_TOOLTIPS[s.name] || 'Time since previous event';
+    if (derived) {
+      tooltip += ' \u2014 reconstructed from the TX acknowledgement, not measured directly';
     }
-
-    // --- tx_noisefloor: instantaneous marker ---
-    if (s.name === 'tx_noisefloor') {
-      return { delta: 0, tooltip: tooltip };
-    }
-
-    // --- lbt_check / cad_check: instantaneous result markers ---
-    // The scan duration is already shown on cad_start (forward-looking Δ).
-    // lbt_check and cad_check are co-timed with scan completion, and their
-    // previous event (tx_noisefloor) is co-timed with cad_start, so
-    // defaultDelta would equal the full scan duration — misleading.
-    // Show Δ = 0 to indicate these are instantaneous result markers.
-    if (s.name === 'lbt_check' || s.name === 'cad_check') {
-      return { delta: 0, tooltip: tooltip };
-    }
-
-    // --- dedup_check / dedup_skip: instantaneous events ---
-    if (s.name === 'dedup_check' || s.name === 'dedup_skip') {
-      return { delta: 0, tooltip: tooltip };
-    }
-
-    // --- rf_tx_start: back-look to last scan result ---
-    if (s.name === 'rf_tx_start') {
-      for (var bk2 = idx - 1; bk2 >= 0; bk2--) {
-        if (steps[bk2].name === 'cad_check' || steps[bk2].name === 'lbt_check') {
-          var scanResultElapsed = (steps[bk2].elapsed_ms !== undefined) ? steps[bk2].elapsed_ms : 0;
-          var txLaunchDelta = sElapsed - scanResultElapsed;
-          if (txLaunchDelta < 0) txLaunchDelta = 0;
-          return { delta: txLaunchDelta, tooltip: tooltip };
-        }
-        // Don't cross TX cycle boundaries
-        if (steps[bk2].name === 'tx_send' || steps[bk2].name === 'tx_ack' || steps[bk2].name === 'cad_start') break;
-      }
-      // Fallback: no scan result found
-      return { delta: defaultDelta, tooltip: 'Time since previous event' };
-    }
-
-    // --- All other events: gap since previous (unchanged) ---
-    return { delta: defaultDelta, tooltip: tooltip };
+    return { delta: delta, tooltip: tooltip, derived: derived };
   }
   function _renderTraces(traces) {
+    // Reliability: guarantee chronological step order before any
+    // index-based processing (phase grouping, delta computation, WAIT rows,
+    // playback). The backend now inserts chronologically; this also repairs
+    // payloads produced by an older backend. Array.sort is stable, so events
+    // sharing an elapsed_ms keep their emission order.
+    try {
+      var _tlen = (traces && traces.length) ? traces.length : 0;
+      for (var _ti = 0; _ti < _tlen; _ti++) {
+        var _tsteps = traces[_ti] && traces[_ti].steps;
+        if (_tsteps && _tsteps.length > 1) {
+          _tsteps.sort(function(a, b){
+            var ea = (typeof a.elapsed_ms === 'number') ? a.elapsed_ms : 0;
+            var eb = (typeof b.elapsed_ms === 'number') ? b.elapsed_ms : 0;
+            return ea - eb;
+          });
+        }
+      }
+    } catch (_e) {}
     // Apply separate src/dst/hop search filters before rendering
     var qSrc = (document.getElementById('traceFilterSrc') || {}).value || '';
     var qDst = (document.getElementById('traceFilterDst') || {}).value || '';
@@ -9643,7 +9680,7 @@ function renderPmCrcChart(channels) {
          +  '<div style="text-align:center">Hash</div>'
          +  '<div>Channel</div>'
          +  '<div>Type</div>'
-         +  '<div style="text-align:center" title="Aantal hops in path">Hops</div>'
+         +  '<div style="text-align:center" title="Number of hops in path">Hops</div>'
          +  '<div style="text-align:center" title="Source hash -> Last hop (most recent) -> Destination hash. Src/Dst are always 1-byte node identifiers. Path hops can be 1/2/3-byte depending on path_hash_mode.">Src \u2192 Last hop \u2192 Dst</div>'
          +  '<div style="text-align:right">Duration</div>'
          +  '<div style="text-align:center">Status</div>';
@@ -9769,6 +9806,12 @@ function renderPmCrcChart(channels) {
         // target, or after Processing events for a new target).
         // -----------------------------------------------------------
         var _WAIT_THRESHOLD_MS = 10;
+        // Minimum silence between two phases before an idle marker is drawn.
+        // Deliberately well above _WAIT_THRESHOLD_MS: that one separates
+        // individual events, while this one should only flag genuinely large
+        // stretches where nothing happened. Below ~100 ms the timeline fills
+        // with normal scheduling jitter and the marker loses its meaning.
+        var _IDLE_GAP_MS = 100;
         var _phases = []; // [{ phase, startIdx, endIdx, color, icon, label, targetChannel }]
         (function(){
           var cur = null;
@@ -9827,12 +9870,29 @@ function renderPmCrcChart(channels) {
           var _phDurMs = _phEnd - _phStart;
           if (_phDurMs < 0) _phDurMs = 0;
 
+          // Idle gap: silence between the end of the previous phase and the
+          // start of this one. Only drawn above _IDLE_GAP_MS so the timeline
+          // is not cluttered by normal scheduling jitter.
+          if (_pIdx > 0) {
+            var _prevPh = _phases[_pIdx - 1];
+            var _prevEndMs = (t.steps[_prevPh.endIdx].elapsed_ms !== undefined) ? t.steps[_prevPh.endIdx].elapsed_ms : _phStart;
+            var _gapMs = _phStart - _prevEndMs;
+            if (_gapMs >= _IDLE_GAP_MS) {
+              var _gapTxt = (_gapMs >= 1000) ? ((_gapMs / 1000).toFixed(2) + ' s') : (_gapMs.toFixed(0) + ' ms');
+              html += '<div title="Idle period - no events were recorded between these phases" style="display:flex;align-items:center;gap:8px;margin:8px 0 0 0;padding-left:2px;opacity:0.8">';
+              html += '<span style="flex:1 1 auto;height:0;border-top:1px dashed rgba(148,163,184,0.40)"></span>';
+              html += '<span style="font-family:monospace;font-size:10px;color:#94a3b8;flex-shrink:0;white-space:nowrap;letter-spacing:0.5px">idle ' + _gapTxt + '</span>';
+              html += '<span style="flex:1 1 auto;height:0;border-top:1px dashed rgba(148,163,184,0.40)"></span>';
+              html += '</div>';
+            }
+          }
+
           // Phase header (compact divider with icon + label + duration)
           html += '<div style="display:flex;align-items:center;gap:8px;margin:' + (_pIdx > 0 ? '10px' : '2px') + ' 0 4px 0;padding-left:2px">';
           html += '<span style="font-size:13px;flex-shrink:0">' + _ph.icon + '</span>';
           html += '<span style="font-size:11px;font-weight:700;color:' + _ph.color + ';letter-spacing:0.5px;text-transform:uppercase;flex-shrink:0">' + _ph.phaseLabel + '</span>';
           if (_phDurMs >= 0.1) {
-            html += '<span style="font-family:monospace;font-size:10px;color:var(--txm);opacity:0.7;flex-shrink:0" title="Som van alle events in deze fase">\u03A3 ' + _phDurMs.toFixed(1) + ' ms</span>';
+            html += '<span style="font-family:monospace;font-size:10px;color:var(--txm);opacity:0.7;flex-shrink:0" title="Sum of all events in this phase">\u03A3 ' + _phDurMs.toFixed(1) + ' ms</span>';
           }
           html += '<span style="flex:1 1 auto;height:1px;background:linear-gradient(to right,' + _ph.color + '55,transparent);opacity:0.5"></span>';
           html += '</div>';
@@ -9849,43 +9909,30 @@ function renderPmCrcChart(channels) {
             var _prevElapsed = (_prevStep && _prevStep.elapsed_ms !== undefined) ? _prevStep.elapsed_ms : null;
             var _rawGapDelta = (_prevElapsed !== null) ? (_stepElapsed - _prevElapsed) : 0;
             if (_rawGapDelta < 0) _rawGapDelta = 0;
-            var _sem = _computeSemanticDelta(t.steps, j);
+            var _sem = _computeRowDelta(t.steps, j);
             var _stepDelta = _sem.delta;
             var _stepDeltaTooltip = _sem.tooltip;
-
-
-            // Suppress WAIT rows for scan-internal gaps where the duration
-            // is already represented by cad_start's semantic Δ.
-            var _scanInternalGap = false;
-            if (_prevStep) {
-              var _pn = _prevStep.name;
-              var _cn = s.name;
-              // Gap from scan-start events to scan-result events
-              if ((_pn === 'cad_start' || _pn === 'tx_noisefloor') &&
-                  (_cn === 'lbt_check' || _cn === 'cad_check' || _cn === 'tx_noisefloor' || _cn === 'cad_start')) {
-                _scanInternalGap = true;
-              }
-              // Gap between co-timed scan results
-              if ((_pn === 'lbt_check' && _cn === 'cad_check') ||
-                  (_pn === 'cad_check' && _cn === 'lbt_check')) {
-                _scanInternalGap = true;
-              }
-            }
+            // A gap is only as trustworthy as its two endpoints: when either
+            // side carries a reconstructed timestamp, the gap is an estimate.
+            var _gapDerived = _isReconstructed(s.name) ||
+                              (_prevStep ? _isReconstructed(_prevStep.name) : false);
 
             // Insert WAIT row before this step when gap > threshold
             // (but ONLY when previous step is within the same phase block;
             // inter-phase gaps are rendered as phase separators instead).
-            // Skip scan-internal gaps (already shown on cad_start Δ).
             var _insideSamePhase = (j > _ph.startIdx);
-            if (_insideSamePhase && _rawGapDelta > _WAIT_THRESHOLD_MS && !_scanInternalGap) {
+            if (_insideSamePhase && _rawGapDelta > _WAIT_THRESHOLD_MS) {
               var _waitTxt = _waitLabel(_prevStep ? _prevStep.name : '', s.name);
               var _waitColor = '#f59e0b';
+              var _waitTip = _gapDerived
+                ? 'Reconstructed time gap - derived from the TX acknowledgement, not measured directly'
+                : 'Measured time gap between events';
               html += '<div style="position:relative;padding-bottom:6px;margin-left:8px">';
               html += '<div style="position:absolute;left:-16px;top:6px;width:8px;height:8px;border-radius:50%;background:' + _waitColor + '55;border:1px solid ' + _waitColor + ';z-index:1"></div>';
               html += '<div style="position:absolute;left:-12px;top:15px;bottom:0;width:2px;background:repeating-linear-gradient(to bottom,' + _waitColor + '55 0 3px,transparent 3px 6px)"></div>';
               html += '<div style="display:flex;align-items:center;gap:10px;background:rgba(245,158,11,0.05);border-left:2px solid ' + _waitColor + ';padding:3px 8px;border-radius:3px;font-style:italic">';
               html += '<span style="color:' + _waitColor + ';font-weight:600;font-size:11px;min-width:150px">\u23F3 ' + _waitTxt + '</span>';
-              html += '<span style="font-family:monospace;font-size:10px;color:' + _waitColor + '" title="Measured time gap between events">\u0394 ' + _rawGapDelta.toFixed(1) + ' ms</span>';
+              html += '<span style="font-family:monospace;font-size:10px;color:' + _waitColor + '" title="' + _waitTip + '">' + (_gapDerived ? '~' : '') + '\u0394 ' + _rawGapDelta.toFixed(1) + ' ms</span>';
               // Mini-timeline bar (stretch goal)
               var _barPct = Math.min(100, Math.max(1, (_rawGapDelta / _traceTotalMs) * 100));
               html += '<span style="flex:1 1 auto;height:4px;background:rgba(245,158,11,0.12);border-radius:2px;overflow:hidden;min-width:60px" title="Relative duration vs total trace"><span style="display:block;height:100%;width:' + _barPct.toFixed(1) + '%;background:' + _waitColor + ';opacity:0.55"></span></span>';
@@ -9894,7 +9941,10 @@ function renderPmCrcChart(channels) {
             }
 
             // Step row (action)
-            var _deltaText = '\u0394 ' + _stepDelta.toFixed(1) + ' ms';
+            // "~" marks a reconstructed timing. Rendered inline rather than in
+            // a tooltip only: hovering is not discoverable and a screenshot
+            // loses the tooltip entirely.
+            var _deltaText = (_sem.derived ? '~' : '') + '\u0394 ' + _stepDelta.toFixed(1) + ' ms';
             var _cumText = '@ ' + _stepElapsed.toFixed(1) + ' ms';
             var txTarget = (_meta.phase === 'TX' || _meta.phase === 'Processing') ? _extractTxTarget(s) : null;
             var txTargetPill = '';
@@ -9914,27 +9964,37 @@ function renderPmCrcChart(channels) {
             if (!isLastOverall) { html += '<div style="position:absolute;left:-12px;top:17px;bottom:0;width:2px;background:rgba(255,255,255,0.08)"></div>'; }
             html += '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:' + _rowBg + ';border-left:3px solid ' + rowColor + ';padding:4px 8px;border-radius:3px">';
             html += '<span style="font-size:13px;flex-shrink:0;width:18px;text-align:center">' + _meta.icon + '</span>';
-            html += '<span style="font-family:monospace;font-size:10px;color:var(--txm);opacity:0.6;min-width:85px;flex-shrink:0" title="Wall-clock tijd waarop het event plaatsvond">' + _fmtTimeMs(s.time) + '</span>';
+            html += '<span style="font-family:monospace;font-size:10px;color:var(--txm);opacity:0.6;min-width:85px;flex-shrink:0" title="Wall-clock time when the event occurred">' + _fmtTimeMs(s.time) + '</span>';
             html += '<span style="font-weight:700;color:' + _labelColor + ';font-size:12px;min-width:150px">' + _meta.label + '</span>';
             if (txTargetPill && !pillAtEnd) { html += txTargetPill; }
             html += '<span style="font-family:monospace;font-size:11px;min-width:150px;display:inline-flex;gap:6px;align-items:center">' +
                     '<span style="color:var(--txs);font-weight:600" title="' + _stepDeltaTooltip + '">' + _deltaText + '</span>' +
-                    '<span style="color:var(--txm);opacity:0.7" title="Tijd sinds begin van de trace">' + _cumText + '</span>' +
+                    '<span style="color:var(--txm);opacity:0.7" title="Time since start of trace">' + _cumText + '</span>' +
                     '</span>';
             html += '<span style="font-size:11px;color:var(--txs);white-space:pre-line;flex:1 1 auto">' + _enhanceDetail(s.detail || '') + '</span>';
             if (txTargetPill && pillAtEnd) { html += txTargetPill; }
             // Mini-timeline bar for this event (reference to trace total)
             var _evPct = Math.min(100, Math.max(0.5, (_stepElapsed / _traceTotalMs) * 100));
-            html += '<span style="flex:0 0 80px;height:4px;background:rgba(255,255,255,0.05);border-radius:2px;overflow:hidden" title="Positie in trace: ' + _evPct.toFixed(1) + '% van totale duur"><span style="display:block;height:100%;width:' + _evPct.toFixed(1) + '%;background:' + rowColor + ';opacity:0.6"></span></span>';
+            html += '<span style="flex:0 0 80px;height:4px;background:rgba(255,255,255,0.05);border-radius:2px;overflow:hidden" title="Position in trace: ' + _evPct.toFixed(1) + '% of total duration"><span style="display:block;height:100%;width:' + _evPct.toFixed(1) + '%;background:' + rowColor + ';opacity:0.6"></span></span>';
             html += '</div></div>';
           }
         }
 
-        // Total sum row
-        html += '<div style="margin-left:8px;margin-top:8px;padding:6px 8px;border-top:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;gap:8px;justify-content:flex-end" title="Totale duur van de trace (eerste tot laatste event)">' +
-                '<span style="font-size:11px;color:var(--txm);font-weight:600">Totaal:</span>' +
+        // Total sum row, plus a legend when any row carries a reconstructed
+        // timestamp so the "~" marker never needs explaining elsewhere.
+        var _hasDerived = false;
+        for (var _hd = 0; _hd < t.steps.length; _hd++) {
+          if (_isReconstructed(t.steps[_hd].name)) { _hasDerived = true; break; }
+        }
+        html += '<div style="margin-left:8px;margin-top:8px;padding:6px 8px;border-top:1px solid rgba(255,255,255,0.15);display:flex;align-items:center;gap:8px;justify-content:space-between;flex-wrap:wrap">';
+        html += _hasDerived
+          ? '<span style="font-size:10px;color:var(--txm);opacity:0.75;font-style:italic" title="The packet forwarder only reports back at TX acknowledgement, so earlier TX-phase moments are reconstructed from that anchor using the HAL-reported scan duration, the computed airtime and fixed offsets.">~ reconstructed timing, not measured directly</span>'
+          : '<span></span>';
+        html += '<span style="display:flex;align-items:center;gap:8px" title="Total trace duration (first to last event)">' +
+                '<span style="font-size:11px;color:var(--txm);font-weight:600">Total:</span>' +
                 '<span style="font-family:monospace;font-size:12px;color:var(--txs);font-weight:700">\u03A3 ' + _traceTotalMs.toFixed(1) + ' ms</span>' +
-                '</div>';
+                '</span>';
+        html += '</div>';
         html += '</div>';
       } else {
         html += '<div style="color:var(--txm);font-size:11px;font-style:italic">No steps recorded</div>';

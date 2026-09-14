@@ -21,8 +21,9 @@ from openhop_core.protocol.constants import (
 
 logger = logging.getLogger("PacketRouter")
 
-# Deliver PATH and protocol-response (PATH) to companion at most once per logical packet
-# so the client is not spammed with duplicate telemetry when the mesh delivers multiple copies.
+# Deliver PATH, protocol-response (PATH) and GRP_TXT to companion at most once per
+# logical packet so the client is not spammed with duplicate telemetry or repeated
+# channel messages when the mesh delivers multiple copies of the same packet.
 _COMPANION_DEDUPE_TTL_SEC = 60.0
 
 
@@ -123,7 +124,11 @@ class PacketRouter:
                 logger.error("_route_packet raised: %s", exc, exc_info=exc)
     
     def _should_deliver_path_to_companions(self, packet) -> bool:
-        """Return True if this PATH/protocol-response should be delivered to companions (first of duplicates)."""
+        """Return True if this packet should be delivered to companions (first of duplicates).
+
+        Applies to PATH, protocol-response and GRP_TXT.  The historical name is kept
+        because the upstream fork test-suite calls this method by name.
+        """
         key = _companion_dedup_key(packet)
         if not key:
             return True
@@ -463,13 +468,20 @@ class PacketRouter:
                 self._record_for_ui(packet, metadata)
 
         elif payload_type == GroupTextHandler.payload_type():
-            # GRP_TXT: pass to all companions (they filter by channel); still forward
+            # GRP_TXT: pass to all companions (they filter by channel); still forward.
+            # Flood-routed channel messages arrive once per repeater in range, and on
+            # WM1303 hardware every RF packet is enqueued on the router BEFORE the
+            # engine's duplicate check (see BridgeRepeaterHandler in main.py), so
+            # without this guard the same message is pushed to the companion once per
+            # received copy.  Reuse the existing companion dedupe window; repeater
+            # forwarding is unaffected because processed_by_injection stays False.
             companion_bridges = getattr(self.daemon, "companion_bridges", {})
-            for bridge in companion_bridges.values():
-                try:
-                    await bridge.process_received_packet(packet)
-                except Exception as e:
-                    logger.debug(f"Companion bridge GRP_TXT error: {e}")
+            if companion_bridges and self._should_deliver_path_to_companions(packet):
+                for bridge in companion_bridges.values():
+                    try:
+                        await bridge.process_received_packet(packet)
+                    except Exception as e:
+                        logger.debug(f"Companion bridge GRP_TXT error: {e}")
 
         # Only pass to repeater engine if not already processed by injection
         # Skip engine for packets we injected for TX (already sent; avoid double-send/double-count)

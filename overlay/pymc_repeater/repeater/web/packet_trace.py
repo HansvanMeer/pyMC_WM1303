@@ -72,6 +72,7 @@ class TraceCollector:
                     channel: str = '', pkt_type: str = '',
                     detail: str = '', status: str = 'ok',
                     ts_offset_ms: float = 0,
+                    delta_ms: float | None = None,
                     # v2.4.7+: optional MeshCore packet metadata. Attached once
                     # per trace; later events may backfill missing fields.
                     pkt_hash_full: str | None = None,
@@ -197,16 +198,41 @@ class TraceCollector:
 
             # Add step (cap at MAX_STEPS_PER_TRACE)
             if len(trace['steps']) < MAX_STEPS_PER_TRACE:
-                trace['steps'].append({
+                _step = {
                     'name': step_name,
                     'time': iso_now,
                     'elapsed_ms': elapsed_ms,
                     'detail': detail,
                     'status': status,
-                })
+                }
+                # Authoritative measured duration for this step, supplied by
+                # the caller when it knows the real value better than a
+                # display-time reconstruction (e.g. the HAL-reported CAD scan
+                # duration, which back-date clamping can shorten). Consumers
+                # must prefer this over any elapsed_ms difference.
+                if delta_ms is not None:
+                    try:
+                        _step['delta_ms'] = round(float(delta_ms), 1)
+                    except (TypeError, ValueError):
+                        pass
+                # Chronological insert. Back-dated events (ts_offset_ms > 0)
+                # are emitted AFTER events that happened later in real time,
+                # so a blind append can leave trace['steps'] out of order and
+                # every index-based consumer (phase grouping, delta
+                # computation, playback, export) would derive wrong timings.
+                # Stable: events with an identical elapsed_ms keep their
+                # emission order.
+                _steps = trace['steps']
+                _pos = len(_steps)
+                while (_pos > 0 and
+                       _steps[_pos - 1].get('elapsed_ms', 0.0) > elapsed_ms):
+                    _pos -= 1
+                _steps.insert(_pos, _step)
 
-            # Update total_ms and overall status
-            trace['total_ms'] = elapsed_ms
+            # Update total_ms and overall status. Highest elapsed_ms wins: a
+            # back-dated event emitted last must never shrink the total span.
+            if elapsed_ms > float(trace.get('total_ms', 0.0) or 0.0):
+                trace['total_ms'] = elapsed_ms
 
             # Track TX success/failure counts for status computation
             if 'tx_ok' not in trace:

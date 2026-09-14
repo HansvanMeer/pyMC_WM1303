@@ -187,22 +187,141 @@ def _get_spectrum_scan_range():
     return (preset[0], preset[1], preset[2], code)
 
 
-def _safe_write(path: Path, content: str) -> bool:
-    """Write content to path with automatic permission recovery."""
+# TODO #11 / #29: config backup on change + corruption protection.
+# Every write through _safe_write() first snapshots the current file to a
+# timestamped backup, then swaps in the new content atomically. Backups are
+# rotated so the SD card cannot fill up with old copies.
+_CONFIG_BACKUP_KEEP = 10          # timestamped backups retained per file
+_CONFIG_BACKUP_SUFFIX = '.bak'    # naming: <name>.bak.<YYYYmmdd_HHMMSS>
+
+
+def _rotate_config_backups(path: Path, keep: int = _CONFIG_BACKUP_KEEP) -> None:
+    """Delete the oldest timestamped backups of `path`, keeping `keep` newest.
+
+    Backup names embed a sortable timestamp, so lexical sorting equals
+    chronological sorting.
+    """
     try:
-        path.write_text(content)
-        return True
-    except PermissionError:
+        backups = sorted(path.parent.glob(path.name + _CONFIG_BACKUP_SUFFIX + '.*'))
+        stale = backups[:-keep] if keep > 0 else backups
+        for old in stale:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except OSError as e:
+        logger.debug('_rotate_config_backups: %s: %s', path, e)
+
+
+def _backup_config(path: Path):
+    """Snapshot `path` to a timestamped backup before it is overwritten (#11).
+
+    Returns the backup Path, or None when there was nothing to back up or the
+    copy failed (a failed backup never blocks the actual write).
+    """
+    if not path.exists():
+        return None
+    dest = path.parent / '{}{}.{}'.format(
+        path.name, _CONFIG_BACKUP_SUFFIX, time.strftime('%Y%m%d_%H%M%S'))
+    try:
+        dest.write_bytes(path.read_bytes())
+    except OSError as e:
+        logger.warning('_backup_config: could not back up %s: %s', path, e)
+        return None
+    _rotate_config_backups(path)
+    return dest
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write `content` to `path` atomically: tmp -> flush -> fsync -> replace.
+
+    os.replace() is atomic within one filesystem, so a power loss leaves
+    either the old or the new file intact - never a truncated config (#29).
+    Raises OSError/PermissionError on failure so callers can recover.
+    """
+    tmp = path.parent / '.{}.tmp.{}'.format(path.name, os.getpid())
+    try:
+        with open(tmp, 'w') as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    finally:
         try:
-            subprocess.run(['sudo', 'chown', 'pi:pi', str(path)], timeout=5, check=False)
-            path.write_text(content)
-            return True
-        except OSError as e:
-            logger.warning('_safe_write: permission recovery failed for %s: %s', path, e)
-            return False
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+    # Persist the directory entry so the rename itself survives power loss.
+    try:
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
+def _verify_written_json(path: Path, content: str) -> bool:
+    """Re-read `path` and confirm it still parses as JSON (#29).
+
+    Non-JSON payloads are accepted as-is. This is the load-side integrity
+    check: a config that cannot be parsed back is treated as corrupt.
+    """
+    if not content.lstrip().startswith(('{', '[')):
+        return True
+    try:
+        json.loads(path.read_text())
+        return True
+    except (OSError, ValueError) as e:
+        logger.error('_safe_write: readback validation failed for %s: %s', path, e)
+        return False
+
+
+def _safe_write(path: Path, content: str, backup: bool = True) -> bool:
+    """Atomically write content to path, with backup and permission recovery.
+
+    Order of operations (#11 + #29):
+      1. snapshot the current file to a rotated timestamped backup
+      2. write the new content atomically (tmp + fsync + os.replace)
+      3. re-read and validate JSON; restore the backup if it is corrupt
+
+    Falls back to an in-place write when the parent directory is not
+    writable, so behaviour never regresses versus the pre-atomic version.
+    """
+    backup_path = _backup_config(path) if backup else None
+    try:
+        _atomic_write(path, content)
+    except PermissionError:
+        subprocess.run(['sudo', 'chown', 'pi:pi', str(path)], timeout=5, check=False)
+        try:
+            _atomic_write(path, content)
+        except OSError:
+            # Parent directory may be root-owned: atomic swap impossible,
+            # so degrade to a direct write rather than losing the change.
+            try:
+                path.write_text(content)
+                logger.warning('_safe_write: %s written non-atomically '
+                               '(directory not writable)', path)
+            except OSError as e:
+                logger.warning('_safe_write: permission recovery failed for %s: %s',
+                               path, e)
+                return False
     except OSError as e:
         logger.warning('_safe_write: failed to write %s: %s', path, e)
         return False
+
+    if not _verify_written_json(path, content):
+        if backup_path is not None and backup_path.exists():
+            try:
+                _atomic_write(path, backup_path.read_text())
+                logger.error('_safe_write: restored %s from backup %s',
+                             path, backup_path.name)
+            except OSError as e:
+                logger.error('_safe_write: restore of %s failed: %s', path, e)
+        return False
+    return True
 
 def _j(obj):
     cherrypy.response.headers["Content-Type"] = "application/json"
@@ -731,7 +850,7 @@ class WM1303API:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def ifchains(self):
+    def ifchains(self, **_ignored):
         """Return IF chain layout derived from bridge_conf.json (actual running config)."""
         try:
             # Read actual running config
@@ -853,6 +972,32 @@ class WM1303API:
             return {"ifchains": [], "error": str(ex)}
 
 
+    def _call_api(self, fn, params):
+        """Invoke a query-string endpoint with only the params its signature accepts.
+
+        Endpoints dispatched as ``fn(**params)`` used to raise ``TypeError`` ->
+        HTTP 500 when a client sent an unexpected query parameter (for example a
+        stale browser tab requesting ``?range=`` on an ``?hours=`` endpoint).
+        Filtering ``params`` against the callable's signature makes unknown params
+        be ignored instead of crashing the request. Handlers that declare
+        ``**kwargs`` keep receiving everything unchanged, so this wrapper is safe
+        for every query-string endpoint and protects future handlers automatically.
+
+        CONVENTION: dispatch every fixed-signature query-string endpoint through
+        ``self._call_api(self.<handler>, params)`` instead of ``self.<handler>(**params)``
+        so unknown/legacy query params can never turn into an HTTP 500 again.
+        """
+        import inspect
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return fn(**params)
+        for p in sig.parameters.values():
+            if p.kind is inspect.Parameter.VAR_KEYWORD:
+                return fn(**params)  # handler absorbs unknown params itself
+        allowed = {k: v for k, v in params.items() if k in sig.parameters}
+        return fn(**allowed)
+
     @cherrypy.expose
     def default(self, resource="status", *args, **params):
         method = cherrypy.request.method.upper()
@@ -924,6 +1069,11 @@ class WM1303API:
             if method in ("POST", "PUT"):
                 return self._neighbours_filter_post()
 
+        # -- system_info (TODO #22: host health in the UI instead of via SSH) --
+        if resource == "system_info":
+            if method == "GET":
+                return self._system_info_get()
+
         # -- logs --
         if resource == "logs":
             return self._logs()
@@ -934,58 +1084,61 @@ class WM1303API:
 
 
         # -- signal quality (per-channel RSSI/SNR from packets) --
+        # NOTE: fixed-signature (?hours=) handlers are dispatched via _call_api so
+        # an unexpected query param (e.g. a stale tab's ?range=) is ignored instead
+        # of raising HTTP 500. Keep this convention for any new query-string endpoint.
         if resource == "signal_quality":
-            return _j(self.signal_quality(**params))
+            return _j(self._call_api(self.signal_quality, params))
 
         # -- noise floor history --
         if resource == "noise_floor_history":
-            return self.noise_floor_history(**params)
+            return self._call_api(self.noise_floor_history, params)
 
 
         # -- LBT history (TX events from packets table) --
         if resource == "lbt_history":
-            return _j(self.lbt_history(**params))
+            return _j(self._call_api(self.lbt_history, params))
 
 
         # -- TX activity per channel --
 
         # -- packet_activity --
         if resource == "packet_activity":
-            return self._packet_activity(**params)
+            return self._call_api(self._packet_activity, params)
 
         # -- crc_error_rate (per-channel CRC error rate tracking) --
         if resource == "crc_error_rate":
-            return self._crc_error_rate(**params)
+            return self._call_api(self._crc_error_rate, params)
 
         # -- packet_metrics (per-packet RX/TX detail for spectrum-tab charts) --
         if resource == "packet_metrics":
-            return self._packet_metrics(**params)
+            return self._call_api(self._packet_metrics, params)
 
         if resource == "tx_activity":
-            return self.tx_activity(**params)
+            return self._call_api(self.tx_activity, params)
 
         # -- dedup events (bridge engine dedup visualization) --
         if resource == "dedup":
             sub = args[0] if args else ""
             if method == "GET":
-                return self._dedup_events_get(**params)
+                return self._call_api(self._dedup_events_get, params)
 
         # -- packet traces (packet flow tracing) --
         if resource == "packet_traces":
             if method == "GET":
-                return self._packet_traces_get(**params)
+                return self._call_api(self._packet_traces_get, params)
 
 
 
         # -- per-channel noise floor (enhanced) --
         if resource == "noise_floor":
             if method == "GET":
-                return self._noise_floor_get(**params)
+                return self._call_api(self._noise_floor_get, params)
 
         # -- CAD stats --
         if resource == "cad_stats":
             if method == "GET":
-                return self._cad_stats_get(**params)
+                return self._call_api(self._cad_stats_get, params)
 
         # -- cache_stats (internal buffer diagnostics, v2.5.3 follow-up) --
         # GET /api/wm1303/cache_stats -> snapshot of all in-memory caches
@@ -994,7 +1147,7 @@ class WM1303API:
         # state-accumulation drift on long-running deployments (#24/#25).
         if resource == "cache_stats":
             if method == "GET":
-                return self._cache_stats_get(**params)
+                return self._call_api(self._cache_stats_get, params)
 
                 # -- adv_config (advanced configuration) --
         if resource == "adv_config":
@@ -1544,6 +1697,8 @@ class WM1303API:
                 # CAD stats
                 'cad_clear': ch_tx.get('cad_clear', 0),
                 'cad_detected': ch_tx.get('cad_detected', 0),
+                'cad_busy_events': ch_tx.get('cad_busy_events', 0),
+                'cad_max_retries': ch_tx.get('cad_max_retries', 0),
             })
             active_idx += 1
 
@@ -1609,6 +1764,8 @@ class WM1303API:
                 # CAD stats
                 "cad_clear": ch_e_tx.get("cad_clear", 0),
                 "cad_detected": ch_e_tx.get("cad_detected", 0),
+                "cad_busy_events": ch_e_tx.get("cad_busy_events", 0),
+                "cad_max_retries": ch_e_tx.get("cad_max_retries", 0),
             })
             total_rx += _che_rx
             total_tx += _che_tx_sent
@@ -1676,6 +1833,8 @@ class WM1303API:
                 "dropped_ttl": ch_f_tx.get("dropped_ttl", 0),
                 "cad_clear": ch_f_tx.get("cad_clear", 0),
                 "cad_detected": ch_f_tx.get("cad_detected", 0),
+                "cad_busy_events": ch_f_tx.get("cad_busy_events", 0),
+                "cad_max_retries": ch_f_tx.get("cad_max_retries", 0),
             })
             total_rx += _chf_rx
             total_tx += _chf_tx_sent
@@ -2178,6 +2337,8 @@ class WM1303API:
                     # CAD stats
                     "cad_clear": ch_stats.get("cad_clear", 0),
                     "cad_detected": ch_stats.get("cad_detected", 0),
+                    "cad_busy_events": ch_stats.get("cad_busy_events", 0),
+                    "cad_max_retries": ch_stats.get("cad_max_retries", 0),
                 }
             elif ch_cfg:
                 queues[ch_name] = {
@@ -2221,6 +2382,8 @@ class WM1303API:
                 # CAD stats
                 "cad_clear": ch_e_stats.get("cad_clear", 0),
                 "cad_detected": ch_e_stats.get("cad_detected", 0),
+                "cad_busy_events": ch_e_stats.get("cad_busy_events", 0),
+                "cad_max_retries": ch_e_stats.get("cad_max_retries", 0),
             }
         elif _load_ui().get("channel_e", {}).get("enabled", False):
             _che_ui = _load_ui().get("channel_e", {})
@@ -2263,6 +2426,8 @@ class WM1303API:
                 # CAD stats
                 "cad_clear": ch_f_stats.get("cad_clear", 0),
                 "cad_detected": ch_f_stats.get("cad_detected", 0),
+                "cad_busy_events": ch_f_stats.get("cad_busy_events", 0),
+                "cad_max_retries": ch_f_stats.get("cad_max_retries", 0),
             }
         elif _load_ui().get("channel_f", {}).get("enabled", False):
             _chf_ui = _load_ui().get("channel_f", {})
@@ -2539,6 +2704,142 @@ class WM1303API:
             logger.debug("Failed to write spectral cache %s: %s", _SPECTRAL_RES, _e)
         return _j(result)
 
+
+    # -- system_info (TODO #22) --------------------------------------------
+    def _system_info_get(self):
+        """Return Pi host health so the UI can show it without an SSH session.
+
+        Reuses the static readers from `wm1303_telemetry_helper` (already used
+        for MeshCore telemetry) and adds host-level values that only matter for
+        operators: uptime, load average, throttle flags, SPI error count,
+        journal size and systemd service state.
+
+        Every block is guarded separately: a single unreadable source degrades
+        to `null` instead of failing the whole endpoint.
+        """
+        info = {"status": "ok", "timestamp": time.time()}
+
+        # --- CPU / memory / disk / temperatures (shared telemetry readers) ---
+        try:
+            from repeater.wm1303_telemetry_helper import WM1303ProtocolRequestHelper as _T
+            info["cpu_temp_c"] = _T._read_cpu_temperature()
+            info["concentrator_temp_c"] = _T._read_concentrator_temperature()
+            info["cpu_usage_pct"] = _T._read_cpu_usage()
+            info["memory_usage_pct"] = _T._read_memory_usage_percent()
+            info["disk_usage_pct"] = _T._read_disk_usage_percent()
+            info["memory_total_mb"] = _T._read_total_memory_mb()
+            info["disk_total_gb"] = _T._read_total_disk_gb()
+            info["pi_model"] = _T._read_pi_model()
+        except Exception as e:
+            logger.debug("_system_info_get: telemetry readers failed: %s", e)
+            info["telemetry_error"] = str(e)
+
+        # --- Host uptime and load average ---
+        try:
+            with open("/proc/uptime") as fh:
+                info["uptime_seconds"] = int(float(fh.read().split()[0]))
+        except (OSError, ValueError, IndexError):
+            info["uptime_seconds"] = None
+        try:
+            load1, load5, load15 = os.getloadavg()
+            info["load_avg"] = {"1m": round(load1, 2),
+                                "5m": round(load5, 2),
+                                "15m": round(load15, 2)}
+        except OSError:
+            info["load_avg"] = None
+
+        # --- Free disk space in bytes on the root filesystem ---
+        try:
+            st = os.statvfs("/")
+            info["disk_free_bytes"] = st.f_bavail * st.f_frsize
+        except OSError:
+            info["disk_free_bytes"] = None
+
+        # --- Undervoltage / throttling flags (vcgencmd get_throttled) ---
+        # Bit 0 = undervoltage now, bit 16 = undervoltage has occurred,
+        # bit 2 = currently throttled, bit 18 = throttling has occurred.
+        # Undervoltage is a common root cause of SPI errors on these HATs.
+        info["throttled"] = None
+        try:
+            r = subprocess.run(["vcgencmd", "get_throttled"],
+                               capture_output=True, text=True, timeout=5)
+            raw = (r.stdout or "").strip()
+            if "=" in raw:
+                bits = int(raw.split("=", 1)[1], 16)
+                info["throttled"] = {
+                    "raw": raw.split("=", 1)[1],
+                    "undervoltage_now": bool(bits & 0x1),
+                    "undervoltage_occurred": bool(bits & 0x10000),
+                    "throttled_now": bool(bits & 0x4),
+                    "throttled_occurred": bool(bits & 0x40000),
+                }
+        except Exception as e:
+            logger.debug("_system_info_get: vcgencmd unavailable: %s", e)
+
+        # --- SPI error count from the current boot's journal ---
+        info["spi_errors_boot"] = None
+        try:
+            r = subprocess.run(
+                ["sudo", "journalctl", "-b", "--no-pager", "-o", "cat",
+                 "-g", "spi|SPI"],
+                capture_output=True, text=True, timeout=10)
+            out = (r.stdout or "")
+            info["spi_errors_boot"] = sum(
+                1 for line in out.splitlines()
+                if ("spi" in line.lower()
+                    and any(k in line.lower()
+                            for k in ("error", "fail", "timeout", "corrupt"))))
+        except Exception as e:
+            logger.debug("_system_info_get: SPI error scan failed: %s", e)
+
+        # --- Journal disk usage (verifies the TODO #14 size cap in practice) ---
+        info["journal_disk_usage"] = None
+        try:
+            r = subprocess.run(["sudo", "journalctl", "--disk-usage"],
+                               capture_output=True, text=True, timeout=10)
+            out = (r.stdout or "").strip()
+            if out:
+                info["journal_disk_usage"] = out.rsplit(" ", 1)[-1].rstrip(".")
+        except Exception as e:
+            logger.debug("_system_info_get: journal usage failed: %s", e)
+
+        # --- systemd service state (restart count is the key health signal) ---
+        info["service"] = None
+        try:
+            r = subprocess.run(
+                ["systemctl", "show", _SVC_NAME, "--no-pager",
+                 "--property=ActiveState",
+                 "--property=SubState",
+                 "--property=NRestarts",
+                 "--property=MainPID",
+                 "--property=ActiveEnterTimestampMonotonic"],
+                capture_output=True, text=True, timeout=10)
+            props = {}
+            for line in (r.stdout or "").splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    props[k] = v
+            svc = {
+                "name": _SVC_NAME,
+                "active_state": props.get("ActiveState"),
+                "sub_state": props.get("SubState"),
+                "main_pid": int(props.get("MainPID") or 0),
+                "restarts": int(props.get("NRestarts") or 0),
+            }
+            # Service uptime derived from the monotonic activation timestamp,
+            # which is immune to wall-clock/NTP jumps.
+            try:
+                enter_us = int(props.get("ActiveEnterTimestampMonotonic") or 0)
+                if enter_us > 0:
+                    svc["uptime_seconds"] = max(
+                        0, int(time.monotonic() - (enter_us / 1_000_000.0)))
+            except (TypeError, ValueError):
+                pass
+            info["service"] = svc
+        except Exception as e:
+            logger.debug("_system_info_get: service state failed: %s", e)
+
+        return _j(info)
 
     # -- logs --------------------------------------------------------------
     def _logs(self):
@@ -2947,7 +3248,7 @@ class WM1303API:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def spectrum_history(self, hours='24'):
+    def spectrum_history(self, hours='24', **_ignored):
         if not _COLLECTOR_AVAILABLE:
             return {"error": "Spectrum collector not available", "channels": []}
         h = min(int(hours), 168)
@@ -2997,7 +3298,7 @@ class WM1303API:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def lbt_history(self, hours='24'):
+    def lbt_history(self, hours='24', **_ignored):
         """GET /api/wm1303/lbt_history - LBT stats per channel (tiered)."""
         h = min(int(hours), 168)
         bucket_s = auto_bucket_seconds(h)
@@ -3015,7 +3316,11 @@ class WM1303API:
             return {
                 "timestamp": r["bucket_ts"],
                 "noise_floor_dbm": round(r["avg_noise_floor_dbm"], 1) if r.get("avg_noise_floor_dbm") is not None else None,
-                "lbt_last_rssi": None,  # not available in aggregated data
+                # TODO #243: was hardcoded None, so the LBT RSSI series was
+                # structurally empty and the chart promised a line it could
+                # never draw. Now served from the rollup; still None when LBT
+                # is disabled, which the UI detects and hides.
+                "lbt_last_rssi": round(r["avg_lbt_last_rssi"], 1) if r.get("avg_lbt_last_rssi") is not None else None,
                 "tx_noisefloor_dbm": round(r["avg_tx_noisefloor_dbm"], 1) if r.get("avg_tx_noisefloor_dbm") is not None else None,
                 "avg_rssi": round(r["avg_rssi"], 1) if r.get("avg_rssi") is not None else None,
                 "avg_snr": round(r["avg_snr"], 1) if r.get("avg_snr") is not None else None,
@@ -3087,7 +3392,7 @@ class WM1303API:
 
     @cherrypy.expose
     @cherrypy.tools.json_out()
-    def signal_quality(self, hours='24'):
+    def signal_quality(self, hours='24', **_ignored):
         """GET /api/wm1303/signal_quality - Per-channel RSSI, SNR (tiered)."""
         import sqlite3
         h = min(int(hours), 168)
@@ -3544,19 +3849,27 @@ class WM1303API:
                         ch_total_clear = 0
                         ch_total_det = 0
                         ch_buckets = []
+                        ch_total_busy = 0
                         for r in rows:
                             _clear = r.get("total_cad_clear") or 0
                             _det = r.get("total_cad_detected") or 0
+                            # TODO #242: a TX that only cleared after retries
+                            # counts as clear, so without this the chart shows
+                            # a calm channel while the radio was busy.
+                            _busy = r.get("total_cad_busy_events") or 0
                             ch_total_clear += _clear
                             ch_total_det += _det
+                            ch_total_busy += _busy
                             ch_buckets.append({
                                 "ts": r["bucket_ts"],
                                 "clear": _clear,
                                 "detected": _det,
+                                "busy": _busy,
                             })
                         channels[ch_id] = {
                             "clear": ch_total_clear,
                             "detected": ch_total_det,
+                            "busy": ch_total_busy,
                             "total": ch_total_clear + ch_total_det,
                         }
                         buckets[ch_id] = ch_buckets
@@ -3570,7 +3883,8 @@ class WM1303API:
                         qparams.append(channel_filter)
                     where_str = ' AND '.join(where)
                     recent_rows = conn.execute(f"""
-                        SELECT timestamp, channel_id, cad_clear, cad_detected
+                        SELECT timestamp, channel_id, cad_clear, cad_detected,
+                               cad_busy_events
                         FROM cad_events
                         WHERE {where_str}
                         ORDER BY timestamp DESC
@@ -3583,6 +3897,7 @@ class WM1303API:
                         "channel": row["channel_id"],
                         "clear": row["cad_clear"] or 0,
                         "detected": row["cad_detected"] or 0,
+                        "busy": (row["cad_busy_events"] if "cad_busy_events" in row.keys() else 0) or 0,
                     } for row in recent_rows]
 
         except Exception as e:
@@ -3601,6 +3916,13 @@ class WM1303API:
                         "cad_clear": q.stats.get("cad_clear", 0),
                         "cad_detected": q.stats.get("cad_detected", 0),
                         "cad_last_result": q.stats.get("cad_last_result"),
+                        # Busy accounting: cad_clear/cad_detected only carry the
+                        # final outcome, so retries that found the channel
+                        # occupied are invisible without these.
+                        "cad_busy_events": q.stats.get("cad_busy_events", 0),
+                        "cad_retry_total": q.stats.get("cad_retry_total", 0),
+                        "cad_tx_with_retries": q.stats.get("cad_tx_with_retries", 0),
+                        "cad_max_retries": q.stats.get("cad_max_retries", 0),
                     }
         except Exception:
             pass
@@ -3800,7 +4122,7 @@ class WM1303API:
             },
         })
 
-    def noise_floor_history(self, hours='24'):
+    def noise_floor_history(self, hours='24', **_ignored):
         """GET /api/wm1303/noise_floor_history - Noise floor measurements over time (tiered)."""
         import sqlite3
         h = min(int(hours), 168)
@@ -4019,6 +4341,10 @@ class WM1303API:
                 elif _dir == "tx":
                     b["tx_bytes"] += r.get("total_bytes") or 0
                     b["tx_airtime_ms"] += float(r.get("total_airtime_ms") or 0)
+                    # TODO #245: tx_wait_ms was initialised to 0.0 and never
+                    # accumulated, so every bucket reported zero wait and the
+                    # chart filtered the dashed series away entirely.
+                    b["tx_wait_ms"] += float(r.get("total_wait_time_ms") or 0)
             series = []
             for bk_ts in sorted(buckets.keys()):
                 b = buckets[bk_ts]
@@ -4082,7 +4408,7 @@ class WM1303API:
             return _j({"error": str(e), "hours": h, "channels": []})
 
 
-    def tx_activity(self, hours='24'):
+    def tx_activity(self, hours='24', **_ignored):
         """GET /api/wm1303/tx_activity - TX activity per channel from channel_stats_history."""
         import sqlite3
         h = min(int(hours), 168)
@@ -4248,7 +4574,7 @@ class WM1303API:
     # ─────────────────────────────────────────────────────────────────
 
     @cherrypy.expose
-    def invalid_packets_recent(self, limit='200'):
+    def invalid_packets_recent(self, limit='200', **_ignored):
         """GET /api/wm1303/invalid_packets_recent - Recent invalid packets for UI table."""
         import sqlite3, json
         try:
@@ -4275,7 +4601,7 @@ class WM1303API:
             return json.dumps({"error": str(e), "packets": []}).encode()
 
     @cherrypy.expose
-    def invalid_packets_offenders(self, limit='50'):
+    def invalid_packets_offenders(self, limit='50', **_ignored):
         """GET /api/wm1303/invalid_packets_offenders - Top offenders aggregated."""
         import sqlite3, json
         try:
@@ -4299,7 +4625,7 @@ class WM1303API:
             return json.dumps({"error": str(e), "offenders": []}).encode()
 
     @cherrypy.expose
-    def invalid_packets_stats(self):
+    def invalid_packets_stats(self, **_ignored):
         """GET /api/wm1303/invalid_packets_stats - 24h summary for tiles + histogram."""
         import sqlite3, json
         db_path = "/var/lib/openhop_repeater/repeater.db"
@@ -4340,7 +4666,7 @@ class WM1303API:
             }).encode()
 
     @cherrypy.expose
-    def invalid_packets_by_pubkey(self, hint='', limit='500'):
+    def invalid_packets_by_pubkey(self, hint='', limit='500', **_ignored):
         """GET /api/wm1303/invalid_packets_by_pubkey - Drill-down per offender."""
         import sqlite3, json
         try:
@@ -4365,7 +4691,7 @@ class WM1303API:
             return json.dumps({"error": str(e), "offender": hint, "packets": []}).encode()
 
     @cherrypy.expose
-    def invalid_packets_clear(self, confirm=''):
+    def invalid_packets_clear(self, confirm='', **_ignored):
         """POST/GET /api/wm1303/invalid_packets_clear - Admin: delete all invalid_packets.
         Requires explicit confirm=yes (minimum guard). TODO: gate behind same
         auth as other admin APIs once that pattern is consolidated."""
@@ -4386,7 +4712,7 @@ class WM1303API:
             return json.dumps({"ok": False, "error": str(e), "deleted": 0}).encode()
 
     @cherrypy.expose
-    def origin_stats(self, hours='192'):
+    def origin_stats(self, hours='192', **_ignored):
         """GET /api/wm1303/origin_stats - Origin channel activity from origin_channel_stats table."""
         import sqlite3
         h = min(int(hours), 192)
@@ -5267,9 +5593,13 @@ def _init_unified_recorder_tables():
                 cad_hw_clear INTEGER DEFAULT 0,
                 cad_hw_detected INTEGER DEFAULT 0,
                 cad_sw_clear INTEGER DEFAULT 0,
-                cad_sw_detected INTEGER DEFAULT 0)""")
+                cad_sw_detected INTEGER DEFAULT 0,
+                cad_busy_events INTEGER DEFAULT 0)""")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_cadevt_ts ON cad_events(timestamp)")
-            for _col in ('cad_hw_clear', 'cad_hw_detected', 'cad_sw_clear', 'cad_sw_detected'):
+            # cad_busy_events must be in the ALTER list too: databases created
+            # before this column existed would otherwise fail the INSERT below.
+            for _col in ('cad_hw_clear', 'cad_hw_detected', 'cad_sw_clear',
+                         'cad_sw_detected', 'cad_busy_events'):
                 try:
                     conn.execute(f"ALTER TABLE cad_events ADD COLUMN {_col} INTEGER DEFAULT 0")
                 except Exception:
@@ -5335,6 +5665,7 @@ def _record_packet_activity_once(now):
                 cur_hw_det = q.stats.get("cad_hw_detected", 0) or 0
                 cur_sw_clear = q.stats.get("cad_sw_clear", 0) or 0
                 cur_sw_det = q.stats.get("cad_sw_detected", 0) or 0
+                cur_busy = q.stats.get("cad_busy_events", 0) or 0
                 prev_cad = _cad_last_counts.get(ch_id)
                 if prev_cad is not None:
                     d_clear = max(0, cur_clear - prev_cad.get("cad_clear", 0))
@@ -5343,11 +5674,12 @@ def _record_packet_activity_once(now):
                     d_hw_det = max(0, cur_hw_det - prev_cad.get("cad_hw_detected", 0))
                     d_sw_clear = max(0, cur_sw_clear - prev_cad.get("cad_sw_clear", 0))
                     d_sw_det = max(0, cur_sw_det - prev_cad.get("cad_sw_detected", 0))
+                    d_busy = max(0, cur_busy - prev_cad.get("cad_busy_events", 0))
                     cad_inserts.append((now, ch_id, d_clear, d_det, 0,
                                         d_hw_clear, d_hw_det,
-                                        d_sw_clear, d_sw_det))
+                                        d_sw_clear, d_sw_det, d_busy))
                 else:
-                    cad_inserts.append((now, ch_id, 0, 0, 0, 0, 0, 0, 0))
+                    cad_inserts.append((now, ch_id, 0, 0, 0, 0, 0, 0, 0, 0))
                 _cad_last_counts[ch_id] = {
                     "cad_clear": cur_clear,
                     "cad_detected": cur_det,
@@ -5355,6 +5687,7 @@ def _record_packet_activity_once(now):
                     "cad_hw_detected": cur_hw_det,
                     "cad_sw_clear": cur_sw_clear,
                     "cad_sw_detected": cur_sw_det,
+                    "cad_busy_events": cur_busy,
                 }
     except Exception as _cad_e:
         logger.debug("unified_recorder CAD: %s", _cad_e)
@@ -5377,7 +5710,7 @@ def _record_packet_activity_once(now):
                     inserts)
             if cad_inserts:
                 conn.executemany(
-                    "INSERT INTO cad_events (timestamp, channel_id, cad_clear, cad_detected, cad_skipped, cad_hw_clear, cad_hw_detected, cad_sw_clear, cad_sw_detected) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO cad_events (timestamp, channel_id, cad_clear, cad_detected, cad_skipped, cad_hw_clear, cad_hw_detected, cad_sw_clear, cad_sw_detected, cad_busy_events) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     cad_inserts)
             if origin_inserts:
                 conn.executemany(

@@ -655,6 +655,29 @@ _migrate_legacy_vardir() {
 _migrate_legacy_vardir "/var/log/pymc_repeater" "${LOG_DIR}"  "log dir"
 _migrate_legacy_vardir "/var/lib/pymc_repeater" "${DATA_DIR}" "data dir"
 
+# --- OpenHop stale-DB quarantine (v2.7.5+, TODO #228) -------------------------
+# When ${DATA_DIR}/repeater.db exists from an OLD openhop_repeater install with
+# a stale schema (e.g. channel_stats_history has 'pkt_count' but no 'rx_count'
+# column), quarantine it so the service creates a fresh DB with the current
+# schema at first start. Prevents the recurring
+# "table channel_stats_history has no column named rx_count" crash where the
+# 60s snapshot loop fails and UI graphs stay empty.
+_quarantine_stale_openhop_db() {
+    local db="${DATA_DIR}/repeater.db"
+    [ -f "${db}" ] || return 0
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local schema
+    schema=$(sqlite3 "${db}" ".schema channel_stats_history" 2>/dev/null || echo "")
+    if [ -n "${schema}" ] && ! echo "${schema}" | grep -q 'rx_count'; then
+        local ts=$(date +%Y%m%d_%H%M%S)
+        mv "${db}" "${db}.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        [ -f "${db}-shm" ] && mv "${db}-shm" "${db}-shm.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        [ -f "${db}-wal" ] && mv "${db}-wal" "${db}-wal.stale_${ts}" >> "${LOG_FILE}" 2>&1 || true
+        ok "Quarantined stale ${db} (missing rx_count) -> ${db}.stale_${ts}"
+    fi
+}
+_quarantine_stale_openhop_db
+
 mkdir -p "${LOG_DIR}"
 mkdir -p "${DATA_DIR}"
 mkdir -p "${PI_HOME}/backups"
@@ -1245,6 +1268,16 @@ chown ${PI_USER}:${PI_USER} "${CONFIG_DIR}/version"
 # migration above (cp -an ${LEGACY_CONFIG_DIR}/. ${CONFIG_DIR}/) still ensures
 # that devices upgraded from v2.5.x get their old version file copied into
 # ${CONFIG_DIR}/ before this step overwrites it with the new value.
+# Hardening: if a stale legacy version marker still exists (left behind by an
+# old install), re-sync it with the canonical version so audits/tools can
+# never read a wrong value again. Never CREATE the legacy file — only refresh
+# an existing one, and skip when legacy and canonical resolve to the same
+# file (e.g. symlinked config dirs).
+if [ -f "${LEGACY_CONFIG_DIR}/version" ] && ! [ "${LEGACY_CONFIG_DIR}/version" -ef "${CONFIG_DIR}/version" ]; then
+    cp "${SCRIPT_DIR}/VERSION" "${LEGACY_CONFIG_DIR}/version" >> "${LOG_FILE}" 2>&1 || true
+    chown ${PI_USER}:${PI_USER} "${LEGACY_CONFIG_DIR}/version" 2>/dev/null || true
+    ok "Legacy ${LEGACY_CONFIG_DIR}/version re-synced to canonical version"
+fi
 ok "v$(cat ${SCRIPT_DIR}/VERSION)"
 
 
@@ -1537,6 +1570,37 @@ if [ -f "${SYSTEMD_CONF}" ]; then
     ok "Applied"
 else
     warn "${SYSTEMD_CONF} not found; skipped RuntimeWatchdogSec"
+fi
+
+# =============================================================================
+# Phase 10c: Journal Log Management (TODO #14)
+# =============================================================================
+# The repeater logs continuously. With the Raspberry Pi OS default the journal
+# may grow to 10% of the filesystem and eventually fill a small SD card, which
+# takes the service down with it. A drop-in caps total size and retention.
+# SQLite metrics retention is handled separately by repeater/metrics_retention.py
+# (8-day window, hourly cleanup, weekly VACUUM).
+phase "Journal Log Management"
+
+step "Installing systemd-journald limits drop-in"
+JOURNALD_DROPIN_DIR="/etc/systemd/journald.conf.d"
+JOURNALD_DROPIN="${JOURNALD_DROPIN_DIR}/10-openhop.conf"
+if [ -f "${SCRIPT_DIR}/config/journald-openhop.conf" ]; then
+    mkdir -p "${JOURNALD_DROPIN_DIR}"
+    cp "${SCRIPT_DIR}/config/journald-openhop.conf" "${JOURNALD_DROPIN}" >> "${LOG_FILE}" 2>&1
+    chmod 644 "${JOURNALD_DROPIN}"
+    ok "Installed ${JOURNALD_DROPIN} (SystemMaxUse=200M, MaxRetentionSec=8day)"
+    step "Restarting systemd-journald to apply limits"
+    if systemctl restart systemd-journald >> "${LOG_FILE}" 2>&1; then
+        ok "journald restarted"
+    else
+        warn "journald restart failed (limits apply after reboot)"
+    fi
+    step "Vacuuming existing journal to the new size limit"
+    journalctl --vacuum-size=200M >> "${LOG_FILE}" 2>&1 || warn "journal vacuum failed (non-fatal)"
+    ok "Journal within size limit"
+else
+    warn "config/journald-openhop.conf not found; skipped journal limits"
 fi
 
 # =============================================================================

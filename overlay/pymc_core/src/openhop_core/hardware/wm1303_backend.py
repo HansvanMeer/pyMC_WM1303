@@ -1071,6 +1071,11 @@ class WM1303Backend:
         self._channel_tx_stats: dict[str, dict] = {}
         self._start_time = time.time()  # for duty cycle calculation
 
+        # TODO #7: cumulative counter baseline restored from the last DB
+        # snapshot by _restore_channel_stats_baseline(). Initialised empty here
+        # so get_channel_stats() is safe before the snapshot loop has started.
+        self._stats_baseline: dict[str, dict] = {}
+
         # Store module-level reference for API access
         global _active_backend
         _active_backend = self
@@ -1097,6 +1102,19 @@ class WM1303Backend:
         self._rx_nf_lock = threading.Lock()
         self._rx_nf_max_age = 300.0  # seconds to keep RX NF estimates
         self._rx_nf_max_samples = 100  # max samples per channel
+
+        # TODO #233: rolling per-channel RSSI/SNR sample window.
+        # The rssi_sum / snr_sum accumulators in _channel_rx_stats are never
+        # reset, so any mean derived from them is a lifetime average: after a
+        # few hundred thousand packets a new sample no longer moves it by the
+        # stored precision and the value freezes, while the actual signal keeps
+        # varying. Interval averages are computed from this window instead.
+        # Entries are (timestamp, rssi, snr), newest last.
+        self._rx_sig_samples: dict[str, collections.deque] = {}
+        self._rx_sig_lock = threading.Lock()
+        self._rx_sig_max_samples = 3000        # ~10 min at 300 rx/min
+        self._rx_sig_snapshot_window_s = 60.0  # matches the DB snapshot period
+        self._rx_sig_live_window_s = 300.0     # window behind the UI average
 
         # CAD config cache
         self._cad_config_cache: dict[str, bool] = {}  # channel_id -> cad_enabled
@@ -3961,8 +3979,20 @@ class WM1303Backend:
         if _tx_type != 0x09:
             _tx_stable = _extract_mc_payload(data)
             _tx_hash = hashlib.md5(data[0:1] + _tx_stable).hexdigest()[:12]
-            self._tx_echo_hashes[_tx_hash] = time.monotonic()
-            logger.info('WM1303Backend: TX echo hash pre-stored: %s (ch=%s)', _tx_hash, channel_id)
+            # TODO #24: prune stale hashes (>60s) before adding to prevent
+            # unbounded growth over long uptimes. Echo detection only needs
+            # recent TX (typically <5s window), so 60s is a generous safety
+            # margin. Without this, dict grew ~1 entry per TX indefinitely,
+            # eventually blocking confirmation re-broadcasts after 13+h.
+            _now_mono_e = time.monotonic()
+            if len(self._tx_echo_hashes) > 100:
+                self._tx_echo_hashes = {
+                    k: v for k, v in self._tx_echo_hashes.items()
+                    if _now_mono_e - v < 60.0
+                }
+            self._tx_echo_hashes[_tx_hash] = _now_mono_e
+            logger.info('WM1303Backend: TX echo hash pre-stored: %s (ch=%s, active=%d)',
+                       _tx_hash, channel_id, len(self._tx_echo_hashes))
         else:
             logger.debug('WM1303Backend: skipping echo hash for TRACE packet (ch=%s)', channel_id)
 
@@ -4012,6 +4042,7 @@ class WM1303Backend:
                     'enabled': bool(result.get('cad_enabled', False)),
                     'detected': bool(result.get('cad_detected', False)),
                     'reason': result.get('cad_reason', ''),
+                    'retries': int(result.get('cad_retries', 0) or 0),
                 })
         except Exception as _e:
             logger.debug('WM1303Backend: record_hw_cad_result error: %s', _e)
@@ -4425,15 +4456,38 @@ class WM1303Backend:
                                           _elapsed_total_ms - _PRE_RF_TX_MS)
 
             # ---- cad_start (HAL CAD scan begins, ~same moment as noisefloor read) ----
+            # ---- CAD scan duration: single source of truth ----
+            # The HAL measures its own scan window, so that value wins. The
+            # display-time reconstruction (_offset_scan_start minus
+            # _offset_scan_result) can come out shorter because _scan_cap
+            # clamps cad_start so it never predates pull_resp_sent -- which
+            # is why the trace delta used to disagree with the detail badge.
+            # Both now read this one variable.
+            _hal_cad_dur_ms = result.get('cad', {}).get('duration_ms')
+            if _hal_cad_dur_ms and float(_hal_cad_dur_ms) > 0:
+                _cad_duration_ms = float(_hal_cad_dur_ms)
+                _cad_duration_src = 'HAL-measured'
+            else:
+                _cad_duration_ms = _offset_scan_start - _offset_scan_result
+                _cad_duration_src = 'reconstructed'
+
             if _cad_enabled or _lbt_enabled:
                 _scan_detail_parts = ['CAD + LBT scan started']
+                if _cad_duration_ms > 0:
+                    _scan_detail_parts.append(
+                        '  Scan duration: %.1f ms (%s)'
+                        % (_cad_duration_ms, _cad_duration_src))
+                if _cad_retries > 0:
+                    _scan_detail_parts.append('  CAD retries: %d' % _cad_retries)
                 if _lbt_enabled:
                     _lbt_thr = result.get('lbt_threshold_dbm')
                     if _lbt_thr is not None:
                         _scan_detail_parts.append('  LBT threshold: %s dBm' % _lbt_thr)
                 _trace(trace_hash, 'cad_start', channel=channel_id,
                        detail='\n'.join(_scan_detail_parts),
-                       status='ok', ts_offset_ms=_offset_scan_start)
+                       status='ok', ts_offset_ms=_offset_scan_start,
+                       delta_ms=(_cad_duration_ms
+                                 if _cad_duration_ms > 0 else None))
 
             # ---- tx_noisefloor (pre-CAD FSK noise floor read) ----
             if _tx_nf is not None:
@@ -4469,15 +4523,12 @@ class WM1303Backend:
                 if _cad_reason:
                     _cad_parts.append('  Reason: %s' % _cad_reason)
                 _cad_parts.append('  Retries: %d' % _cad_retries)
-                # CAD scan duration: use actual HAL-measured value when
-                # available, fall back to computed offset difference.
-                _hal_cad_dur_ms = result.get('cad', {}).get('duration_ms')
-                if _hal_cad_dur_ms and float(_hal_cad_dur_ms) > 0:
-                    _cad_duration_ms = float(_hal_cad_dur_ms)
-                else:
-                    _cad_duration_ms = _offset_scan_start - _offset_scan_result
+                # Duration comes from the single source of truth computed
+                # above and is also carried as cad_start's semantic delta, so
+                # both rows always show the same number.
                 if _cad_duration_ms > 0:
-                    _cad_parts.append('  Duration: %.1f ms' % _cad_duration_ms)
+                    _cad_parts.append('  Duration: %.1f ms (%s)'
+                                      % (_cad_duration_ms, _cad_duration_src))
                 _cad_status = ('filtered' if _cad_detected else
                                ('ok' if _cad_retries == 0 else 'partial'))
                 _trace(trace_hash, 'cad_check', channel=channel_id,
@@ -4799,6 +4850,58 @@ class WM1303Backend:
                     maxlen=self._rx_nf_max_samples)
             self._rx_nf_estimates[channel_id].append((now, round(nf_est, 1)))
 
+        # TODO #233: keep the raw sample so interval averages can be derived.
+        with self._rx_sig_lock:
+            if channel_id not in self._rx_sig_samples:
+                self._rx_sig_samples[channel_id] = collections.deque(
+                    maxlen=self._rx_sig_max_samples)
+            self._rx_sig_samples[channel_id].append((now, rssi, snr))
+
+    def _recent_rx_avg(self, channel_id: str, window_s: float):
+        """Mean RSSI/SNR over the last `window_s` seconds of one channel.
+
+        TODO #233: replaces `rssi_sum / rx_count`, which averages over the
+        entire service lifetime. Once a few hundred thousand samples have
+        accumulated, one new packet shifts that mean by far less than the
+        stored precision, so the value freezes and the graph draws a flat
+        line while the radio keeps seeing variation.
+
+        Returns (None, None, 0) when the window holds no samples, so callers
+        can store NULL rather than repeat a stale reading as if it were fresh.
+        """
+        cutoff = time.time() - window_s
+        with self._rx_sig_lock:
+            samples = self._rx_sig_samples.get(channel_id)
+            if not samples:
+                return (None, None, 0)
+            recent = [(r, s) for (ts, r, s) in samples if ts >= cutoff]
+        if not recent:
+            return (None, None, 0)
+        n = len(recent)
+        return (round(sum(r for r, _ in recent) / n, 1),
+                round(sum(s for _, s in recent) / n, 1),
+                n)
+
+    def _recent_rx_noise_floor(self, channel_id: str, window_s: float):
+        """Mean RX-derived noise floor over the last `window_s` seconds.
+
+        TODO #233: the snapshot resolved noise floors only through the UI-name
+        map, which is built from channel_a..channel_d. On a device whose only
+        active channel is channel_e that map never matches, so every row was
+        written with noise_floor_dbm NULL. The per-packet estimate collected in
+        _update_rx_stats is keyed by channel_id and does cover channel_e, so it
+        serves as the fallback. Returns None when no sample is in the window.
+        """
+        cutoff = time.time() - window_s
+        with self._rx_nf_lock:
+            estimates = self._rx_nf_estimates.get(channel_id)
+            if not estimates:
+                return None
+            recent = [nf for (ts, nf) in estimates if ts >= cutoff]
+        if not recent:
+            return None
+        return round(sum(recent) / len(recent), 1)
+
     def _init_channel_stats_db(self) -> None:
         """Create channel_stats_history table if it doesn't exist."""
         try:
@@ -4883,6 +4986,19 @@ class WM1303Backend:
                     if nf_val is not None:
                         _nf_by_ch_id[_cid] = nf_val
 
+            # TODO #233: the map above is keyed by UI channel name and only
+            # covers channel_a..channel_d, so a device whose active channel is
+            # channel_e never matched and stored NULL on every row. Fill the
+            # gaps from the per-packet RX estimate, which is keyed by
+            # channel_id and therefore does cover those channels. Monitor
+            # values keep priority; this only supplies what is missing.
+            for _cid in ch_stats:
+                if _nf_by_ch_id.get(_cid) is None:
+                    _rx_nf = self._recent_rx_noise_floor(
+                        _cid, self._rx_sig_snapshot_window_s)
+                    if _rx_nf is not None:
+                        _nf_by_ch_id[_cid] = _rx_nf
+
             with _db_conn(_DB_PATH) as conn:
                 # Load LBT thresholds from UI config as fallback
                 _lbt_thresholds = {}
@@ -4904,11 +5020,15 @@ class WM1303Backend:
 
                 for ch_id, data in ch_stats.items():
                     rx_count = data.get("rx_count", 0)
-                    # Compute avg RSSI/SNR from raw sums
-                    rx_raw = self._channel_rx_stats.get(ch_id, {})
-                    rc = rx_raw.get("rx_count", 0)
-                    avg_rssi = round(rx_raw["rssi_sum"] / rc, 1) if rc > 0 else None
-                    avg_snr = round(rx_raw["snr_sum"] / rc, 1) if rc > 0 else None
+                    # TODO #233: interval average over the snapshot window,
+                    # not the lifetime mean. Dividing the never-reset rssi_sum
+                    # by rx_count produced a value that stopped moving after a
+                    # few hundred thousand packets, so every row repeated the
+                    # same number and the graph flatlined. A window with no
+                    # samples yields None: the channel was simply quiet, and a
+                    # gap is more honest than repeating a stale reading.
+                    avg_rssi, avg_snr, _sig_n = self._recent_rx_avg(
+                        ch_id, self._rx_sig_snapshot_window_s)
 
                     # TX echo filter: discard RSSI/SNR values that are unrealistically
                     # strong (> -50 dBm). These are self-echo from the concentrator
@@ -4947,10 +5067,64 @@ class WM1303Backend:
         except Exception as e:
             logger.error("Error in _snapshot_channel_stats: %s", e)
 
+    def _restore_channel_stats_baseline(self) -> None:
+        """Reload cumulative per-channel counters from the last DB snapshot (#7).
+
+        Without this, every service restart resets TX/RX/LBT counters to 0 and
+        the historical totals in the UI are lost. The most recent
+        `channel_stats_history` row per channel is loaded into a baseline dict;
+        `get_channel_stats()` adds it to the live counters, so totals continue
+        where they left off and the next snapshot writes the combined value.
+
+        Only monotonic cumulative totals are restored. Derived values are
+        deliberately not: `rssi_avg` / `snr_avg` are averages over a recent
+        time window (TODO #233) and describe current reception rather than a
+        running total, and `tx_duty_pct` divides airtime by uptime-since-start,
+        so adding historical airtime would report a misleading regulatory
+        percentage.
+        """
+        baseline = {}
+        try:
+            with _db_conn(_DB_PATH) as conn:
+                cur = conn.execute("""
+                    SELECT channel_id, rx_count, tx_count, tx_failed,
+                           tx_airtime_ms, tx_bytes, lbt_blocked, lbt_passed
+                    FROM channel_stats_history
+                    WHERE id IN (
+                        SELECT MAX(id) FROM channel_stats_history GROUP BY channel_id
+                    )
+                """)
+                for row in cur.fetchall():
+                    ch_id = row[0]
+                    if not ch_id:
+                        continue
+                    baseline[ch_id] = {
+                        "rx_count": int(row[1] or 0),
+                        "tx_count": int(row[2] or 0),
+                        "tx_failed": int(row[3] or 0),
+                        "total_tx_airtime_ms": float(row[4] or 0),
+                        "tx_bytes": int(row[5] or 0),
+                        "lbt_blocked": int(row[6] or 0),
+                        "lbt_passed": int(row[7] or 0),
+                    }
+        except Exception as e:
+            logger.warning("Could not restore channel stats baseline: %s", e)
+            baseline = {}
+        self._stats_baseline = baseline
+        if baseline:
+            logger.info("Restored persistent channel stats baseline for %d channels: %s",
+                        len(baseline),
+                        ", ".join("%s(rx=%d,tx=%d)" % (c, v["rx_count"], v["tx_count"])
+                                  for c, v in sorted(baseline.items())))
+        else:
+            logger.info("No previous channel stats found; counters start at 0")
+
     def _channel_stats_snapshot_loop(self) -> None:
         """Background thread: periodically snapshot channel stats to DB."""
         logger.info("Starting channel stats snapshot loop (interval=60s)")
         self._init_channel_stats_db()
+        # TODO #7: continue cumulative counters across restarts.
+        self._restore_channel_stats_baseline()
         # Wait 60s before first snapshot to let the system stabilize
         for _ in range(12):
             if not self._snapshot_running:
@@ -4994,38 +5168,67 @@ class WM1303Backend:
             uptime_s = time.time() - self._start_time if self._start_time else 1
             total_airtime_s = tx_timing.get("total_airtime_ms", 0) / 1000.0
             duty_pct = round((total_airtime_s / uptime_s) * 100, 3) if uptime_s > 0 else 0
+            # TODO #7: continue cumulative totals across service restarts.
+            # Only monotonic counters get the restored offset; rssi_avg /
+            # snr_avg describe recent reception (see below) and tx_duty_pct is
+            # computed from live airtime over live uptime, so adding historical
+            # airtime would misreport the duty cycle.
+            _base = self._stats_baseline.get(ch_id, {})
+            # TODO #233: rolling-window average instead of the lifetime mean.
+            # rssi_sum / rx_count kept accumulating from service start, so the
+            # displayed value stopped following the radio once enough packets
+            # had been counted. A wider window than the DB snapshot uses: this
+            # number is read directly off the screen, so it should be steady.
+            # The fallbacks below are the original "no data" placeholders.
+            _w_rssi, _w_snr, _ = self._recent_rx_avg(
+                ch_id, self._rx_sig_live_window_s)
             result[ch_id] = {
-                "rx_count": rc,
+                "rx_count": rc + _base.get("rx_count", 0),
+                "rx_count_session": rc,
                 "last_rssi": rx.get("last_rssi", -120.0),
-                "rssi_avg": round(rx["rssi_sum"] / rc, 1) if rc > 0 else -120.0,
+                "rssi_avg": _w_rssi if _w_rssi is not None else -120.0,
                 "last_snr": rx.get("last_snr", 0.0),
-                "snr_avg": round(rx["snr_sum"] / rc, 1) if rc > 0 else 0.0,
+                "snr_avg": _w_snr if _w_snr is not None else 0.0,
                 "last_rx_time": rx.get("last_rx_time"),
-                "tx_count": tx.get("total_sent", 0),
-                "tx_failed": tx.get("total_failed", 0),
+                "tx_count": tx.get("total_sent", 0) + _base.get("tx_count", 0),
+                "tx_count_session": tx.get("total_sent", 0),
+                "tx_failed": tx.get("total_failed", 0) + _base.get("tx_failed", 0),
+                "tx_failed_session": tx.get("total_failed", 0),
                 "tx_pending": tx.get("pending", 0),
                 "last_tx_time": tx.get("last_tx_time"),
                 "avg_tx_time_ms": tx.get("avg_tx_time_ms", 0),
                 "freq_hz": rx.get("freq_hz", tx.get("freq_hz", 0)),
-                # New TX timing fields
+                # New TX timing fields (session-live averages/last values;
+                # totals get the restored offset so historical airtime survives
+                # a restart, but duty cycle above stays session-live).
                 "avg_tx_airtime_ms": tx_timing.get("avg_airtime_ms", 0),
                 "avg_tx_send_ms": tx_timing.get("avg_send_ms", 0),
                 "avg_tx_wait_ms": tx_timing.get("avg_wait_ms", 0),
                 "last_tx_airtime_ms": tx_timing.get("last_airtime_ms", 0),
                 "last_tx_send_ms": tx_timing.get("last_send_ms", 0),
                 "last_tx_wait_ms": tx_timing.get("last_wait_ms", 0),
-                "total_tx_airtime_ms": tx_timing.get("total_airtime_ms", 0),
+                "total_tx_airtime_ms": tx_timing.get("total_airtime_ms", 0) + _base.get("total_tx_airtime_ms", 0),
+                "total_tx_airtime_ms_session": tx_timing.get("total_airtime_ms", 0),
                 "total_tx_send_ms": tx_timing.get("total_send_ms", 0),
                 "total_tx_wait_ms": tx_timing.get("total_wait_ms", 0),
-                "tx_bytes": tx_timing.get("tx_bytes", 0),
+                "tx_bytes": tx_timing.get("tx_bytes", 0) + _base.get("tx_bytes", 0),
+                "tx_bytes_session": tx_timing.get("tx_bytes", 0),
                 "tx_duty_pct": duty_pct,
-                # Software LBT stats
-                "lbt_blocked": tx.get("lbt_blocked", 0),
-                "lbt_passed": tx.get("lbt_passed", 0),
+                # Software LBT stats (totals restored across restart)
+                "lbt_blocked": tx.get("lbt_blocked", 0) + _base.get("lbt_blocked", 0),
+                "lbt_blocked_session": tx.get("lbt_blocked", 0),
+                "lbt_passed": tx.get("lbt_passed", 0) + _base.get("lbt_passed", 0),
+                "lbt_passed_session": tx.get("lbt_passed", 0),
                 "lbt_skipped": tx.get("lbt_skipped", 0),
                 "lbt_last_blocked_at": tx.get("lbt_last_blocked_at"),
                 "lbt_last_rssi": tx.get("lbt_last_rssi"),
                 "lbt_last_threshold": tx.get("lbt_last_threshold"),
+                # TODO #233: the TX queue already measures this (median over a
+                # rolling buffer, fed from the post-TX TX_ACK), but the value
+                # was never forwarded here. _snapshot_channel_stats reads
+                # "tx_noisefloor_avg" from this dict, found nothing, and
+                # silently stored NULL in tx_noisefloor_dbm on every row.
+                "tx_noisefloor_avg": tx.get("tx_noisefloor_avg"),
             }
         return result
 
