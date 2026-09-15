@@ -1722,23 +1722,93 @@ else
 
     step "Checking web interface availability"
     sleep 5
-    WEB_PORT=$(grep -oP '^\s*port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null | head -1)
+    # The port must be read from the 'web:' section specifically. A plain
+    # 'first port: in the file' match picks up mqtt_brokers.brokers[].port,
+    # which sits earlier in config.yaml, so the check below would probe the
+    # MQTT port (1883) and could never succeed.
+    # '|| true' additionally guards against 'set -euo pipefail' when no match exists.
+    WEB_PORT=$(awk '
+        /^web:[[:space:]]*$/ { in_web = 1; next }
+        /^[^[:space:]#]/     { in_web = 0 }
+        in_web && $1 == "port:" { print $2; exit }
+    ' "${CONFIG_DIR}/config.yaml" 2>/dev/null || true)
     WEB_PORT=${WEB_PORT:-8000}
     if command -v curl &>/dev/null; then
-        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
-            ok "Web interface responding on port ${WEB_PORT}"
+        # Retry loop: 15x 2s = max 30s, matching upgrade.sh. A single attempt
+        # right after first start is almost always too early.
+        WEB_OK=0
+        WEB_TRY=0
+        for WEB_TRY in $(seq 1 15); do
+            if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
+                WEB_OK=1
+                break
+            fi
+            sleep 2
+        done
+        if [ "${WEB_OK}" = "1" ]; then
+            ok "Web interface responding on port ${WEB_PORT} (ready after ${WEB_TRY} attempt(s))"
         else
-            ok "Web interface not yet responding (may need a few more seconds)"
+            ok "Web interface not yet responding after 15 attempts (30s) (may need a few more seconds)"
         fi
     else
         ok "curl not available, skipping check"
     fi
 
     step "Checking concentrator module detection"
-    sleep 10
-    CONCENTRATOR_LOG=$(journalctl -u pymc-repeater --since '90 seconds ago' --no-pager 2>/dev/null || true)
-    if echo "${CONCENTRATOR_LOG}" | grep -qi 'lora_pkt_fwd started\|pktfwd ready\|backend started'; then
-        ok "SX1302 concentrator module detected and running"
+    # Unit name must be openhop-repeater. Reading the superseded pymc-repeater
+    # unit always returned an empty journal, so a fresh install reported
+    # 'concentrator not detected' even when the module came up fine.
+    # Retry instead of sampling once: a single look after a fixed sleep can miss
+    # the startup lines on a slower board and report a healthy concentrator as
+    # missing.
+    # A fresh install starts with every channel disabled, so the backend stays
+    # in IDLE mode on purpose and never brings the radio up. That is not a
+    # hardware fault, so detect it separately instead of waiting 18 x 5s for
+    # markers that can never appear and then blaming SPI/GPIO on a healthy board.
+    CONC_OK=0
+    CONC_IDLE=0
+    CONC_TRY=0
+    for CONC_TRY in $(seq 1 18); do
+        # Anchor the journal window to the moment the unit actually became
+        # active, re-read every attempt so it follows a restart mid-loop. A
+        # fixed '--since N minutes ago' window fails whenever the service is
+        # slower to come up than the window is wide.
+        SVC_START=$(systemctl show openhop-repeater -p ActiveEnterTimestamp --value 2>/dev/null || true)
+        if [ -n "${SVC_START}" ]; then
+            CONCENTRATOR_LOG=$(journalctl -u openhop-repeater --since "${SVC_START}" --no-pager 2>/dev/null || true)
+        else
+            CONCENTRATOR_LOG=$(journalctl -u openhop-repeater --since '10 minutes ago' --no-pager 2>/dev/null || true)
+        fi
+        # Check IDLE first: when no channel is enabled the radio never starts,
+        # so the markers below can never appear and waiting is pointless.
+        if echo "${CONCENTRATOR_LOG}" | grep -qi 'NO active channels configured\|Running in IDLE mode'; then
+            CONC_IDLE=1
+            break
+        fi
+        if echo "${CONCENTRATOR_LOG}" | grep -qi 'lora_pkt_fwd started\|pktfwd ready\|backend started'; then
+            CONC_OK=1
+            break
+        fi
+        sleep 5
+    done
+    if [ "${CONC_IDLE}" = "1" ]; then
+        ok "Radio idle - no channels enabled yet (expected on a fresh install)"
+        echo ""
+        echo -e "  ${BOLD}${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "  ${BOLD}${CYAN}║  NEXT STEP: enable at least one channel                  ║${NC}"
+        echo -e "  ${BOLD}${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  The service is running and the web UI is available, but the radio"
+        echo -e "  has not been started because no channel is enabled yet. This is"
+        echo -e "  normal for a new installation and is ${BOLD}not${NC} a hardware fault."
+        echo ""
+        echo -e "  ${BOLD}To bring the radio up:${NC}"
+        echo -e "  - Open the web UI: ${CYAN}http://<this-pi-ip>:${WEB_PORT}/wm1303.html${NC}"
+        echo -e "  - Enable and configure at least one channel"
+        echo -e "  - Restart the service: ${CYAN}sudo systemctl restart openhop-repeater${NC}"
+        echo ""
+    elif [ "${CONC_OK}" = "1" ]; then
+        ok "SX1302 concentrator module detected and running (confirmed after ${CONC_TRY} attempt(s))"
     else
         if echo "${CONCENTRATOR_LOG}" | grep -qi 'Failed to set SX1250\|ERROR.*spi\|ERROR.*gpio\|pktfwd.*fail'; then
             warn "Concentrator module detection failed (SPI/GPIO errors found)"

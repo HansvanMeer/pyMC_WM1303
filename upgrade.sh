@@ -1941,10 +1941,29 @@ def migrate(db_path):
 
     # --- Create tables if missing ---
     tables = {
+        # Must stay byte-compatible with _init_channel_stats_db() in
+        # openhop_core/hardware/wm1303_backend.py. The previous definition
+        # created the table with 'pkt_count' and WITHOUT 'rx_count', so whenever
+        # this script won the race against the backend it produced exactly the
+        # schema that (a) crashes every snapshot INSERT with 'no column named
+        # rx_count' and (b) makes the next upgrade quarantine the database.
         'channel_stats_history': '''CREATE TABLE IF NOT EXISTS channel_stats_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id TEXT, timestamp REAL, avg_rssi REAL, avg_snr REAL,
-            pkt_count INTEGER, noise_floor_dbm REAL
+            timestamp REAL NOT NULL,
+            channel_id TEXT NOT NULL,
+            rx_count INTEGER DEFAULT 0,
+            avg_rssi REAL,
+            avg_snr REAL,
+            tx_count INTEGER DEFAULT 0,
+            tx_failed INTEGER DEFAULT 0,
+            tx_airtime_ms REAL DEFAULT 0,
+            tx_bytes INTEGER DEFAULT 0,
+            lbt_blocked INTEGER DEFAULT 0,
+            lbt_passed INTEGER DEFAULT 0,
+            lbt_last_rssi REAL,
+            lbt_threshold REAL,
+            noise_floor_dbm REAL,
+            tx_noisefloor_dbm REAL
         )''',
         'noise_floor_history': '''CREATE TABLE IF NOT EXISTS noise_floor_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2025,7 +2044,12 @@ def migrate(db_path):
         ('packets', 'lbt_backoff_delays_ms', 'TEXT'),
         ('packets', 'lbt_channel_busy', 'BOOLEAN DEFAULT FALSE'),
         ('channel_stats_history', 'noise_floor_dbm', 'REAL'),
-        ('channel_stats_history', 'pkt_count', 'INTEGER'),
+        # 'pkt_count' is deliberately NOT migrated. It is a legacy column that
+        # no writer ever fills; RX-per-channel is derived from packet_activity
+        # and exposed as a computed 'pkt_count' field in the API JSON only.
+        # Adding it back created a permanently NULL column and reintroduced the
+        # exact schema shape ('pkt_count' present, 'rx_count' absent) that the
+        # stale-DB quarantine treats as a corrupt database.
         # Defensive for pre-v2.1 installs (cad_events HW/SW split)
         ('cad_events', 'cad_hw_clear', 'INTEGER DEFAULT 0'),
         ('cad_events', 'cad_hw_detected', 'INTEGER DEFAULT 0'),
@@ -2262,13 +2286,24 @@ fi
 
 step "Checking web interface availability"
 sleep 2
-WEB_PORT=$(grep -oP '^\s*port:\s*\K[0-9]+' "${CONFIG_DIR}/config.yaml" 2>/dev/null | head -1)
+# The port must be read from the 'web:' section specifically. A plain
+# 'first port: in the file' match picks up mqtt_brokers.brokers[].port, which
+# sits earlier in config.yaml, so the check below was probing the MQTT port
+# (1883) and could never succeed no matter how long it retried.
+# '|| true' additionally guards against 'set -euo pipefail' when no match exists.
+WEB_PORT=$(awk '
+    /^web:[[:space:]]*$/ { in_web = 1; next }
+    /^[^[:space:]#]/     { in_web = 0 }
+    in_web && $1 == "port:" { print $2; exit }
+' "${CONFIG_DIR}/config.yaml" 2>/dev/null || true)
 WEB_PORT=${WEB_PORT:-8000}
 if command -v curl &>/dev/null; then
-    # v2.5.6: retry loop (5x 2s = max 10s) to handle slow webserver startup
+    # Retry loop: 15x 2s = max 30s. The extended hardware drain reset in [11.1]
+    # delays the webserver bind well past the original 10s window, which made a
+    # perfectly healthy upgrade end on a false 'not responding' warning.
     WEB_OK=0
     WEB_TRY=0
-    for WEB_TRY in 1 2 3 4 5; do
+    for WEB_TRY in $(seq 1 15); do
         if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${WEB_PORT}/" 2>/dev/null | grep -q "200\|302\|401"; then
             WEB_OK=1
             break
@@ -2278,13 +2313,18 @@ if command -v curl &>/dev/null; then
     if [ "${WEB_OK}" = "1" ]; then
         ok "Web interface responding on port ${WEB_PORT} (ready after ${WEB_TRY} attempt(s))"
     else
-        warn "Web interface not responding after 5 attempts (10s) - check: journalctl -u openhop-repeater"
+        warn "Web interface not responding after 15 attempts (30s) - check: journalctl -u openhop-repeater"
     fi
 fi
 
 step "Checking journal for post-startup errors"
 sleep 7
-JOURNAL_ERRORS=$(journalctl -u openhop-repeater --since "30 seconds ago" -p err --no-pager 2>/dev/null | grep -v "^-- " | head -5)
+# NOTE: the trailing '|| true' is mandatory. This script runs under
+# 'set -euo pipefail'; when the journal holds no errors journalctl emits only
+# '-- No entries --', grep -v filters it away and exits 1, pipefail propagates
+# that to the assignment and set -e aborts the upgrade silently - precisely on
+# a healthy system. Without the guard phase 11.7 and the final summary never run.
+JOURNAL_ERRORS=$(journalctl -u openhop-repeater --since "30 seconds ago" -p err --no-pager 2>/dev/null | grep -v "^-- " | head -5 || true)
 if [ -z "${JOURNAL_ERRORS}" ]; then
     ok "No errors in journal"
 else
@@ -2294,10 +2334,54 @@ else
 fi
 
 step "Checking concentrator module detection"
-sleep 10
-CONCENTRATOR_LOG=$(journalctl -u openhop-repeater --since '90 seconds ago' --no-pager 2>/dev/null || true)
-if echo "${CONCENTRATOR_LOG}" | grep -qi 'lora_pkt_fwd started\|pktfwd ready\|backend started'; then
-    ok "SX1302 concentrator module detected and running"
+# Retry instead of sampling once. The old version slept 10s and then searched a
+# fixed 90-second window, so a slower start (or the time consumed by the checks
+# above) could leave the startup lines outside the window and report a healthy
+# concentrator as missing. The window now comfortably spans the whole restart
+# phase and is re-read until the lines appear.
+# A device with no channel enabled keeps the backend in IDLE mode on purpose:
+# the radio never starts, so the markers below can never appear. Detect that
+# separately instead of waiting 18 x 5s and then blaming SPI/GPIO on healthy
+# hardware.
+CONC_OK=0
+CONC_IDLE=0
+CONC_TRY=0
+for CONC_TRY in $(seq 1 18); do
+    # Anchor the journal window to the moment the unit actually became active,
+    # re-read every attempt so it follows a restart that happens mid-loop. A
+    # fixed '--since N minutes ago' window fails whenever the service is slower
+    # to come up than the window is wide: the check then reads the PREVIOUS
+    # instance's startup lines, or none at all, and reports a working
+    # concentrator as missing.
+    SVC_START=$(systemctl show openhop-repeater -p ActiveEnterTimestamp --value 2>/dev/null || true)
+    if [ -n "${SVC_START}" ]; then
+        CONCENTRATOR_LOG=$(journalctl -u openhop-repeater --since "${SVC_START}" --no-pager 2>/dev/null || true)
+    else
+        CONCENTRATOR_LOG=$(journalctl -u openhop-repeater --since '10 minutes ago' --no-pager 2>/dev/null || true)
+    fi
+    # Check IDLE first: with no channel enabled the radio never starts, so the
+    # markers below can never appear and waiting for them is pointless.
+    if echo "${CONCENTRATOR_LOG}" | grep -qi 'NO active channels configured\|Running in IDLE mode'; then
+        CONC_IDLE=1
+        break
+    fi
+    if echo "${CONCENTRATOR_LOG}" | grep -qi 'lora_pkt_fwd started\|pktfwd ready\|backend started'; then
+        CONC_OK=1
+        break
+    fi
+    # Diagnostics to the log file only, so a false 'not detected' can be traced
+    # afterwards without cluttering the console.
+    echo "[11.7] try ${CONC_TRY}: anchor='${SVC_START}' journal_lines=$(echo "${CONCENTRATOR_LOG}" | wc -l)" >> "${LOG_FILE}" 2>&1
+    sleep 5
+done
+if [ "${CONC_IDLE}" = "1" ]; then
+    ok "Radio idle - no channels enabled (web UI available, radio not started)"
+    echo ""
+    echo -e "  ${BOLD}${CYAN}NEXT STEP:${NC} enable at least one channel in the web UI and restart"
+    echo -e "  the service. This is a configuration state, not a hardware fault."
+    echo ""
+elif [ "${CONC_OK}" = "1" ]; then
+    ok "SX1302 concentrator module detected and running (confirmed after ${CONC_TRY} attempt(s))"
 else
     if echo "${CONCENTRATOR_LOG}" | grep -qi 'Failed to set SX1250\|ERROR.*spi\|ERROR.*gpio\|pktfwd.*fail'; then
         warn "Concentrator module detection failed (SPI/GPIO errors found)"

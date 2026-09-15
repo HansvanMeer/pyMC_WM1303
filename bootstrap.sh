@@ -455,8 +455,13 @@ run_protected() {
     TAILPID=$!
     wait $BGPID
     EXIT_CODE=$?
-    kill $TAILPID 2>/dev/null
-    wait $TAILPID 2>/dev/null
+    # 'wait' on a process we just terminated reports 143 (128 + SIGTERM). Under
+    # 'set -e' that status aborts the script right here, so 'return $EXIT_CODE'
+    # was never reached and every run - successful or not - ended as 143. The
+    # real exit status of install.sh/upgrade.sh was lost, making success and
+    # failure indistinguishable to any caller. Both guards are required.
+    kill $TAILPID 2>/dev/null || true
+    wait $TAILPID 2>/dev/null || true
     return $EXIT_CODE
 }
 
